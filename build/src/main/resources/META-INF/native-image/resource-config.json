@@ -1,0 +1,75 @@
+{
+  "resources":{
+  "includes":[{
+    "pattern":"\\Q/Users/joe.gusignify.com/Desktop/misc/bifrore/bin/../conf/logback.xml\\E"
+  }, {
+    "pattern":"\\QMETA-INF/extensions.idx\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.DataSerializerHook\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.PortableHook\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.SerializerHook\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.client.impl.protocol.MessageTaskFactoryProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.dataconnection.DataConnectionRegistration\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.instance.impl.NodeExtension\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.internal.util.phonehome.MetricsProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.spi.discovery.DiscoveryStrategyFactory\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.spi.impl.servicemanager.ServiceDescriptorProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.hazelcast.spi.tenantcontrol.TenantControlFactory\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/com.sun.net.httpserver.spi.HttpServerProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/io.grpc.LoadBalancerProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/io.grpc.NameResolverProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/io.vertx.core.spi.JsonFactory\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/io.vertx.core.spi.VerticleFactory\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/io.vertx.core.spi.VertxServiceProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.lang.System$LoggerFinder\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.net.ContentHandlerFactory\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.net.spi.URLStreamHandlerProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.nio.channels.spi.SelectorProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/java.time.zone.ZoneRulesProvider\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/javax.xml.parsers.SAXParserFactory\\E"
+  }, {
+    "pattern":"\\Qhazelcast-download.properties\\E"
+  }, {
+    "pattern":"\\Qjndi.properties\\E"
+  }, {
+    "pattern":"\\Qkafka/kafka-version.properties\\E"
+  }, {
+    "pattern":"\\Qlibrocksdbjni-osx-arm64.jnilib\\E"
+  }, {
+    "pattern":"\\Qorg/slf4j/impl/StaticLoggerBinder.class\\E"
+  }, {
+    "pattern":"\\Qvertx-default-jul-logging.properties\\E"
+  }, {
+    "pattern":"java.base:\\Qjdk/internal/icu/impl/data/icudt72b/nfc.nrm\\E"
+  }, {
+    "pattern":"java.base:\\Qjdk/internal/icu/impl/data/icudt72b/nfkc.nrm\\E"
+  }, {
+    "pattern":"java.base:\\Qjdk/internal/icu/impl/data/icudt72b/uprops.icu\\E"
+  }, {
+    "pattern":"java.base:\\Qsun/net/idn/uidna.spp\\E"
+  }, {
+    "pattern":"jdk.jfr:\\Qjdk/jfr/internal/query/view.ini\\E"
+  }]},
+  "bundles":[]
+}

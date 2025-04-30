@@ -114,4 +114,50 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>bifrore.starter.StandaloneStarter</mainClass>
+                            <imageName>${project.artifactId}</imageName>
+                            <verbose>true</verbose>
+                            <debug>true</debug>
+                            <imageName>bifrore</imageName>
+                            <buildArgs>
+                                <buildArg>--verbose</buildArg>
+                                <buildArg>-H:+PrintClassInitialization</buildArg>
+                                <buildArg>-H:+PrintAnalysisCallTree</buildArg>
+                                <buildArg>--report-unsupported-elements-at-runtime</buildArg>
+                            </buildArgs>
+                            <systemProperties>
+                                <java.awt.headless>true</java.awt.headless>
+                                <io.netty.tryReflectionSetAccessible>true</io.netty.tryReflectionSetAccessible>
+                                <io.netty.allocator.cacheTrimIntervalMillis>5000</io.netty.allocator.cacheTrimIntervalMillis>
+                                <LOG_DIR>${project.basedir}/logs</LOG_DIR>
+                                <CONF_DIR>${project.basedir}/conf</CONF_DIR>
+                                <logback.configurationFile>${project.basedir}/conf/logback.xml</logback.configurationFile>
+                                <hazelcast.logging.type>slf4j</hazelcast.logging.type>
+                                <hazelcast.logo.enabled>false</hazelcast.logo.enabled>
+                            </systemProperties>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

@@ -34,6 +34,9 @@ public class ResourceUtil {
     public static File getFile(@NonNull String relativePathToFile, String sysPropOfDir) {
         if (sysPropOfDir != null && !sysPropOfDir.isEmpty()) {
             String dir = System.getProperty(sysPropOfDir);
+            if (dir == null) {
+                dir = System.getenv(sysPropOfDir);
+            }
             if (dir != null) {
                 File file = new File(dir, relativePathToFile);
                 if (file.exists()) {
