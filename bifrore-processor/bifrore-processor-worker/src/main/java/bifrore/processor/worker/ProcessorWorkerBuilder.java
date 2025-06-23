@@ -10,9 +10,9 @@ public class ProcessorWorkerBuilder {
     String groupName;
     String userName;
     String password;
-    boolean cleanStart;
+    boolean cleanStart = true;
     boolean ordered;
-    long sessionExpiryInterval;
+    long sessionExpiryInterval = 0;
     String host;
     int port;
     String clientPrefix;

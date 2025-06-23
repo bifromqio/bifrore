@@ -13,7 +13,6 @@ processorWorkerConfig:
   userName: dev
   password: dev
   ordered: false
-  sessionExpiryInterval: 3000
   brokerHost: 127.0.0.1
   brokerPort: 1883
   clientPrefix: bifrore
