@@ -1,7 +1,5 @@
 package bifrore.processor.server;
 
-
-
 import bifrore.processor.rpc.proto.*;
 import bifrore.processor.worker.IProcessorWorker;
 import io.grpc.stub.StreamObserver;

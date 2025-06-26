@@ -15,6 +15,7 @@ import com.github.benmanes.caffeine.cache.Scheduler;
 import com.google.protobuf.ByteString;
 import com.hivemq.client.mqtt.MqttClientExecutorConfig;
 import com.hivemq.client.mqtt.MqttClientTransportConfig;
+import com.hivemq.client.mqtt.MqttGlobalPublishFilter;
 import com.hivemq.client.mqtt.mqtt5.Mqtt5AsyncClient;
 import com.hivemq.client.mqtt.mqtt5.Mqtt5Client;
 import com.hivemq.client.mqtt.mqtt5.message.auth.Mqtt5SimpleAuth;
@@ -23,27 +24,20 @@ import com.hivemq.client.mqtt.mqtt5.message.connect.connack.Mqtt5ConnAckReasonCo
 import com.hivemq.client.mqtt.mqtt5.message.publish.Mqtt5Publish;
 import com.hivemq.client.mqtt.mqtt5.message.subscribe.Mqtt5Subscribe;
 import com.hivemq.client.mqtt.mqtt5.message.unsubscribe.Mqtt5Unsubscribe;
-import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
-import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
 import io.reactivex.schedulers.Schedulers;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static bifrore.monitoring.metrics.SysMetric.CachedTopicGauge;
@@ -70,30 +64,28 @@ class ProcessorWorker implements IProcessorWorker {
     private final IRouterClient routerClient;
     private final List<Mqtt5AsyncClient> clients = new ArrayList<>();
     private final AsyncLoadingCache<String, List<Matched>> matchedRuleCache;
-    private final ExecutorService matchExecutor;
     private final TaskTracker taskTracker = new TaskTracker();
 
     class PublishMessageConsumer implements Consumer<Mqtt5Publish> {
-        private final List<Optional<List<Matched>>> rob;
-        private final Map<Mqtt5Publish, Integer> robEntryIndex;
+        private final List<ReorderBufferNode> rob;
+        private long msgIdGen = 0;
 
         PublishMessageConsumer() {
             this.rob = new LinkedList<>();
-            this.robEntryIndex = new HashMap<>();
         }
 
         @Override
         public void accept(Mqtt5Publish published) {
             SysMeter.INSTANCE.recordCount(ProcessorInboundCount);
             Timer.Sample handleSampler = Timer.start();
-            this.rob.add(Optional.empty());
-            robEntryIndex.put(published, rob.size() - 1);
-            taskTracker.track(published);
+            ReorderBufferNode node = new ReorderBufferNode(msgIdGen++);
+            this.rob.add(node);
+            taskTracker.track(node);
             Timer.Sample matchSampler = Timer.start();
             matchedRuleCache.get(published.getTopic().toString())
                     .whenComplete((matchedList, e) -> {
                         matchSampler.stop(SysMeter.INSTANCE.timer(MatchRuleLatency));
-                        CompletableFuture<Void> matchFuture = taskTracker.getFutures(published).get(0);
+                        CompletableFuture<Void> matchFuture = taskTracker.getFutures(node).get(0);
                         if (e != null) {
                             log.error("Failed to get matched rules: {}", published);
                             matchFuture.completeExceptionally(e);
@@ -101,17 +93,17 @@ class ProcessorWorker implements IProcessorWorker {
                         }else {
                             matchFuture.complete(null);
                         }
-                        int idx = this.robEntryIndex.get(published);
-                        rob.set(idx, Optional.of(matchedList));
-                        if (idx == 0) {
+                        node.setMatchedList(Optional.of(matchedList));
+                        if (rob.get(0) == node) {
                             rob.remove(0);
-                            robEntryIndex.remove(published);
-                            fireMatchedList(matchedList, published);
-                            Iterator<Optional<List<Matched>>> itr = this.rob.iterator();
+                            fireMatchedList(matchedList, published, taskTracker.getFutures(node).get(1));
+                            Iterator<ReorderBufferNode> itr = this.rob.iterator();
                             while (itr.hasNext()) {
-                                Optional<List<Matched>> robResult = itr.next();
-                                if (robResult.isPresent()) {
-                                    fireMatchedList(robResult.get(), published);
+                                ReorderBufferNode potentialFinished = itr.next();
+                                if (potentialFinished.getMatchedList().isPresent()) {
+                                    fireMatchedList(potentialFinished.getMatchedList().get(),
+                                            published,
+                                            taskTracker.getFutures(potentialFinished).get(1));
                                     itr.remove();
                                 } else {
                                     break;
@@ -119,7 +111,7 @@ class ProcessorWorker implements IProcessorWorker {
                             }
                         }
                     });
-            CompletableFuture.allOf(taskTracker.getFutures(published).toArray(new CompletableFuture[0]))
+            CompletableFuture.allOf(taskTracker.getFutures(node).toArray(new CompletableFuture[0]))
                     .whenComplete((v,e) -> {
                         handleSampler.stop(SysMeter.INSTANCE.timer(HandleMessageLatency));
                         if (e != null) {
@@ -145,24 +137,12 @@ class ProcessorWorker implements IProcessorWorker {
         orderedTopicFilterPrefix = builder.orderedTopicFilterPrefix;
         producerManager = new ProducerManager(builder.pluginManager, builder.callerCfgs);
         routerClient = builder.routerClient;
-        matchExecutor = ExecutorServiceMetrics.monitor(Metrics.globalRegistry,
-                new ForkJoinPool(2, new ForkJoinPool.ForkJoinWorkerThreadFactory() {
-                    final AtomicInteger index = new AtomicInteger(0);
-
-                    @Override
-                    public ForkJoinWorkerThread newThread(ForkJoinPool pool) {
-                        ForkJoinWorkerThread worker = ForkJoinPool.defaultForkJoinWorkerThreadFactory.newThread(pool);
-                        worker.setName(String.format("topic-matcher-%d", index.incrementAndGet()));
-                        worker.setDaemon(false);
-                        return worker;
-                    }
-                }, null, false), "topic-matcher");
         matchedRuleCache = Caffeine.newBuilder()
                 .scheduler(Scheduler.systemScheduler())
                 .maximumSize(100)
                 .expireAfterAccess(Duration.ofSeconds(30))
                 .expireAfterWrite(Duration.ofSeconds(60))
-                .executor(matchExecutor)
+                .executor(new ConsumerExecutor(Schedulers.single()))
                 .buildAsync((key, executor) ->
                         routerClient.match(MatchRequest.newBuilder().setTopic(key).build())
                 );
@@ -189,7 +169,7 @@ class ProcessorWorker implements IProcessorWorker {
                     .topicFilter(convertToSharedSubscription(topicFilter))
                     .noLocal(false)
                     .build();
-            asyncClient.subscribe(mqtt5Subscribe, new PublishMessageConsumer(), true)
+            asyncClient.subscribe(mqtt5Subscribe)
                     .whenComplete(((mqtt5SubAck, error) -> {
                         if (error != null) {
                             future.completeExceptionally(error);
@@ -255,7 +235,6 @@ class ProcessorWorker implements IProcessorWorker {
             clients.clear();
             producerManager.stop();
         }).join();
-        matchExecutor.shutdown();
         SysMeter.INSTANCE.stopGauge(CachedTopicGauge);
     }
 
@@ -281,6 +260,7 @@ class ProcessorWorker implements IProcessorWorker {
                                     .applicationScheduler(Schedulers.single())
                                     .build())
                             .buildAsync();
+                    asyncClient.publishes(MqttGlobalPublishFilter.ALL, new PublishMessageConsumer(), true);
                     CompletableFuture<Void> future = new CompletableFuture<>();
                     futures.add(future);
                     Mqtt5Connect mqtt5Connect = Mqtt5Connect.builder()
@@ -309,7 +289,7 @@ class ProcessorWorker implements IProcessorWorker {
                                         .topicFilter(convertToSharedSubscription(topicFilter))
                                         .noLocal(false)
                                         .build();
-                                asyncClient.subscribe(mqtt5Subscribe, new PublishMessageConsumer(), true)
+                                asyncClient.subscribe(mqtt5Subscribe)
                                         .whenComplete(((mqtt5SubAck, error) -> {
                                             if (error != null) {
                                                 log.error("Failed to subscribe: {}", mqtt5Subscribe);
@@ -345,12 +325,13 @@ class ProcessorWorker implements IProcessorWorker {
         });
     }
 
-    private void fireMatchedList(List<Matched> matchedList, Mqtt5Publish message) {
+    private void fireMatchedList(List<Matched> matchedList,
+                                 Mqtt5Publish message,
+                                 CompletableFuture<Void> produceFuture) {
         Message.Builder messageBuilder = Message.newBuilder()
                 .setQos(QoS.forNumber(message.getQos().getCode()))
                 .setTopic(message.getTopic().toString())
                 .setPayload(ByteString.copyFrom(message.getPayloadAsBytes()));
-        CompletableFuture<Void> produceFuture = taskTracker.getFutures(message).get(1);
         if (matchedList == null || matchedList.isEmpty()) {
             produceFuture.complete(null);
         }

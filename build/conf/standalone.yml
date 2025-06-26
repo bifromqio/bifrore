@@ -12,7 +12,7 @@ processorWorkerConfig:
   groupName: bifrore
   userName: dev
   password: dev
-  ordered: false
+  ordered: true
   brokerHost: 127.0.0.1
   brokerPort: 1883
   clientPrefix: bifrore
