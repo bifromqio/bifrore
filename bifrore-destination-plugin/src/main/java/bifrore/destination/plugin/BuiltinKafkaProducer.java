@@ -112,6 +112,7 @@ public class BuiltinKafkaProducer implements IProducer{
         props.putIfAbsent(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         props.putIfAbsent(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         props.put(ProducerConfig.CLIENT_ID_CONFIG, callerId);
+        props.putIfAbsent(ProducerConfig.LINGER_MS_CONFIG, 5);
         callers.putIfAbsent(callerId, new KafkaProducer<>(props));
         return callerId;
     }
