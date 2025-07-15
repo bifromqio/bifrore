@@ -119,6 +119,7 @@ class ProcessorWorker implements IProcessorWorker {
                         }else {
                             published.acknowledge();
                         }
+                        taskTracker.removeFutures(node);
                     });
         }
     }

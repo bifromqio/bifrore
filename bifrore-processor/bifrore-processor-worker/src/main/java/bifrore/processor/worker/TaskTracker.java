@@ -16,4 +16,8 @@ public class TaskTracker {
     public List<CompletableFuture<Void>> getFutures(ReorderBufferNode node) {
         return futureMap.get(node);
     }
+
+    public List<CompletableFuture<Void>> removeFutures(ReorderBufferNode node) {
+        return futureMap.remove(node);
+    }
 }
