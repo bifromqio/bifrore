@@ -3,6 +3,8 @@ package bifrore.common.store;
 import com.hazelcast.map.MapLoader;
 import com.hazelcast.map.MapStore;
 import io.micrometer.core.instrument.Metrics;
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.LRUCache;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -34,8 +36,15 @@ public class PersistentMapStore<K, V> implements MapStore<K, V>, MapLoader<K, V>
                               Function<V, byte[]> valueSerializer,
                               Function<byte[], V> valueDeserializer) throws RocksDBException {
         RocksDB.loadLibrary();
+        long cacheCapacity = 16 * 1024 * 1024;
+        BlockBasedTableConfig tableOptions = new BlockBasedTableConfig();
+        tableOptions.setBlockCache(new LRUCache(cacheCapacity));
         Statistics stat = new Statistics();
-        Options options = new Options().setCreateIfMissing(true).setAllowMmapReads(true).setStatistics(stat);
+        Options options = new Options()
+                .setCreateIfMissing(true)
+                .setAllowMmapReads(true)
+                .setTableFormatConfig(tableOptions)
+                .setStatistics(stat);
         Metrics.gauge(storeName + "." + "rocksdb.block_cache_hits",
                 stat.getTickerCount(TickerType.BLOCK_CACHE_HIT));
         Metrics.gauge(storeName + "." + "rocksdb.block_cache_misses",
