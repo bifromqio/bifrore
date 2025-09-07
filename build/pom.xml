@@ -143,6 +143,8 @@
                                 <buildArg>-H:+PrintClassInitialization</buildArg>
                                 <buildArg>-H:+PrintAnalysisCallTree</buildArg>
                                 <buildArg>--report-unsupported-elements-at-runtime</buildArg>
+                                <buildArg>-O3</buildArg>
+                                <buildArg>--pgo-instrument</buildArg>
                             </buildArgs>
                             <systemProperties>
                                 <java.awt.headless>true</java.awt.headless>
