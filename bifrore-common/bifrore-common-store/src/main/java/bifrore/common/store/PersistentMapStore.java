@@ -38,18 +38,31 @@ public class PersistentMapStore<K, V> implements MapStore<K, V>, MapLoader<K, V>
         RocksDB.loadLibrary();
         long cacheCapacity = 16 * 1024 * 1024;
         BlockBasedTableConfig tableOptions = new BlockBasedTableConfig();
-        tableOptions.setBlockCache(new LRUCache(cacheCapacity));
+        tableOptions.setBlockCache(new LRUCache(cacheCapacity))
+                   .setCacheIndexAndFilterBlocks(true)
+                   .setPinL0FilterAndIndexBlocksInCache(true);
+
         Statistics stat = new Statistics();
         Options options = new Options()
                 .setCreateIfMissing(true)
                 .setAllowMmapReads(true)
+                .setUseDirectReads(true)
+                .setUseDirectIoForFlushAndCompaction(true)
+                .setMaxOpenFiles(-1)
                 .setTableFormatConfig(tableOptions)
                 .setStatistics(stat);
-        Metrics.gauge(storeName + "." + "rocksdb.block_cache_hits",
+
+        Metrics.gauge(storeName + ".rocksdb.block_cache_hits",
                 stat.getTickerCount(TickerType.BLOCK_CACHE_HIT));
-        Metrics.gauge(storeName + "." + "rocksdb.block_cache_misses",
+        Metrics.gauge(storeName + ".rocksdb.block_cache_misses",
                 stat.getTickerCount(TickerType.BLOCK_CACHE_MISS));
-        this.rocksDB = RocksDB.open(options, this.dataDirPrefix + "/" + dbPath);
+
+        try {
+            this.rocksDB = RocksDB.open(options, this.dataDirPrefix + "/" + dbPath);
+        } catch (RocksDBException e) {
+            throw new RocksDBException("Failed to open RocksDB at path: " + dbPath);
+        }
+
         this.keySerializer = keySerializer;
         this.keyDeserializer = keyDeserializer;
         this.valueSerializer = valueSerializer;
