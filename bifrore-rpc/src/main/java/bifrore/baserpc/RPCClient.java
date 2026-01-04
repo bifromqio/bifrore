@@ -27,7 +27,7 @@ final class RPCClient implements IRPCClient {
                                                          Map<String, String> metadata,
                                                          MethodDescriptor<ReqT, RespT> methodDesc) {
         Context ctx = prepareContext(metadata);
-        ctx = ctx.attach();
+        Context prev = ctx.attach();
         try {
             CompletableFuture<RespT> future = new CompletableFuture<>();
             asyncUnaryCall(channel.newCall(methodDesc, callOptions), req, new StreamObserver<RespT>() {
@@ -49,7 +49,7 @@ final class RPCClient implements IRPCClient {
             });
             return future;
         }finally {
-            Context.current().detach(ctx);
+            ctx.detach(prev);
         }
     }
 

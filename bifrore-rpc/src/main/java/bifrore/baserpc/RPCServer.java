@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 class RPCServer implements IRPCServer {
@@ -26,6 +27,9 @@ class RPCServer implements IRPCServer {
                 .forAddress(new InetSocketAddress(builder.host, builder.port))
                 .permitKeepAliveWithoutCalls(true)
                 .maxInboundMessageSize(Integer.MAX_VALUE)
+                .maxConnectionAge(30, TimeUnit.MINUTES)
+                .maxConnectionAgeGrace(5, TimeUnit.MINUTES)
+                .maxConnectionIdle(10, TimeUnit.MINUTES)
                 .executor(builder.executor);
         this.serviceDefinitions=  builder.serviceDefinitions;
         bindServices(nettyServerBuilder);
