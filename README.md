@@ -11,13 +11,14 @@ flowchart LR
   subgraph Host[Host Application]
     JNI[JNI Wrapper]
     PY[Python Wrapper]
-    CFFI[C ABI]
   end
 
-  subgraph Engine[Embedded Rule Engine (Rust)]
-    ADP[MQTT Adapter (v5, shared subscription)]
-    RT[Rule Runtime]
+  CABI[C ABI Boundary]
+
+  subgraph Engine[Embedded Rule Engine - Rust]
+    ADP[MQTT Adapter v5 shared subscription]
     PARSE[SQL Rule Parser]
+    RT[Rule Runtime]
     EVAL[Rule Evaluator]
     METRICS[Eval Metrics]
   end
@@ -26,11 +27,14 @@ flowchart LR
 
   Broker -->|shared subscription| ADP
   ADP --> RT
-  RT --> EVAL
   PARSE --> RT
-  EVAL -->|callback with results| CFFI
-  CFFI --> JNI
-  CFFI --> PY
+  RT --> EVAL
+  EVAL --> METRICS
+  EVAL -->|decision actions| CABI
+
+  CABI --> JNI
+  CABI --> PY
+
 ```
 
 ## Key Differences (Old vs New)
