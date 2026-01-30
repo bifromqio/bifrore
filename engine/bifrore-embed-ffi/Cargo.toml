@@ -1,0 +1,16 @@
+[package]
+name = "bifrore-embed-ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "bifrore_embed"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bifrore-embed-core = { path = "../bifrore-embed-core" }
+libc = "0.2"
+serde_json = "1.0"
+
+[features]
+mqtt = ["bifrore-embed-core/mqtt"]

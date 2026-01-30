@@ -1,116 +1,164 @@
-# MQTT-Based Rule Engine
+# BifroRE (Embedded MQTT Rule Engine)
 
-# Overview
+BifroRE is now an embedded MQTT rule engine delivered as a Rust library with a C ABI.
+It connects to an MQTT broker via shared subscriptions, evaluates SQL-like rules in memory,
+and returns evaluation results to the host application via callbacks (JNI / Python / C).
 
-The MQTT-Based Rule Engine is a versatile solution designed for real-time rule evaluation and action execution. Built on the MQTT protocol, this engine connects to any MQTT broker, making it adaptable for diverse use cases.
+## Architecture
 
-# Key Features
+```mermaid
+flowchart LR
+  subgraph Host[Host Application]
+    JNI[JNI Wrapper]
+    PY[Python Wrapper]
+    CFFI[C ABI]
+  end
 
-1. MQTT Protocol Compatibility: The engine seamlessly connects to any MQTT broker, providing flexible integration options.
-2. SQL Syntax for Rule Writing: Rules use familiar SQL syntax, with the "FROM" clause serving as a topic filter for intuitive rule evaluation.
-3. Native Distributed Support: Built for distributed environments, the engine enables scalable rule processing across multiple nodes.
-4. Plugin System for Integration: A flexible plugin system lets users integrate downstream services and develop custom actions for specific business needs.
+  subgraph Engine[Embedded Rule Engine (Rust)]
+    ADP[MQTT Adapter (v5, shared subscription)]
+    RT[Rule Runtime]
+    PARSE[SQL Rule Parser]
+    EVAL[Rule Evaluator]
+    METRICS[Eval Metrics]
+  end
 
-# Architecture
+  Broker[MQTT Broker]
 
-![rule-engine.svg](docs/figures/rule-engine.svg)
-
-## Core Components
-
-### ProcessorWorker
-
-The ProcessorWorker receives messages from MQTT brokers through shared subscription. It contains multiple MQTT clients to handle this task. When a message arrives, the worker uses the `Router` to find matching rules.
-
-### Router
-
-It matches rules based on the incoming message's topic.
-
-### Processor
-
-The Processor executes actions based on matched rules. It uses the rule's destination information to find the appropriate destination plugin for message delivery.
-
-# QuickStart
-
-- Start a MQTT broker
-
-```bash
-docker pull bifromq:latest
-docker run --network host -d --name bifromq bifromq/bifromq:latest
+  Broker -->|shared subscription| ADP
+  ADP --> RT
+  RT --> EVAL
+  PARSE --> RT
+  EVAL -->|callback with results| CFFI
+  CFFI --> JNI
+  CFFI --> PY
 ```
 
-- Start the BifroRE instance
+## Key Differences (Old vs New)
+
+- Old: standalone Java services (router/processor/admin). New: embedded Rust library with C ABI.
+- Old: rule matching done in Java router. New: in-memory trie matcher in Rust.
+- Old: SQL rules parsed by Trino + MVEL. New: SQL subset parser in Rust with MQTT-native extensions.
+- Old: downstream delivery handled by built-in plugins. New: host application handles destinations.
+
+## Rule DSL (SQL + MQTT extensions)
+
+Examples:
+- Topic filters and alias:
+  - `select * from 'sensors/+/temp' as t`
+- Topic level function:
+  - `where topic_level(t, 2) = 'room1'`
+- Metadata/properties:
+  - `where qos >= 1 and properties['content-type'] = 'application/json'`
+
+Supported (current):
+- `SELECT *` or `SELECT expr [AS alias]`
+- `FROM <topic filter>` with `+` and `#` wildcards
+- `WHERE` with `AND/OR`, comparisons, arithmetic
+- `topic_level(alias, index)` (1-based index)
+- Metadata: `qos`, `retain`, `dup`, `timestamp`, `clientId`, `username`
+- MQTT v5 properties via `properties['key']`
+
+## Build
+
+Requirements:
+- Rust (cargo)
+- For JNI: JDK (JAVA_HOME set)
+
+Build the artifacts:
 
 ```bash
-./bin/standalone.sh start
+./build.sh jni     # Rust cdylib + JNI bridge
+./build.sh python  # Rust cdylib only (Python wrapper is pure ctypes)
+./build.sh all     # both
+./build.sh bench   # run runtime benchmarks
 ```
 
-- Add a `Destination`
-```bash
-curl -X PUT http://localhost:8088/destination \
-     -H "Content-Type: application/json" \
-     -d '{
-           "destinationType": "kafka",
-           "cfg": {
-             "bootstrap.servers": "127.0.0.1:9092",
-             "acks": "all"
-           }
-         }'
+Artifacts are placed under `build/`:
+- `libbifrore_embed.(so|dylib)`
+- `libbifrore_jni.(so|dylib)` (JNI)
+
+## JNI Usage (Java)
+
+```java
+BifroRE re = new BifroRE("127.0.0.1", 1883);
+re.onMessage((ruleId, payload, destinationsJson) -> {
+    // handle evaluated payload + destinations
+});
+re.loadRules("/path/to/rule.json");
+re.start();
 ```
-The output will be like:
+
+## Python Usage
+
+```python
+from bindings.python.bifrore import BifroRE
+
+engine = BifroRE("./build/libbifrore_embed.dylib")
+engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
+engine.load_rules("./rule.json")
+engine.start_mqtt("127.0.0.1", 1883, "client-1", "bifrore-group")
+```
+
+## Using Pre-built Releases (Users)
+
+When you publish Release assets (Linux/macOS, x86_64/arm64), users can run without building.
+
+1) Download the correct tarball from GitHub Releases and extract it:
+
+```bash
+tar -xzf bifrore-embed-<os>-<arch>.tar.gz
+```
+
+2) Use the extracted libraries.
+
+Java (JNI):
+
+```java
+BifroRE re = new BifroRE("127.0.0.1", 1883);
+re.onMessage((ruleId, payload, destinationsJson) -> {
+    // handle evaluated payload + destinations
+});
+re.loadRules("/path/to/rule.json");
+re.start();
+```
+
+Run with library path pointing to the extracted folder:
+
+```bash
+java -Djava.library.path=/path/to/extracted/libs YourApp
+```
+
+Python (ctypes):
+
+```python
+from bindings.python.bifrore import BifroRE
+
+engine = BifroRE("/path/to/extracted/libs/libbifrore_embed.dylib")
+engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
+engine.load_rules("/path/to/rule.json")
+engine.start_mqtt("127.0.0.1", 1883, "client-1", "bifrore-group")
+```
+
+## Rule File Format
+
 ```json
 {
-  "destinationId":"kafka/bf488e92-d26c-45ba-8915-e82bd07b66f0"
+  "rules": [
+    {
+      "expression": "select * from 'sensors/+/temp' as t where topic_level(t, 2) = 'room1'",
+      "destinations": ["destA", "destB"]
+    }
+  ]
 }
 ```
-Currently, BifroRE adds Kafka and DevOnly (output the messages to log) as its builtin producers.
 
-- Add A Rule and Test
+## Benchmarks
+
+A Criterion benchmark is provided at:
+- `engine/bifrore-embed-core/benches/runtime_bench.rs`
+
+Run with:
 
 ```bash
- # Add a basic rule
- curl -X PUT http://localhost:8088/rule -d '{"expression": "select * from a", "destinations": ["kafka/bf488e92-d26c-45ba-8915-e82bd07b66f0"]}'
- # Add a basic rule with topicFilter aliasing
- curl -X PUT http://localhost:8088/rule -d '{"expression": "select * from a as source_a", "destinations": ["kafka/bf488e92-d26c-45ba-8915-e82bd07b66f0"]}'
- # Add a filtering and mapping rule
- curl -X PUT http://localhost:8088/rule -d '{"expression": "select 2*h as new_height, 2*w as new_width from \"a/b/c\" where temp > 25", "destinations": ["kafka/bf488e92-d26c-45ba-8915-e82bd07b66f0"]}'
- # List the existing rules
- curl http://localhost:8088/rule
+./build.sh bench
 ```
-
-- Send a message on topic `a`
-
-**NOTE** the `WHERE` and `SELECT` clauses for the rule depend on the payload's fields. Therefore, the message must be 
-JSON-decoded; otherwise, it will be dropped. If you're using MQTTX, the format should be as follows:
-![payload_format](docs/figures/payload_format.png)
-
-You can use any MQTT client tools (such as MQTTX) to send a message on the rule's topic. The rule engine will process 
-the message based on the given rule and send the processed messages to the destinations.
-
-- Delete a `Destination`
-```bash
-curl -X DELETE "http://localhost:8088/destination?destinationId=$YOUR_DESTINATION_ID
-```
-
-- Delete a `Rule`
-```bash
-curl -X DELETE "http://localhost:8088/rule?ruleId=$YOUR_RULE_ID"
-```
-The corresponding rule will be deleted. If all the rules are deleted for a given topicFilter, the rule engine will 
-unsubscribe the topicFilter.
-
-Note: The destinationId is part of the rule, if the user deletes a destinationId, the processing for this deleted 
-destination will be ignored silently.
-
-# Messaging
-
-The source message comes from the MQTT broker cluster, and the rule engine service is connected via the MQTT protocol.  
-To ensure messages are not lost, the default `QoS` level is set to `QoS = 1`, meaning the message will be delivered **at least once**.
-
-For each message, multiple rules may match the message's topic, and a rule can have multiple destinations. The rule 
-engine will send an `ACK` back to the MQTT broker cluster only after the message has been delivered to all matched destinations.
-
-**NOTE**: The rule engine uses a plugin system, which allows users to implement customized plugins for delivering 
-messages to their target destinations. Therefore, the definition of "delivery" is user-defined.
-
-Currently, the rule engine includes built-in destinations for Kafka and development environments only. For the Kafka 
-destination, "delivery" is defined as the successful sending of the message to the Kafka cluster.
