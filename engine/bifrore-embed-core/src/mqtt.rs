@@ -1,5 +1,6 @@
 use crate::message::Message;
 use std::sync::Arc;
+#[cfg(feature = "mqtt")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -60,7 +61,7 @@ pub fn start_mqtt(
     topics: Vec<String>,
     handler: MessageHandler,
 ) -> Result<MqttAdapterHandle, MqttError> {
-    use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
+    use rumqttc::v5::{AsyncClient, MqttOptions};
     use std::time::Duration;
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -75,12 +76,18 @@ pub fn start_mqtt(
         };
 
         runtime.block_on(async move {
-            let mut mqtt_options = MqttOptions::new(config.client_id, config.host, config.port);
+            let mut mqtt_options =
+                MqttOptions::new(config.client_id.clone(), config.host.clone(), config.port);
             mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.into()));
             mqtt_options.set_clean_start(config.clean_start);
-            mqtt_options.set_session_expiry_interval(config.session_expiry_interval);
-            if let Some(username) = config.username {
-                mqtt_options.set_credentials(username, config.password.unwrap_or_default());
+            let mut connect_properties = rumqttc::v5::mqttbytes::v5::ConnectProperties::new();
+            connect_properties.session_expiry_interval = Some(config.session_expiry_interval);
+            mqtt_options.set_connect_properties(connect_properties);
+            if let Some(username) = config.username.as_ref() {
+                mqtt_options.set_credentials(
+                    username.clone(),
+                    config.password.clone().unwrap_or_default(),
+                );
             }
 
             let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
@@ -105,7 +112,7 @@ async fn subscribe_topics(
     for topic in topics {
         let shared = config.shared_subscription(topic);
         client
-            .subscribe(shared, rumqttc::v5::QoS::AtLeastOnce)
+            .subscribe(shared, rumqttc::v5::mqttbytes::QoS::AtLeastOnce)
             .await
             .map_err(|err| MqttError::StartFailed(err.to_string()))?;
     }
@@ -125,8 +132,9 @@ async fn run_event_loop(
             }
             event = event_loop.poll() => {
                 match event {
-                    Ok(Event::Incoming(Packet::Publish(publish))) => {
-                        let mut msg = Message::new(publish.topic, publish.payload.to_vec());
+                    Ok(rumqttc::v5::Event::Incoming(rumqttc::v5::mqttbytes::v5::Packet::Publish(publish))) => {
+                        let topic = String::from_utf8_lossy(&publish.topic).into_owned();
+                        let mut msg = Message::new(topic, publish.payload.to_vec());
                         msg.qos = publish.qos as u8;
                         msg.retain = publish.retain;
                         msg.dup = publish.dup;

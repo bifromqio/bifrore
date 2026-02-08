@@ -160,7 +160,7 @@ impl TopicTrie {
 
     fn remove(&mut self, filter: &str, rule_index: usize) {
         let levels: Vec<&str> = filter.split('/').collect();
-        self.remove_from_node(&mut self.root, &levels, 0, rule_index);
+        Self::remove_from_node(&mut self.root, &levels, 0, rule_index);
     }
 
     fn match_topic<'a>(
@@ -204,7 +204,6 @@ impl TopicTrie {
     }
 
     fn remove_from_node(
-        &mut self,
         node: &mut TrieNode,
         levels: &[&str],
         index: usize,
@@ -220,17 +219,17 @@ impl TopicTrie {
             "+" => node
                 .plus_child
                 .as_mut()
-                .map(|child| self.remove_from_node(child, levels, index + 1, rule_index))
+                .map(|child| Self::remove_from_node(child, levels, index + 1, rule_index))
                 .unwrap_or(false),
             "#" => node
                 .hash_child
                 .as_mut()
-                .map(|child| self.remove_from_node(child, levels, index + 1, rule_index))
+                .map(|child| Self::remove_from_node(child, levels, index + 1, rule_index))
                 .unwrap_or(false),
             _ => node
                 .children
                 .get_mut(level)
-                .map(|child| self.remove_from_node(child, levels, index + 1, rule_index))
+                .map(|child| Self::remove_from_node(child, levels, index + 1, rule_index))
                 .unwrap_or(false),
         };
 

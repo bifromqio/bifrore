@@ -3,7 +3,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlparser::ast::{
-    BinaryOperator, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement, TableFactor,
+    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, Query, Select,
+    SelectItem, SetExpr, Statement, TableFactor,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -73,7 +74,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
 }
 
 fn parse_query(query: Query) -> Result<(String, String, SelectSpec, Option<Expr>), RuleError> {
-    let select = match query.body {
+    let select = match *query.body {
         SetExpr::Select(select) => select,
         _ => return Err(RuleError::UnsupportedSql),
     };
@@ -259,13 +260,15 @@ fn evaluate_expr_value(expr: &Expr, ctx: &EvalContext) -> Option<Value> {
         }
         Expr::Nested(inner) => evaluate_expr_value(inner, ctx),
         Expr::Function(func) => evaluate_function(func, ctx),
-        Expr::Subscript { expr, subscript } => {
-            if let Expr::Identifier(Ident { value, .. }) = &**expr {
+        Expr::MapAccess { column, keys } => {
+            if let Expr::Identifier(Ident { value, .. }) = &**column {
                 if value == "properties" {
-                    if let Some(key) = evaluate_expr_value(subscript, ctx) {
-                        if let Value::String(key) = key {
-                            if let Some(val) = ctx.message.properties.get(&key) {
-                                return Some(Value::String(val.clone()));
+                    if let Some(first_key) = keys.first() {
+                        if let Some(key) = evaluate_expr_value(&first_key.key, ctx) {
+                            if let Value::String(key) = key {
+                                if let Some(val) = ctx.message.properties.get(&key) {
+                                    return Some(Value::String(val.clone()));
+                                }
                             }
                         }
                     }
@@ -360,13 +363,18 @@ fn evaluate_function(func: &sqlparser::ast::Function, ctx: &EvalContext) -> Opti
     let name = func.name.to_string().to_lowercase();
     match name.as_str() {
         "topic_level" => {
-            let args = func.args.clone();
+            let args = match &func.args {
+                FunctionArguments::List(list) => &list.args,
+                _ => return None,
+            };
+
             if args.len() != 2 {
                 return None;
             }
+
             let level = match &args[1] {
-                sqlparser::ast::FunctionArg::Unnamed(arg_expr) => match arg_expr {
-                    sqlparser::ast::FunctionArgExpr::Expr(expr) => {
+                FunctionArg::Unnamed(arg_expr) => match arg_expr {
+                    FunctionArgExpr::Expr(expr) => {
                         evaluate_expr_value(expr, ctx)?.as_u64()
                     }
                     _ => None,

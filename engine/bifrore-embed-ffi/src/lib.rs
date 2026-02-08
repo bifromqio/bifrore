@@ -208,9 +208,12 @@ pub extern "C" fn bre_start_mqtt(
         keep_alive_secs,
     };
 
-    let engine_ptr = engine as *mut BifroEngine;
+    let engine_addr = engine as usize;
+    let user_data_addr = user_data as usize;
     let handler: MessageHandler = std::sync::Arc::new(move |message: Message| {
-        let engine = unsafe { &mut *engine_ptr };
+        let engine_ptr = engine_addr as *mut BifroEngine;
+        let user_data_ptr = user_data_addr as *mut c_void;
+        let engine = unsafe { &*engine_ptr };
         let guard = engine.inner.lock().unwrap();
         let results = guard.evaluate(&message);
         drop(guard);
@@ -222,7 +225,7 @@ pub extern "C" fn bre_start_mqtt(
             let destinations_json = CString::new(destinations_json)
                 .unwrap_or_else(|_| CString::new("[]").unwrap());
             callback(
-                user_data,
+                user_data_ptr,
                 rule_id.as_ptr(),
                 result.message.payload.as_ptr(),
                 result.message.payload.len() as size_t,
