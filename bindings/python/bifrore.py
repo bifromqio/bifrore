@@ -4,24 +4,50 @@ from ctypes import c_char_p, c_void_p, c_int, c_uint16, c_uint32, c_size_t, c_bo
 
 
 class BifroRE:
-    def __init__(self, lib_path):
+    def __init__(
+        self,
+        lib_path,
+        rule_path,
+        host="127.0.0.1",
+        port=1883,
+        client_id="bifrore-embed",
+        group_name="bifrore-group",
+        username=None,
+        password=None,
+        clean_start=True,
+        session_expiry_interval=3600,
+        ordered=False,
+        ordered_prefix="",
+        keep_alive_secs=30,
+    ):
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
-        self.handle = self.lib.bre_create()
+        self.handle = self.lib.bre_create_with_rules(rule_path.encode("utf-8"))
+        if not self.handle:
+            raise RuntimeError("Failed to create engine with rule file")
         self._callback = None
         self._callback_c = None
         self._log_callback = None
         self._log_callback_c = None
+        self._mqtt_started = False
+        self._mqtt_config = {
+            "host": host,
+            "port": port,
+            "client_id": client_id,
+            "group_name": group_name,
+            "username": username,
+            "password": password,
+            "clean_start": clean_start,
+            "session_expiry_interval": session_expiry_interval,
+            "ordered": ordered,
+            "ordered_prefix": ordered_prefix,
+            "keep_alive_secs": keep_alive_secs,
+        }
 
     def _setup_signatures(self):
-        self.lib.bre_create.restype = c_void_p
+        self.lib.bre_create_with_rules.argtypes = [c_char_p]
+        self.lib.bre_create_with_rules.restype = c_void_p
         self.lib.bre_destroy.argtypes = [c_void_p]
-        self.lib.bre_load_rules_from_json.argtypes = [c_void_p, c_char_p]
-        self.lib.bre_load_rules_from_json.restype = c_int
-        self.lib.bre_eval.argtypes = [
-            c_void_p, c_char_p, ctypes.POINTER(ctypes.c_ubyte), c_size_t, c_void_p, c_void_p
-        ]
-        self.lib.bre_eval.restype = c_int
         self.lib.bre_start_mqtt.argtypes = [
             c_void_p,
             c_char_p,
@@ -52,9 +78,6 @@ class BifroRE:
         self.lib.bre_set_log_callback.argtypes = [c_void_p, c_void_p, c_int]
         self.lib.bre_set_log_callback.restype = c_int
 
-    def load_rules(self, path):
-        return self.lib.bre_load_rules_from_json(self.handle, path.encode("utf-8"))
-
     def on_message(self, handler, executor=None, loop=None):
         CALLBACK = ctypes.CFUNCTYPE(
             None,
@@ -79,6 +102,11 @@ class BifroRE:
 
         self._callback = handler
         self._callback_c = CALLBACK(_callback)
+        if not self._mqtt_started:
+            rc = self._start_mqtt()
+            if rc != 0:
+                raise RuntimeError(f"Failed to start MQTT, error code: {rc}")
+            self._mqtt_started = True
 
     def on_log(self, handler, min_level=3, executor=None, loop=None):
         LOG_CALLBACK = ctypes.CFUNCTYPE(
@@ -132,53 +160,28 @@ class BifroRE:
         self._log_callback_c = LOG_CALLBACK(_log_callback)
         return self.lib.bre_set_log_callback(self._log_callback_c, None, min_level)
 
-    def eval(self, topic, payload):
+    def _start_mqtt(self):
         if self._callback_c is None:
             raise RuntimeError("on_message handler not set")
-        buf = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
-        return self.lib.bre_eval(
-            self.handle,
-            topic.encode("utf-8"),
-            buf,
-            len(payload),
-            self._callback_c,
-            None,
-        )
-
-    def start_mqtt(
-        self,
-        host,
-        port,
-        client_id,
-        group_name,
-        username=None,
-        password=None,
-        clean_start=True,
-        session_expiry_interval=3600,
-        ordered=False,
-        ordered_prefix="",
-        keep_alive_secs=30,
-    ):
-        if self._callback_c is None:
-            raise RuntimeError("on_message handler not set")
+        cfg = self._mqtt_config
         return self.lib.bre_start_mqtt(
             self.handle,
-            host.encode("utf-8"),
-            port,
-            client_id.encode("utf-8"),
-            username.encode("utf-8") if username else None,
-            password.encode("utf-8") if password else None,
-            clean_start,
-            session_expiry_interval,
-            group_name.encode("utf-8"),
-            ordered,
-            ordered_prefix.encode("utf-8"),
-            keep_alive_secs,
+            cfg["host"].encode("utf-8"),
+            cfg["port"],
+            cfg["client_id"].encode("utf-8"),
+            cfg["username"].encode("utf-8") if cfg["username"] else None,
+            cfg["password"].encode("utf-8") if cfg["password"] else None,
+            cfg["clean_start"],
+            cfg["session_expiry_interval"],
+            cfg["group_name"].encode("utf-8"),
+            cfg["ordered"],
+            cfg["ordered_prefix"].encode("utf-8"),
+            cfg["keep_alive_secs"],
             self._callback_c,
             None,
         )
 
-    def stop_mqtt(self):
+    def _stop_mqtt(self):
         return self.lib.bre_stop_mqtt(self.handle)
 
     def metrics(self):
@@ -205,14 +208,16 @@ class BifroRE:
     def close(self):
         self.lib.bre_set_log_callback(None, None, 3)
         if self.handle:
+            self._stop_mqtt()
+            self._mqtt_started = False
+        if self.handle:
             self.lib.bre_destroy(self.handle)
             self.handle = None
 
 
 if __name__ == "__main__":
     # Example usage (adjust library path)
-    engine = BifroRE("/Users/kugejoe/Desktop/work/github/bifrore/build/libbifrore_embed.dylib")
+    engine = BifroRE("./libbifrore_embed.dylib", "./rule.json")
     engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
-    engine.load_rules("./rule.json")
-    engine.eval("data", b"{\"temp\": 30}")
+
     engine.close()

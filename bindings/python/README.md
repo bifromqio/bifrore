@@ -6,15 +6,20 @@ Usage example:
 ```
 from bifrore import BifroRE
 
-engine = BifroRE("/path/to/libbifrore_embed.so")
+engine = BifroRE(
+    "/path/to/libbifrore_embed.so",
+    "/path/to/rule.json",
+    host="127.0.0.1",
+    port=1883,
+)
 engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
 engine.on_log(
     lambda level, target, message, ts, thread_id, module_path, file, line:
         print(level, target, message, ts, thread_id, module_path, file, line),
     min_level=3
 )
-engine.load_rules("/path/to/rule.json")
-engine.start_mqtt("127.0.0.1", 1883, "client-1", "bifrore-group")
+...
+engine.close()
 ```
 
 Log levels: `1=ERROR`, `2=WARN`, `3=INFO`, `4=DEBUG`, `5=TRACE`.

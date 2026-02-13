@@ -33,10 +33,13 @@ public final class BifroRE implements AutoCloseable {
     private final String host;
     private final int port;
 
-    public BifroRE(String host, int port) {
+    public BifroRE(String host, int port, String ruleJsonPath) {
         this.host = host;
         this.port = port;
-        this.handle = nativeCreate();
+        this.handle = nativeCreateWithRules(ruleJsonPath);
+        if (this.handle == 0) {
+            throw new IllegalStateException("Failed to create engine with rule file");
+        }
         this.callbackHandle = 0;
         this.logCallbackHandle = 0;
         this.defaultMessageExecutor = Executors.newSingleThreadExecutor();
@@ -64,10 +67,6 @@ public final class BifroRE implements AutoCloseable {
         this.callbackHandle = nativeRegisterHandler(wrapped);
     }
 
-    public int loadRules(String ruleJsonPath) {
-        return nativeLoadRules(handle, ruleJsonPath);
-    }
-
     public int start() {
         return nativeStartMqtt(
             handle,
@@ -88,10 +87,6 @@ public final class BifroRE implements AutoCloseable {
 
     public int stop() {
         return nativeStopMqtt(handle);
-    }
-
-    public int eval(String topic, byte[] payload) {
-        return nativeEval(handle, topic, payload, callbackHandle);
     }
 
     public int onLog(LogHandler handler, int minLevel) {
@@ -145,10 +140,8 @@ public final class BifroRE implements AutoCloseable {
         defaultLogExecutor.shutdown();
     }
 
-    private static native long nativeCreate();
+    private static native long nativeCreateWithRules(String path);
     private static native void nativeDestroy(long handle);
-    private static native int nativeLoadRules(long handle, String path);
-    private static native int nativeEval(long handle, String topic, byte[] payload, long cbHandle);
     private static native int nativeStartMqtt(
         long handle,
         String host,

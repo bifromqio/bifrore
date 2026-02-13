@@ -160,13 +160,43 @@ pub extern "C" fn bre_create() -> *mut BifroEngine {
 }
 
 #[no_mangle]
+pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroEngine {
+    ensure_logger_initialized();
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+
+    let path = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = path.to_str() else {
+        return ptr::null_mut();
+    };
+
+    let mut rule_engine = RuleEngine::new();
+    if rule_engine.load_rules_from_json(path).is_err() {
+        return ptr::null_mut();
+    }
+
+    let engine = BifroEngine {
+        inner: Mutex::new(rule_engine),
+        adapter: None,
+    };
+    log::info!("Bifro engine created with rules from path={}", path);
+    Box::into_raw(Box::new(engine))
+}
+
+#[no_mangle]
 pub extern "C" fn bre_destroy(engine: *mut BifroEngine) {
     if engine.is_null() {
         return;
     }
-    log::info!("Bifro engine destroyed");
     unsafe {
-        drop(Box::from_raw(engine));
+        let mut boxed = Box::from_raw(engine);
+        if let Some(adapter) = boxed.adapter.take() {
+            let _ = adapter.stop();
+            log::info!("Bifro engine destroy requested MQTT stop");
+        }
+        log::info!("Bifro engine destroyed");
+        drop(boxed);
     }
 }
 
@@ -191,69 +221,6 @@ pub extern "C" fn bre_set_log_callback(
     state.user_data_addr = user_data as usize;
     state.min_level = min_level;
     log::info!("log callback updated; level={}", min_level as c_int);
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn bre_load_rules_from_json(
-    engine: *mut BifroEngine,
-    path: *const c_char,
-) -> c_int {
-    if engine.is_null() || path.is_null() {
-        return -1;
-    }
-    let path = unsafe { CStr::from_ptr(path) };
-    let Ok(path) = path.to_str() else { return -2 };
-    log::info!("loading rules from path={}", path);
-    let engine = unsafe { &mut *engine };
-    let mut guard = engine.inner.lock().unwrap();
-    match guard.load_rules_from_json(path) {
-        Ok(_) => 0,
-        Err(_) => -3,
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn bre_eval(
-    engine: *mut BifroEngine,
-    topic: *const c_char,
-    payload: *const u8,
-    payload_len: size_t,
-    callback: Option<BifroEvalCallback>,
-    user_data: *mut c_void,
-) -> c_int {
-    if engine.is_null() || topic.is_null() || payload.is_null() {
-        return -1;
-    }
-    let Some(callback) = callback else { return -2 };
-
-    let topic = unsafe { CStr::from_ptr(topic) };
-    let Ok(topic) = topic.to_str() else { return -3 };
-
-    let payload = unsafe { std::slice::from_raw_parts(payload, payload_len as usize) };
-    let message = Message::new(topic, payload.to_vec());
-    log::debug!("evaluating message topic={} payload_len={}", topic, payload_len);
-
-    let engine = unsafe { &mut *engine };
-    let guard = engine.inner.lock().unwrap();
-    let results = guard.evaluate(&message);
-    log::debug!("evaluation produced {} result(s)", results.len());
-
-    for result in results {
-        let rule_id = CString::new(result.rule_id).unwrap_or_else(|_| CString::new("").unwrap());
-        let destinations_json = serde_json::to_string(&result.destinations)
-            .unwrap_or_else(|_| "[]".to_string());
-        let destinations_json = CString::new(destinations_json)
-            .unwrap_or_else(|_| CString::new("[]").unwrap());
-
-        callback(
-            user_data,
-            rule_id.as_ptr(),
-            result.message.payload.as_ptr(),
-            result.message.payload.len() as size_t,
-            destinations_json.as_ptr(),
-        );
-    }
     0
 }
 

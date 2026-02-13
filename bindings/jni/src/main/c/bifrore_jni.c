@@ -4,16 +4,8 @@
 #include <string.h>
 
 // FFI functions from Rust cdylib
-extern void *bre_create(void);
+extern void *bre_create_with_rules(const char *path);
 extern void bre_destroy(void *engine);
-extern int bre_load_rules_from_json(void *engine, const char *path);
-extern int bre_eval(
-    void *engine,
-    const char *topic,
-    const unsigned char *payload,
-    size_t payload_len,
-    void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
-    void *user_data);
 extern int bre_start_mqtt(
     void *engine,
     const char *host,
@@ -138,10 +130,15 @@ static void call_java_log_handler(
     }
 }
 
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreate(JNIEnv *env, jclass cls) {
-    (void)env;
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithRules(JNIEnv *env, jclass cls, jstring path) {
     (void)cls;
-    return (jlong)bre_create();
+    if (path == NULL) {
+        return 0;
+    }
+    const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
+    void *engine = bre_create_with_rules(path_str);
+    (*env)->ReleaseStringUTFChars(env, path, path_str);
+    return (jlong)engine;
 }
 
 JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeDestroy(JNIEnv *env, jclass cls, jlong handle) {
@@ -150,45 +147,6 @@ JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeDestroy(JNIEnv *env, jclas
     if (handle != 0) {
         bre_destroy((void *)handle);
     }
-}
-
-JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeLoadRules(JNIEnv *env, jclass cls, jlong handle, jstring path) {
-    (void)cls;
-    if (handle == 0 || path == NULL) {
-        return -1;
-    }
-    const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
-    int rc = bre_load_rules_from_json((void *)handle, path_str);
-    (*env)->ReleaseStringUTFChars(env, path, path_str);
-    return rc;
-}
-
-JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeEval(
-    JNIEnv *env,
-    jclass cls,
-    jlong handle,
-    jstring topic,
-    jbyteArray payload,
-    jlong cb_handle) {
-    (void)cls;
-    if (handle == 0 || topic == NULL || payload == NULL || cb_handle == 0) {
-        return -1;
-    }
-    const char *topic_str = (*env)->GetStringUTFChars(env, topic, NULL);
-    jsize payload_len = (*env)->GetArrayLength(env, payload);
-    jbyte *payload_bytes = (*env)->GetByteArrayElements(env, payload, NULL);
-
-    int rc = bre_eval(
-        (void *)handle,
-        topic_str,
-        (const unsigned char *)payload_bytes,
-        (size_t)payload_len,
-        call_java_handler,
-        (void *)cb_handle);
-
-    (*env)->ReleaseByteArrayElements(env, payload, payload_bytes, JNI_ABORT);
-    (*env)->ReleaseStringUTFChars(env, topic, topic_str);
-    return rc;
 }
 
 JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(

@@ -12,3 +12,4 @@ This JNI layer calls into the Rust C ABI defined in `bifrore-embed-ffi`.
 - This is a scaffold; integrate into your Java build (Gradle/Maven) and generate JNI headers as needed.
 - Logging can be wired with `BifroRE.onLog(handler, minLevel)` where levels are `1=ERROR`, `2=WARN`, `3=INFO`, `4=DEBUG`, `5=TRACE`.
 - `onMessage` and `onLog` support custom `Executor`; if omitted, a default single-thread executor is used.
+- Rules are loaded during `new BifroRE(host, port, ruleJsonPath)`; `loadRules`/`eval` are not part of public API.
