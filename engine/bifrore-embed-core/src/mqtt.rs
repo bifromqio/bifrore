@@ -66,11 +66,18 @@ pub fn start_mqtt(
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
 
+    log::info!(
+        "starting MQTT adapter host={} port={} topics={}",
+        config.host,
+        config.port,
+        topics.len()
+    );
+
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
             Err(err) => {
-                eprintln!("Failed to create tokio runtime: {err}");
+                log::error!("failed to create tokio runtime: {err}");
                 return;
             }
         };
@@ -92,10 +99,11 @@ pub fn start_mqtt(
 
             let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
             if let Err(err) = subscribe_topics(&client, &config, &topics).await {
-                eprintln!("Failed to subscribe: {err:?}");
+                log::error!("failed to subscribe MQTT topics: {err:?}");
                 return;
             }
 
+            log::info!("MQTT subscriptions established");
             run_event_loop(&mut event_loop, handler, stop_rx).await;
         });
     });
@@ -111,6 +119,7 @@ async fn subscribe_topics(
 ) -> Result<(), MqttError> {
     for topic in topics {
         let shared = config.shared_subscription(topic);
+        log::debug!("subscribing MQTT topic filter={} shared={}", topic, shared);
         client
             .subscribe(shared, rumqttc::v5::mqttbytes::QoS::AtLeastOnce)
             .await
@@ -155,7 +164,7 @@ async fn run_event_loop(
                     }
                     Ok(_) => {}
                     Err(err) => {
-                        eprintln!("MQTT loop error: {err}");
+                        log::error!("MQTT event loop error: {err}");
                         break;
                     }
                 }

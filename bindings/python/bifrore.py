@@ -10,6 +10,8 @@ class BifroRE:
         self.handle = self.lib.bre_create()
         self._callback = None
         self._callback_c = None
+        self._log_callback = None
+        self._log_callback_c = None
 
     def _setup_signatures(self):
         self.lib.bre_create.restype = c_void_p
@@ -47,11 +49,13 @@ class BifroRE:
             ctypes.POINTER(ctypes.c_uint64),
         ]
         self.lib.bre_metrics_snapshot.restype = c_int
+        self.lib.bre_set_log_callback.argtypes = [c_void_p, c_void_p, c_int]
+        self.lib.bre_set_log_callback.restype = c_int
 
     def load_rules(self, path):
         return self.lib.bre_load_rules_from_json(self.handle, path.encode("utf-8"))
 
-    def on_message(self, handler):
+    def on_message(self, handler, executor=None, loop=None):
         CALLBACK = ctypes.CFUNCTYPE(
             None,
             c_void_p,
@@ -62,12 +66,71 @@ class BifroRE:
         )
 
         def _callback(user_data, rule_id, payload, payload_len, destinations_json):
+            _ = user_data
             payload_bytes = bytes(payload[: payload_len])
             destinations = json.loads(destinations_json.decode("utf-8"))
-            handler(rule_id.decode("utf-8"), payload_bytes, destinations)
+            args = (rule_id.decode("utf-8"), payload_bytes, destinations)
+            if loop is not None:
+                loop.call_soon_threadsafe(handler, *args)
+            elif executor is not None:
+                executor.submit(handler, *args)
+            else:
+                handler(*args)
 
         self._callback = handler
         self._callback_c = CALLBACK(_callback)
+
+    def on_log(self, handler, min_level=3, executor=None, loop=None):
+        LOG_CALLBACK = ctypes.CFUNCTYPE(
+            None,
+            c_void_p,
+            c_int,
+            c_char_p,
+            c_char_p,
+            ctypes.c_uint64,
+            c_char_p,
+            c_char_p,
+            c_char_p,
+            c_int,
+        )
+
+        if handler is None:
+            self._log_callback = None
+            self._log_callback_c = None
+            return self.lib.bre_set_log_callback(None, None, min_level)
+
+        def _log_callback(
+            user_data,
+            level,
+            target,
+            message,
+            timestamp_millis,
+            thread_id,
+            module_path,
+            file,
+            line,
+        ):
+            _ = user_data
+            args = (
+                level,
+                target.decode("utf-8") if target else "bifrore",
+                message.decode("utf-8") if message else "",
+                timestamp_millis,
+                thread_id.decode("utf-8") if thread_id else "unknown-thread",
+                module_path.decode("utf-8") if module_path else "",
+                file.decode("utf-8") if file else "",
+                line,
+            )
+            if loop is not None:
+                loop.call_soon_threadsafe(handler, *args)
+            elif executor is not None:
+                executor.submit(handler, *args)
+            else:
+                handler(*args)
+
+        self._log_callback = handler
+        self._log_callback_c = LOG_CALLBACK(_log_callback)
+        return self.lib.bre_set_log_callback(self._log_callback_c, None, min_level)
 
     def eval(self, topic, payload):
         if self._callback_c is None:
@@ -140,6 +203,7 @@ class BifroRE:
         }
 
     def close(self):
+        self.lib.bre_set_log_callback(None, None, 3)
         if self.handle:
             self.lib.bre_destroy(self.handle)
             self.handle = None
@@ -147,7 +211,7 @@ class BifroRE:
 
 if __name__ == "__main__":
     # Example usage (adjust library path)
-    engine = BifroRE("./libbifrore_embed.dylib")
+    engine = BifroRE("/Users/kugejoe/Desktop/work/github/bifrore/build/libbifrore_embed.dylib")
     engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
     engine.load_rules("./rule.json")
     engine.eval("data", b"{\"temp\": 30}")

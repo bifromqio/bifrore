@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 bifrore-embed-core = { path = "../bifrore-embed-core" }
 libc = "0.2"
 serde_json = "1.0"
+log = "0.4"
 
 [features]
 mqtt = ["bifrore-embed-core/mqtt"]
