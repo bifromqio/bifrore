@@ -1,6 +1,8 @@
 use crate::message::Message;
 use std::sync::Arc;
 #[cfg(feature = "mqtt")]
+use std::thread::JoinHandle;
+#[cfg(feature = "mqtt")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -10,6 +12,9 @@ pub struct MqttConfig {
     pub client_prefix: String,
     pub node_id: String,
     pub client_count: u16,
+    pub io_threads: u16,
+    pub eval_threads: u16,
+    pub queue_capacity: u16,
     pub username: Option<String>,
     pub password: Option<String>,
     pub clean_start: bool,
@@ -44,17 +49,28 @@ pub enum MqttError {
 
 pub struct MqttAdapterHandle {
     #[cfg(feature = "mqtt")]
-    stops: Vec<tokio::sync::oneshot::Sender<()>>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    #[cfg(feature = "mqtt")]
+    runtime_thread: Option<JoinHandle<()>>,
+    #[cfg(feature = "mqtt")]
+    eval_workers: Vec<JoinHandle<()>>,
 }
 
 impl MqttAdapterHandle {
-    pub fn stop(self) -> Result<(), MqttError> {
+    #[allow(unused_mut)]
+    pub fn stop(mut self) -> Result<(), MqttError> {
         #[cfg(feature = "mqtt")]
         {
-            for stop in self.stops {
+            if let Some(stop) = self.stop.take() {
                 let _ = stop.send(());
             }
-            return Ok(());
+            if let Some(runtime_thread) = self.runtime_thread.take() {
+                let _ = runtime_thread.join();
+            }
+            for worker in self.eval_workers.drain(..) {
+                let _ = worker.join();
+            }
+            Ok(())
         }
         #[cfg(not(feature = "mqtt"))]
         {
@@ -72,37 +88,55 @@ pub fn start_mqtt(
     use rumqttc::v5::{AsyncClient, MqttOptions};
     use std::time::Duration;
 
+    let client_count = config.client_count.max(1);
+    let io_threads = config.io_threads.max(1) as usize;
+    let eval_threads = config.eval_threads.max(1) as usize;
+    let queue_capacity = config.queue_capacity.max(1) as usize;
+
     log::info!(
-        "Starting MQTT adapter host={} port={} topics={} clients={}",
+        "starting MQTT adapter host={} port={} topics={} clients={} io_threads={} eval_threads={} queue_capacity={}",
         config.host,
         config.port,
         topics.len(),
-        config.client_count
+        client_count,
+        io_threads,
+        eval_threads,
+        queue_capacity
     );
 
-    let client_count = if config.client_count == 0 {
-        1
-    } else {
-        config.client_count
-    };
-    let mut stops = Vec::with_capacity(client_count as usize);
-    for index in 0..client_count {
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-        stops.push(stop_tx);
-        let config = config.clone();
-        let topics = topics.clone();
-        let handler = handler.clone();
+    let (queue_tx, queue_rx) = flume::bounded::<Message>(queue_capacity);
+    let mut eval_workers = Vec::with_capacity(eval_threads);
+    for _ in 0..eval_threads {
+        let rx = queue_rx.clone();
+        let eval_handler = handler.clone();
+        eval_workers.push(std::thread::spawn(move || {
+            while let Ok(message) = rx.recv() {
+                eval_handler(message);
+            }
+        }));
+    }
+    drop(queue_rx);
 
-        std::thread::spawn(move || {
-            let runtime = match tokio::runtime::Runtime::new() {
-                Ok(runtime) => runtime,
-                Err(err) => {
-                    log::error!("Failed to create tokio runtime for client index={index}: {err}");
-                    return;
-                }
-            };
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let runtime_thread = std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(io_threads)
+            .thread_name("bifrore-mqtt-io")
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                log::error!("failed to create shared tokio runtime: {err}");
+                return;
+            }
+        };
 
-            runtime.block_on(async move {
+        runtime.block_on(async move {
+            let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+            let mut tasks = Vec::with_capacity(client_count as usize);
+
+            for index in 0..client_count {
                 let client_id = config.client_id_for(index);
                 let mut mqtt_options =
                     MqttOptions::new(client_id.clone(), config.host.clone(), config.port);
@@ -118,21 +152,33 @@ pub fn start_mqtt(
                     );
                 }
 
-                let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
+                let (client, event_loop) = AsyncClient::new(mqtt_options, 10);
                 if let Err(err) = subscribe_topics(&client, &config, &topics).await {
                     log::error!(
                         "failed to subscribe MQTT topics for client_id={client_id}: {err:?}"
                     );
-                    return;
+                    continue;
                 }
 
                 log::info!("MQTT subscriptions established for client_id={client_id}");
-                run_event_loop(&mut event_loop, handler, stop_rx).await;
-            });
-        });
-    }
+                let tx = queue_tx.clone();
+                let shutdown_rx = shutdown_tx.subscribe();
+                tasks.push(tokio::spawn(run_event_loop(event_loop, tx, shutdown_rx)));
+            }
 
-    Ok(MqttAdapterHandle { stops })
+            let _ = stop_rx.await;
+            let _ = shutdown_tx.send(true);
+            for task in tasks {
+                let _ = task.await;
+            }
+        });
+    });
+
+    Ok(MqttAdapterHandle {
+        stop: Some(stop_tx),
+        runtime_thread: Some(runtime_thread),
+        eval_workers,
+    })
 }
 
 #[cfg(feature = "mqtt")]
@@ -154,14 +200,16 @@ async fn subscribe_topics(
 
 #[cfg(feature = "mqtt")]
 async fn run_event_loop(
-    event_loop: &mut rumqttc::v5::EventLoop,
-    handler: MessageHandler,
-    mut stop_rx: tokio::sync::oneshot::Receiver<()>,
+    mut event_loop: rumqttc::v5::EventLoop,
+    queue_tx: flume::Sender<Message>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
         tokio::select! {
-            _ = &mut stop_rx => {
-                break;
+            changed = shutdown_rx.changed() => {
+                if changed.is_ok() && *shutdown_rx.borrow() {
+                    break;
+                }
             }
             event = event_loop.poll() => {
                 match event {
@@ -184,7 +232,9 @@ async fn run_event_loop(
                                 msg.properties.insert(key, value);
                             }
                         }
-                        handler(msg);
+                        if queue_tx.send_async(msg).await.is_err() {
+                            break;
+                        }
                     }
                     Ok(_) => {}
                     Err(err) => {

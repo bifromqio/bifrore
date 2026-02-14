@@ -350,6 +350,11 @@ pub extern "C" fn bre_start_mqtt(
         client_prefix,
         node_id,
         client_count,
+        io_threads: 2,
+        eval_threads: std::thread::available_parallelism()
+            .map(|count| count.get().clamp(1, 4) as u16)
+            .unwrap_or(2),
+        queue_capacity: 4096,
         username,
         password,
         clean_start,
