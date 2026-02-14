@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BifroLogLevel {
+pub enum BifroRELogLevel {
     Error = 1,
     Warn = 2,
     Info = 3,
@@ -17,7 +17,7 @@ pub enum BifroLogLevel {
     Trace = 5,
 }
 
-pub type BifroLogCallback =
+pub type BifroRELogCallback =
     extern "C" fn(
         user_data: *mut c_void,
         level: c_int,
@@ -32,9 +32,9 @@ pub type BifroLogCallback =
 
 #[derive(Clone, Copy)]
 struct LoggerCallbackState {
-    callback: Option<BifroLogCallback>,
+    callback: Option<BifroRELogCallback>,
     user_data_addr: usize,
-    min_level: BifroLogLevel,
+    min_level: BifroRELogLevel,
 }
 
 impl Default for LoggerCallbackState {
@@ -42,7 +42,7 @@ impl Default for LoggerCallbackState {
         Self {
             callback: None,
             user_data_addr: 0,
-            min_level: BifroLogLevel::Info,
+            min_level: BifroRELogLevel::Info,
         }
     }
 }
@@ -55,15 +55,15 @@ fn logger_state() -> &'static RwLock<LoggerCallbackState> {
 struct FfiLogger;
 
 impl FfiLogger {
-    fn enabled_for(record_level: log::Level, min_level: BifroLogLevel) -> bool {
+    fn enabled_for(record_level: log::Level, min_level: BifroRELogLevel) -> bool {
         match min_level {
-            BifroLogLevel::Error => matches!(record_level, log::Level::Error),
-            BifroLogLevel::Warn => matches!(record_level, log::Level::Error | log::Level::Warn),
-            BifroLogLevel::Info => {
+            BifroRELogLevel::Error => matches!(record_level, log::Level::Error),
+            BifroRELogLevel::Warn => matches!(record_level, log::Level::Error | log::Level::Warn),
+            BifroRELogLevel::Info => {
                 matches!(record_level, log::Level::Error | log::Level::Warn | log::Level::Info)
             }
-            BifroLogLevel::Debug => !matches!(record_level, log::Level::Trace),
-            BifroLogLevel::Trace => true,
+            BifroRELogLevel::Debug => !matches!(record_level, log::Level::Trace),
+            BifroRELogLevel::Trace => true,
         }
     }
 }
@@ -94,11 +94,11 @@ impl log::Log for FfiLogger {
                 .file()
                 .map(|value| CString::new(value.replace('\0', "\\0")).unwrap_or_else(|_| CString::new("file-encoding-error").unwrap()));
             let level = match record.level() {
-                log::Level::Error => BifroLogLevel::Error as c_int,
-                log::Level::Warn => BifroLogLevel::Warn as c_int,
-                log::Level::Info => BifroLogLevel::Info as c_int,
-                log::Level::Debug => BifroLogLevel::Debug as c_int,
-                log::Level::Trace => BifroLogLevel::Trace as c_int,
+                log::Level::Error => BifroRELogLevel::Error as c_int,
+                log::Level::Warn => BifroRELogLevel::Warn as c_int,
+                log::Level::Info => BifroRELogLevel::Info as c_int,
+                log::Level::Debug => BifroRELogLevel::Debug as c_int,
+                log::Level::Trace => BifroRELogLevel::Trace as c_int,
             };
             let user_data_ptr = state.user_data_addr as *mut c_void;
             let timestamp_millis = SystemTime::now()
@@ -134,8 +134,17 @@ fn ensure_logger_initialized() {
     });
 }
 
+fn generate_default_node_id() -> String {
+    let pid = std::process::id();
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    format!("node_{}_{}", pid, millis)
+}
+
 #[repr(C)]
-pub struct BifroEngine {
+pub struct BifroRE {
     inner: Mutex<RuleEngine>,
     adapter: Option<MqttAdapterHandle>,
 }
@@ -149,9 +158,9 @@ pub type BifroEvalCallback = extern "C" fn(
 );
 
 #[no_mangle]
-pub extern "C" fn bre_create() -> *mut BifroEngine {
+pub extern "C" fn bre_create() -> *mut BifroRE {
     ensure_logger_initialized();
-    let engine = BifroEngine {
+    let engine = BifroRE {
         inner: Mutex::new(RuleEngine::new()),
         adapter: None,
     };
@@ -160,7 +169,7 @@ pub extern "C" fn bre_create() -> *mut BifroEngine {
 }
 
 #[no_mangle]
-pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroEngine {
+pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroRE {
     ensure_logger_initialized();
     if path.is_null() {
         return ptr::null_mut();
@@ -176,16 +185,16 @@ pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroEngine
         return ptr::null_mut();
     }
 
-    let engine = BifroEngine {
+    let engine = BifroRE {
         inner: Mutex::new(rule_engine),
         adapter: None,
     };
-    log::info!("Bifro engine created with rules from path={}", path);
+    log::info!("BifroRE created with rules from path={}", path);
     Box::into_raw(Box::new(engine))
 }
 
 #[no_mangle]
-pub extern "C" fn bre_destroy(engine: *mut BifroEngine) {
+pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
     if engine.is_null() {
         return;
     }
@@ -193,26 +202,26 @@ pub extern "C" fn bre_destroy(engine: *mut BifroEngine) {
         let mut boxed = Box::from_raw(engine);
         if let Some(adapter) = boxed.adapter.take() {
             let _ = adapter.stop();
-            log::info!("Bifro engine destroy requested MQTT stop");
+            log::info!("BifroRE destroy requested MQTT stop");
         }
-        log::info!("Bifro engine destroyed");
+        log::info!("BifroRE destroyed");
         drop(boxed);
     }
 }
 
 #[no_mangle]
 pub extern "C" fn bre_set_log_callback(
-    callback: Option<BifroLogCallback>,
+    callback: Option<BifroRELogCallback>,
     user_data: *mut c_void,
     min_level: c_int,
 ) -> c_int {
     ensure_logger_initialized();
     let min_level = match min_level {
-        1 => BifroLogLevel::Error,
-        2 => BifroLogLevel::Warn,
-        3 => BifroLogLevel::Info,
-        4 => BifroLogLevel::Debug,
-        5 => BifroLogLevel::Trace,
+        1 => BifroRELogLevel::Error,
+        2 => BifroRELogLevel::Warn,
+        3 => BifroRELogLevel::Info,
+        4 => BifroRELogLevel::Debug,
+        5 => BifroRELogLevel::Trace,
         _ => return -1,
     };
 
@@ -226,7 +235,7 @@ pub extern "C" fn bre_set_log_callback(
 
 #[no_mangle]
 pub extern "C" fn bre_metrics_snapshot(
-    engine: *const BifroEngine,
+    engine: *const BifroRE,
     eval_count: *mut u64,
     eval_error_count: *mut u64,
     eval_total_nanos: *mut u64,
@@ -256,10 +265,12 @@ pub extern "C" fn bre_metrics_snapshot(
 
 #[no_mangle]
 pub extern "C" fn bre_start_mqtt(
-    engine: *mut BifroEngine,
+    engine: *mut BifroRE,
     host: *const c_char,
     port: u16,
-    client_id: *const c_char,
+    client_prefix: *const c_char,
+    node_id: *const c_char,
+    client_count: u16,
     username: *const c_char,
     password: *const c_char,
     clean_start: bool,
@@ -273,7 +284,7 @@ pub extern "C" fn bre_start_mqtt(
 ) -> c_int {
     if engine.is_null()
         || host.is_null()
-        || client_id.is_null()
+        || client_prefix.is_null()
         || group_name.is_null()
         || ordered_prefix.is_null()
     {
@@ -282,14 +293,14 @@ pub extern "C" fn bre_start_mqtt(
     let Some(callback) = callback else { return -2 };
 
     let host = unsafe { CStr::from_ptr(host) };
-    let client_id = unsafe { CStr::from_ptr(client_id) };
+    let client_prefix = unsafe { CStr::from_ptr(client_prefix) };
     let group_name = unsafe { CStr::from_ptr(group_name) };
     let ordered_prefix = unsafe { CStr::from_ptr(ordered_prefix) };
     let host = match host.to_str() {
         Ok(val) => val.to_string(),
         Err(_) => return -3,
     };
-    let client_id = match client_id.to_str() {
+    let client_prefix = match client_prefix.to_str() {
         Ok(val) => val.to_string(),
         Err(_) => return -3,
     };
@@ -318,11 +329,27 @@ pub extern "C" fn bre_start_mqtt(
             .ok()
             .map(|v| v.to_string())
     };
+    let node_id = if node_id.is_null() {
+        generate_default_node_id()
+    } else {
+        let parsed = unsafe { CStr::from_ptr(node_id) }
+            .to_str()
+            .ok()
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        if parsed.is_empty() {
+            generate_default_node_id()
+        } else {
+            parsed
+        }
+    };
 
     let config = MqttConfig {
         host,
         port,
-        client_id,
+        client_prefix,
+        node_id,
+        client_count,
         username,
         password,
         clean_start,
@@ -333,16 +360,18 @@ pub extern "C" fn bre_start_mqtt(
         keep_alive_secs,
     };
     log::info!(
-        "starting MQTT from FFI host={} port={} client_id={}",
+        "Starting MQTT from FFI host={} port={} client_prefix={} node_id={} clients={}",
         config.host,
         config.port,
-        config.client_id
+        config.client_prefix,
+        config.node_id,
+        if config.client_count == 0 { 1 } else { config.client_count }
     );
 
     let engine_addr = engine as usize;
     let user_data_addr = user_data as usize;
     let handler: MessageHandler = std::sync::Arc::new(move |message: Message| {
-        let engine_ptr = engine_addr as *mut BifroEngine;
+        let engine_ptr = engine_addr as *mut BifroRE;
         let user_data_ptr = user_data_addr as *mut c_void;
         let engine = unsafe { &*engine_ptr };
         let guard = engine.inner.lock().unwrap();
@@ -380,7 +409,7 @@ pub extern "C" fn bre_start_mqtt(
 }
 
 #[no_mangle]
-pub extern "C" fn bre_stop_mqtt(engine: *mut BifroEngine) -> c_int {
+pub extern "C" fn bre_stop_mqtt(engine: *mut BifroRE) -> c_int {
     if engine.is_null() {
         return -1;
     }

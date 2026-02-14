@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct MqttConfig {
     pub host: String,
     pub port: u16,
-    pub client_id: String,
+    pub client_prefix: String,
+    pub node_id: String,
+    pub client_count: u16,
     pub username: Option<String>,
     pub password: Option<String>,
     pub clean_start: bool,
@@ -26,6 +28,10 @@ impl MqttConfig {
             format!("$share/{}/{}", self.group_name, topic_filter)
         }
     }
+
+    pub fn client_id_for(&self, index: u16) -> String {
+        format!("{}_{}_{}", self.node_id, self.client_prefix, index)
+    }
 }
 
 pub type MessageHandler = Arc<dyn Fn(Message) + Send + Sync + 'static>;
@@ -38,14 +44,16 @@ pub enum MqttError {
 
 pub struct MqttAdapterHandle {
     #[cfg(feature = "mqtt")]
-    stop: tokio::sync::oneshot::Sender<()>,
+    stops: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl MqttAdapterHandle {
     pub fn stop(self) -> Result<(), MqttError> {
         #[cfg(feature = "mqtt")]
         {
-            let _ = self.stop.send(());
+            for stop in self.stops {
+                let _ = stop.send(());
+            }
             return Ok(());
         }
         #[cfg(not(feature = "mqtt"))]
@@ -64,51 +72,67 @@ pub fn start_mqtt(
     use rumqttc::v5::{AsyncClient, MqttOptions};
     use std::time::Duration;
 
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-
     log::info!(
-        "starting MQTT adapter host={} port={} topics={}",
+        "Starting MQTT adapter host={} port={} topics={} clients={}",
         config.host,
         config.port,
-        topics.len()
+        topics.len(),
+        config.client_count
     );
 
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                log::error!("failed to create tokio runtime: {err}");
-                return;
-            }
-        };
+    let client_count = if config.client_count == 0 {
+        1
+    } else {
+        config.client_count
+    };
+    let mut stops = Vec::with_capacity(client_count as usize);
+    for index in 0..client_count {
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        stops.push(stop_tx);
+        let config = config.clone();
+        let topics = topics.clone();
+        let handler = handler.clone();
 
-        runtime.block_on(async move {
-            let mut mqtt_options =
-                MqttOptions::new(config.client_id.clone(), config.host.clone(), config.port);
-            mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.into()));
-            mqtt_options.set_clean_start(config.clean_start);
-            let mut connect_properties = rumqttc::v5::mqttbytes::v5::ConnectProperties::new();
-            connect_properties.session_expiry_interval = Some(config.session_expiry_interval);
-            mqtt_options.set_connect_properties(connect_properties);
-            if let Some(username) = config.username.as_ref() {
-                mqtt_options.set_credentials(
-                    username.clone(),
-                    config.password.clone().unwrap_or_default(),
-                );
-            }
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Runtime::new() {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    log::error!("Failed to create tokio runtime for client index={index}: {err}");
+                    return;
+                }
+            };
 
-            let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
-            if let Err(err) = subscribe_topics(&client, &config, &topics).await {
-                log::error!("failed to subscribe MQTT topics: {err:?}");
-                return;
-            }
+            runtime.block_on(async move {
+                let client_id = config.client_id_for(index);
+                let mut mqtt_options =
+                    MqttOptions::new(client_id.clone(), config.host.clone(), config.port);
+                mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.into()));
+                mqtt_options.set_clean_start(config.clean_start);
+                let mut connect_properties = rumqttc::v5::mqttbytes::v5::ConnectProperties::new();
+                connect_properties.session_expiry_interval = Some(config.session_expiry_interval);
+                mqtt_options.set_connect_properties(connect_properties);
+                if let Some(username) = config.username.as_ref() {
+                    mqtt_options.set_credentials(
+                        username.clone(),
+                        config.password.clone().unwrap_or_default(),
+                    );
+                }
 
-            log::info!("MQTT subscriptions established");
-            run_event_loop(&mut event_loop, handler, stop_rx).await;
+                let (client, mut event_loop) = AsyncClient::new(mqtt_options, 10);
+                if let Err(err) = subscribe_topics(&client, &config, &topics).await {
+                    log::error!(
+                        "failed to subscribe MQTT topics for client_id={client_id}: {err:?}"
+                    );
+                    return;
+                }
+
+                log::info!("MQTT subscriptions established for client_id={client_id}");
+                run_event_loop(&mut event_loop, handler, stop_rx).await;
+            });
         });
-    });
+    }
 
-    Ok(MqttAdapterHandle { stop: stop_tx })
+    Ok(MqttAdapterHandle { stops })
 }
 
 #[cfg(feature = "mqtt")]

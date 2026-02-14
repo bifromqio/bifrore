@@ -11,6 +11,9 @@ engine = BifroRE(
     "/path/to/rule.json",
     host="127.0.0.1",
     port=1883,
+    client_prefix="bifrore-embed",
+    node_id=None,
+    client_count=2,
 )
 engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
 engine.on_log(

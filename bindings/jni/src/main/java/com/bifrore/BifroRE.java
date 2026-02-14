@@ -32,10 +32,27 @@ public final class BifroRE implements AutoCloseable {
     private final ExecutorService defaultLogExecutor;
     private final String host;
     private final int port;
+    private final String clientPrefix;
+    private final String nodeId;
+    private final int clientCount;
 
     public BifroRE(String host, int port, String ruleJsonPath) {
+        this(host, port, ruleJsonPath, "bifrore-embed", null, 1);
+    }
+
+    public BifroRE(
+        String host,
+        int port,
+        String ruleJsonPath,
+        String clientPrefix,
+        String nodeId,
+        int clientCount
+    ) {
         this.host = host;
         this.port = port;
+        this.clientPrefix = clientPrefix;
+        this.nodeId = nodeId;
+        this.clientCount = clientCount;
         this.handle = nativeCreateWithRules(ruleJsonPath);
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
@@ -72,7 +89,9 @@ public final class BifroRE implements AutoCloseable {
             handle,
             host,
             port,
-            "bifrore-embed",
+            clientPrefix,
+            nodeId,
+            clientCount,
             null,
             null,
             true,
@@ -146,7 +165,9 @@ public final class BifroRE implements AutoCloseable {
         long handle,
         String host,
         int port,
-        String clientId,
+        String clientPrefix,
+        String nodeId,
+        int clientCount,
         String username,
         String password,
         boolean cleanStart,
