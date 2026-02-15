@@ -276,11 +276,11 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             sqlparser::ast::Value::Boolean(b) => EvalExprPlan::Const(Value::Bool(*b)),
             _ => EvalExprPlan::Unknown(expr.clone()),
         },
-        Expr::BinaryOp { left, op, right } => EvalExprPlan::Binary {
-            left: Box::new(compile_expr_plan(left)),
-            op: op.clone(),
-            right: Box::new(compile_expr_plan(right)),
-        },
+        Expr::BinaryOp { left, op, right } => {
+            let left_plan = compile_expr_plan(left);
+            let right_plan = compile_expr_plan(right);
+            fold_binary_plan(left_plan, op.clone(), right_plan)
+        }
         Expr::Nested(inner) => compile_expr_plan(inner),
         Expr::Function(func) => {
             let name = func.name.to_string().to_lowercase();
@@ -322,6 +322,47 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             EvalExprPlan::Unknown(expr.clone())
         }
         _ => EvalExprPlan::Unknown(expr.clone()),
+    }
+}
+
+fn fold_binary_plan(left: EvalExprPlan, op: BinaryOperator, right: EvalExprPlan) -> EvalExprPlan {
+    if let Some(folded) = fold_const_binary(&left, &op, &right) {
+        return EvalExprPlan::Const(folded);
+    }
+
+    EvalExprPlan::Binary {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    }
+}
+
+fn fold_const_binary(left: &EvalExprPlan, op: &BinaryOperator, right: &EvalExprPlan) -> Option<Value> {
+    let (EvalExprPlan::Const(left), EvalExprPlan::Const(right)) = (left, right) else {
+        return None;
+    };
+
+    match op {
+        BinaryOperator::Plus
+        | BinaryOperator::Minus
+        | BinaryOperator::Multiply
+        | BinaryOperator::Divide => evaluate_arithmetic(left, right, op),
+        BinaryOperator::Gt
+        | BinaryOperator::GtEq
+        | BinaryOperator::Lt
+        | BinaryOperator::LtEq
+        | BinaryOperator::Eq
+        | BinaryOperator::NotEq => compare_values(left, right, op).map(Value::Bool),
+        BinaryOperator::And | BinaryOperator::Or => {
+            let l = left.as_bool()?;
+            let r = right.as_bool()?;
+            Some(Value::Bool(match op {
+                BinaryOperator::And => l && r,
+                BinaryOperator::Or => l || r,
+                _ => return None,
+            }))
+        }
+        _ => None,
     }
 }
 
@@ -883,5 +924,36 @@ mod tests {
 
         message.qos = 0;
         assert!(evaluate_rule(&compiled, &message).is_none());
+    }
+
+    #[test]
+    fn constant_folding_in_where_plan() {
+        let rule = RuleDefinition {
+            expression: "select * from data where temp > 25 + 3".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+
+        let where_plan = compiled.where_plan.expect("where plan");
+        match where_plan {
+            EvalExprPlan::Binary { left: _, op: _, right } => {
+                assert_eq!(*right, EvalExprPlan::Const(Value::from(28.0)));
+            }
+            _ => panic!("expected binary where plan"),
+        }
+    }
+
+    #[test]
+    fn constant_folding_full_boolean_expression() {
+        let rule = RuleDefinition {
+            expression: "select * from data where (25 + 3) = 28".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        assert_eq!(compiled.where_plan, Some(EvalExprPlan::Const(Value::Bool(true))));
+
+        let payload = serde_json::json!({"temp": 10});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert!(evaluate_rule(&compiled, &message).is_some());
     }
 }
