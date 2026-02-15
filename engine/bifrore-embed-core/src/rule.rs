@@ -3,6 +3,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, Query, Select,
     SelectItem, SetExpr, Statement, TableFactor,
@@ -16,7 +17,7 @@ pub struct RuleDefinition {
     pub destinations: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct CompiledRule {
     pub id: String,
     pub topic_filter: String,
@@ -26,6 +27,7 @@ pub struct CompiledRule {
     pub where_expr: Option<Expr>,
     pub where_plan: Option<EvalExprPlan>,
     pub fast_where: Option<FastPredicate>,
+    pub fast_path_profile: FastPathProfile,
     pub destinations: Vec<String>,
 }
 
@@ -77,15 +79,23 @@ pub enum EvalExprPlan {
     Unknown(Expr),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum FastPredicate {
     Compare {
         field: FastField,
         op: FastCmpOp,
         value: FastValue,
     },
-    And(Box<FastPredicate>, Box<FastPredicate>),
-    Or(Box<FastPredicate>, Box<FastPredicate>),
+    And {
+        left: Box<FastPredicate>,
+        right: Box<FastPredicate>,
+        profile: BranchProfile,
+    },
+    Or {
+        left: Box<FastPredicate>,
+        right: Box<FastPredicate>,
+        profile: BranchProfile,
+    },
     Const(bool),
 }
 
@@ -117,6 +127,33 @@ pub enum FastValue {
     Number(f64),
     String(String),
     Bool(bool),
+}
+
+#[derive(Debug, Default)]
+pub struct FastPathProfile {
+    enabled: AtomicBool,
+    attempts: AtomicU64,
+    misses: AtomicU64,
+    downgrade_logged: AtomicBool,
+}
+
+impl FastPathProfile {
+    fn new() -> Self {
+        Self {
+            enabled: AtomicBool::new(true),
+            attempts: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            downgrade_logged: AtomicBool::new(false),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct BranchProfile {
+    left_true: AtomicU64,
+    left_false: AtomicU64,
+    right_true: AtomicU64,
+    right_false: AtomicU64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -169,6 +206,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         where_expr,
         where_plan,
         fast_where,
+        fast_path_profile: FastPathProfile::new(),
         destinations: rule.destinations,
     })
 }
@@ -392,8 +430,16 @@ fn compile_fast_predicate(plan: &EvalExprPlan) -> Option<FastPredicate> {
             let left = compile_fast_predicate(left)?;
             let right = compile_fast_predicate(right)?;
             Some(match op {
-                BinaryOperator::And => FastPredicate::And(Box::new(left), Box::new(right)),
-                BinaryOperator::Or => FastPredicate::Or(Box::new(left), Box::new(right)),
+                BinaryOperator::And => FastPredicate::And {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    profile: BranchProfile::default(),
+                },
+                BinaryOperator::Or => FastPredicate::Or {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    profile: BranchProfile::default(),
+                },
                 _ => return None,
             })
         }
@@ -429,11 +475,14 @@ fn compile_fast_field(plan: &EvalExprPlan) -> Option<FastField> {
         EvalExprPlan::MetaClientId => Some(FastField::MetaClientId),
         EvalExprPlan::MetaUsername => Some(FastField::MetaUsername),
         EvalExprPlan::TopicLevel { level } => {
-            let value = compile_fast_const(level)?;
-            match value {
-                FastValue::Number(number) if number >= 0.0 => Some(FastField::TopicLevel(number as u64)),
-                _ => None,
+            let raw = compile_fast_const(level)?;
+            let FastValue::Number(number) = raw else {
+                return None;
+            };
+            if number < 0.0 || number.fract() != 0.0 || number > u64::MAX as f64 {
+                return None;
             }
+            Some(FastField::TopicLevel(number as u64))
         }
         EvalExprPlan::PropertiesKey { key } => {
             let value = compile_fast_const(key)?;
@@ -496,10 +545,37 @@ pub(crate) fn evaluate_rule_with_payload(
     };
 
     if let Some(fast_where) = &rule.fast_where {
-        if !evaluate_fast_predicate(fast_where, &context).unwrap_or(false) {
-            return None;
+        if rule.fast_path_profile.enabled.load(Ordering::Relaxed) {
+            rule.fast_path_profile
+                .attempts
+                .fetch_add(1, Ordering::Relaxed);
+            match evaluate_fast_predicate(fast_where, &context) {
+                Some(true) => {}
+                Some(false) => return None,
+                None => {
+                    let misses = rule.fast_path_profile.misses.fetch_add(1, Ordering::Relaxed) + 1;
+                    let attempts = rule.fast_path_profile.attempts.load(Ordering::Relaxed);
+                    if attempts >= 128 && misses.saturating_mul(100) >= attempts.saturating_mul(90) {
+                        rule.fast_path_profile.enabled.store(false, Ordering::Relaxed);
+                        if !rule
+                            .fast_path_profile
+                            .downgrade_logged
+                            .swap(true, Ordering::Relaxed)
+                        {
+                            log::warn!(
+                                "downgrading fast predicate for rule_id={} due to high miss ratio {}/{}",
+                                rule.id,
+                                misses,
+                                attempts
+                            );
+                        }
+                    }
+                }
+            }
         }
-    } else if let Some(plan) = &rule.where_plan {
+    }
+
+    if let Some(plan) = &rule.where_plan {
         if !evaluate_plan_bool(plan, &context).unwrap_or(false) {
             return None;
         }
@@ -556,16 +632,116 @@ enum RuntimeValue<'a> {
 fn evaluate_fast_predicate(pred: &FastPredicate, ctx: &EvalContext) -> Option<bool> {
     match pred {
         FastPredicate::Const(value) => Some(*value),
-        FastPredicate::And(left, right) => {
-            Some(evaluate_fast_predicate(left, ctx)? && evaluate_fast_predicate(right, ctx)?)
-        }
-        FastPredicate::Or(left, right) => {
-            Some(evaluate_fast_predicate(left, ctx)? || evaluate_fast_predicate(right, ctx)?)
-        }
+        FastPredicate::And { left, right, profile } => evaluate_fast_and(left, right, profile, ctx),
+        FastPredicate::Or { left, right, profile } => evaluate_fast_or(left, right, profile, ctx),
         FastPredicate::Compare { field, op, value } => {
             let runtime_value = evaluate_fast_field(field, ctx)?;
             compare_runtime_value(&runtime_value, value, op)
         }
+    }
+}
+
+fn evaluate_fast_and(
+    left: &FastPredicate,
+    right: &FastPredicate,
+    profile: &BranchProfile,
+    ctx: &EvalContext,
+) -> Option<bool> {
+    let left_total = profile.left_true.load(Ordering::Relaxed) + profile.left_false.load(Ordering::Relaxed);
+    let right_total = profile.right_true.load(Ordering::Relaxed) + profile.right_false.load(Ordering::Relaxed);
+    let left_false_rate = if left_total == 0 {
+        0.5
+    } else {
+        profile.left_false.load(Ordering::Relaxed) as f64 / left_total as f64
+    };
+    let right_false_rate = if right_total == 0 {
+        0.5
+    } else {
+        profile.right_false.load(Ordering::Relaxed) as f64 / right_total as f64
+    };
+    let right_first = right_false_rate > left_false_rate;
+
+    if right_first {
+        let first = evaluate_fast_predicate(right, ctx)?;
+        if first {
+            profile.right_true.fetch_add(1, Ordering::Relaxed);
+        } else {
+            profile.right_false.fetch_add(1, Ordering::Relaxed);
+            return Some(false);
+        }
+        let second = evaluate_fast_predicate(left, ctx)?;
+        if second {
+            profile.left_true.fetch_add(1, Ordering::Relaxed);
+        } else {
+            profile.left_false.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(second)
+    } else {
+        let first = evaluate_fast_predicate(left, ctx)?;
+        if first {
+            profile.left_true.fetch_add(1, Ordering::Relaxed);
+        } else {
+            profile.left_false.fetch_add(1, Ordering::Relaxed);
+            return Some(false);
+        }
+        let second = evaluate_fast_predicate(right, ctx)?;
+        if second {
+            profile.right_true.fetch_add(1, Ordering::Relaxed);
+        } else {
+            profile.right_false.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(second)
+    }
+}
+
+fn evaluate_fast_or(
+    left: &FastPredicate,
+    right: &FastPredicate,
+    profile: &BranchProfile,
+    ctx: &EvalContext,
+) -> Option<bool> {
+    let left_total = profile.left_true.load(Ordering::Relaxed) + profile.left_false.load(Ordering::Relaxed);
+    let right_total = profile.right_true.load(Ordering::Relaxed) + profile.right_false.load(Ordering::Relaxed);
+    let left_true_rate = if left_total == 0 {
+        0.5
+    } else {
+        profile.left_true.load(Ordering::Relaxed) as f64 / left_total as f64
+    };
+    let right_true_rate = if right_total == 0 {
+        0.5
+    } else {
+        profile.right_true.load(Ordering::Relaxed) as f64 / right_total as f64
+    };
+    let right_first = right_true_rate > left_true_rate;
+
+    if right_first {
+        let first = evaluate_fast_predicate(right, ctx)?;
+        if first {
+            profile.right_true.fetch_add(1, Ordering::Relaxed);
+            return Some(true);
+        }
+        profile.right_false.fetch_add(1, Ordering::Relaxed);
+        let second = evaluate_fast_predicate(left, ctx)?;
+        if second {
+            profile.left_true.fetch_add(1, Ordering::Relaxed);
+        } else {
+            profile.left_false.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(second)
+    } else {
+        let first = evaluate_fast_predicate(left, ctx)?;
+        if first {
+            profile.left_true.fetch_add(1, Ordering::Relaxed);
+            return Some(true);
+        }
+        profile.left_false.fetch_add(1, Ordering::Relaxed);
+        let second = evaluate_fast_predicate(right, ctx)?;
+        if second {
+            profile.right_true.fetch_add(1, Ordering::Relaxed);
+        } else {
+            profile.right_false.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(second)
     }
 }
 
@@ -672,7 +848,7 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> 
             }
         }
         EvalExprPlan::TopicLevel { level } => {
-            let level_value = evaluate_plan_value(level, ctx)?.as_u64()?;
+            let level_value = value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?)?;
             let topic_parts: Vec<&str> = ctx.message.topic.split('/').collect();
             let index = if level_value == 0 {
                 0
@@ -737,6 +913,17 @@ fn compare_values(left: &Value, right: &Value, op: &BinaryOperator) -> Option<bo
     }
 }
 
+fn value_to_non_negative_u64(value: &Value) -> Option<u64> {
+    if let Some(raw) = value.as_u64() {
+        return Some(raw);
+    }
+    let number = value.as_f64()?;
+    if number < 0.0 || number.fract() != 0.0 || number > u64::MAX as f64 {
+        return None;
+    }
+    Some(number as u64)
+}
+
 fn derive_alias(expr: &Expr) -> String {
     match expr {
         Expr::Identifier(Ident { value, .. }) => value.clone(),
@@ -754,8 +941,24 @@ fn normalize_topic(topic: &str) -> String {
 }
 
 fn normalize_rule_sql(sql: &str) -> String {
-    let re = Regex::new(r"(?i)from\\s+'([^']+)'").expect("regex");
-    re.replace(sql, r#"from "$1""#).to_string()
+    let quoted = Regex::new(r"(?i)\bfrom\s+'([^']+)'").expect("regex");
+    let normalized = quoted.replace(sql, r#"from "$1""#).to_string();
+
+    let bare = Regex::new(r#"(?i)\bfrom\s+([^\s,()]+)"#).expect("regex");
+    bare.replace(&normalized, |caps: &regex::Captures<'_>| {
+        let token = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        if token.starts_with('"')
+            || token.starts_with('\'')
+            || !(token.contains('/') || token.contains('+') || token.contains('#'))
+        {
+            caps.get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default()
+        } else {
+            format!(r#"from "{}""#, token)
+        }
+    })
+    .to_string()
 }
 
 pub fn match_topic(filter: &str, topic: &str) -> bool {
@@ -955,5 +1158,67 @@ mod tests {
         let payload = serde_json::json!({"temp": 10});
         let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
         assert!(evaluate_rule(&compiled, &message).is_some());
+    }
+
+    #[test]
+    fn compiles_fast_predicate_for_simple_compare() {
+        let rule = RuleDefinition {
+            expression: "select * from data where temp > 10".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        assert!(matches!(
+            compiled.fast_where,
+            Some(FastPredicate::Compare {
+                field: FastField::Payload(_),
+                op: FastCmpOp::Gt,
+                value: FastValue::Number(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn fast_and_reorders_to_high_reject_side() {
+        let rule = RuleDefinition {
+            expression: "select * from data where a > 0 and b > 0".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"a": 1, "b": 0});
+
+        for _ in 0..64 {
+            let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+            assert!(evaluate_rule(&compiled, &message).is_none());
+        }
+
+        let profile = match compiled.fast_where.as_ref().expect("fast where") {
+            FastPredicate::And { profile, .. } => profile,
+            _ => panic!("expected fast AND predicate"),
+        };
+        let left_total = profile.left_true.load(std::sync::atomic::Ordering::Relaxed)
+            + profile.left_false.load(std::sync::atomic::Ordering::Relaxed);
+        let right_total = profile.right_true.load(std::sync::atomic::Ordering::Relaxed)
+            + profile.right_false.load(std::sync::atomic::Ordering::Relaxed);
+
+        assert!(right_total > left_total);
+        assert!(profile.right_false.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn fast_path_downgrades_when_miss_ratio_is_high() {
+        let rule = RuleDefinition {
+            expression: "select * from data where temp > 10".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": "not-a-number"});
+
+        for _ in 0..160 {
+            let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+            assert!(evaluate_rule(&compiled, &message).is_none());
+        }
+
+        assert!(!compiled.fast_path_profile.enabled.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(compiled.fast_path_profile.downgrade_logged.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

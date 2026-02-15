@@ -152,15 +152,6 @@ impl TrieNode {
 }
 
 impl TopicTrie {
-    fn from_rules(rules: &[Option<CompiledRule>]) -> Self {
-        let mut trie = TopicTrie::default();
-        for (idx, rule) in rules.iter().enumerate() {
-            if let Some(rule) = rule.as_ref() {
-                trie.insert(&rule.topic_filter, idx);
-            }
-        }
-        trie
-    }
 
     fn insert(&mut self, filter: &str, rule_index: usize) {
         let levels: Vec<&str> = filter.split('/').collect();
@@ -282,8 +273,8 @@ mod tests {
     #[test]
     fn load_rules_from_json() {
         let json = r#"{
-            \"rules\": [
-                { \"expression\": \"select * from data\", \"destinations\": [\"dest1\"] }
+            "rules": [
+                { "expression": "select * from data", "destinations": ["dest1"] }
             ]
         }"#;
         let temp = tempfile::NamedTempFile::new().expect("tempfile");
