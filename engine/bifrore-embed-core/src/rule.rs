@@ -2,6 +2,7 @@ use crate::message::Message;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, Query, Select,
     SelectItem, SetExpr, Statement, TableFactor,
@@ -15,7 +16,7 @@ pub struct RuleDefinition {
     pub destinations: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompiledRule {
     pub id: String,
     pub topic_filter: String,
@@ -24,6 +25,7 @@ pub struct CompiledRule {
     pub select_plan: SelectPlan,
     pub where_expr: Option<Expr>,
     pub where_plan: Option<EvalExprPlan>,
+    pub fast_where: Option<FastPredicate>,
     pub destinations: Vec<String>,
 }
 
@@ -75,6 +77,48 @@ pub enum EvalExprPlan {
     Unknown(Expr),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FastPredicate {
+    Compare {
+        field: FastField,
+        op: FastCmpOp,
+        value: FastValue,
+    },
+    And(Box<FastPredicate>, Box<FastPredicate>),
+    Or(Box<FastPredicate>, Box<FastPredicate>),
+    Const(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FastField {
+    Payload(String),
+    MetaQos,
+    MetaRetain,
+    MetaDup,
+    MetaTimestamp,
+    MetaClientId,
+    MetaUsername,
+    TopicLevel(u64),
+    Property(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FastCmpOp {
+    Eq,
+    NotEq,
+    Gt,
+    GtEq,
+    Lt,
+    LtEq,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FastValue {
+    Number(f64),
+    String(String),
+    Bool(bool),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RuleError {
     #[error("SQL parse error: {0}")]
@@ -102,6 +146,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let (topic_filter, aliased_topic_filter, select, where_expr) = parse_query(*query)?;
     let select_plan = compile_select_plan(&select);
     let where_plan = where_expr.as_ref().map(compile_expr_plan);
+    let fast_where = where_plan.as_ref().and_then(compile_fast_predicate);
     let has_unknown_plan = select_plan_has_unknown(&select_plan)
         || where_plan
             .as_ref()
@@ -123,6 +168,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         select_plan,
         where_expr,
         where_plan,
+        fast_where,
         destinations: rule.destinations,
     })
 }
@@ -298,6 +344,99 @@ fn plan_has_unknown(plan: &EvalExprPlan) -> bool {
     }
 }
 
+fn compile_fast_predicate(plan: &EvalExprPlan) -> Option<FastPredicate> {
+    match plan {
+        EvalExprPlan::Const(Value::Bool(value)) => Some(FastPredicate::Const(*value)),
+        EvalExprPlan::Binary { left, op, right } if matches!(op, BinaryOperator::And | BinaryOperator::Or) => {
+            let left = compile_fast_predicate(left)?;
+            let right = compile_fast_predicate(right)?;
+            Some(match op {
+                BinaryOperator::And => FastPredicate::And(Box::new(left), Box::new(right)),
+                BinaryOperator::Or => FastPredicate::Or(Box::new(left), Box::new(right)),
+                _ => return None,
+            })
+        }
+        EvalExprPlan::Binary { left, op, right } => {
+            let cmp = fast_cmp_op(op)?;
+            if let (Some(field), Some(value)) = (compile_fast_field(left), compile_fast_const(right)) {
+                return Some(FastPredicate::Compare {
+                    field,
+                    op: cmp,
+                    value,
+                });
+            }
+            if let (Some(field), Some(value)) = (compile_fast_field(right), compile_fast_const(left)) {
+                return Some(FastPredicate::Compare {
+                    field,
+                    op: invert_fast_cmp_op(cmp),
+                    value,
+                });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn compile_fast_field(plan: &EvalExprPlan) -> Option<FastField> {
+    match plan {
+        EvalExprPlan::PayloadField(name) => Some(FastField::Payload(name.clone())),
+        EvalExprPlan::MetaQos => Some(FastField::MetaQos),
+        EvalExprPlan::MetaRetain => Some(FastField::MetaRetain),
+        EvalExprPlan::MetaDup => Some(FastField::MetaDup),
+        EvalExprPlan::MetaTimestamp => Some(FastField::MetaTimestamp),
+        EvalExprPlan::MetaClientId => Some(FastField::MetaClientId),
+        EvalExprPlan::MetaUsername => Some(FastField::MetaUsername),
+        EvalExprPlan::TopicLevel { level } => {
+            let value = compile_fast_const(level)?;
+            match value {
+                FastValue::Number(number) if number >= 0.0 => Some(FastField::TopicLevel(number as u64)),
+                _ => None,
+            }
+        }
+        EvalExprPlan::PropertiesKey { key } => {
+            let value = compile_fast_const(key)?;
+            match value {
+                FastValue::String(key) => Some(FastField::Property(key)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn compile_fast_const(plan: &EvalExprPlan) -> Option<FastValue> {
+    match plan {
+        EvalExprPlan::Const(Value::Number(value)) => value.as_f64().map(FastValue::Number),
+        EvalExprPlan::Const(Value::String(value)) => Some(FastValue::String(value.clone())),
+        EvalExprPlan::Const(Value::Bool(value)) => Some(FastValue::Bool(*value)),
+        _ => None,
+    }
+}
+
+fn fast_cmp_op(op: &BinaryOperator) -> Option<FastCmpOp> {
+    match op {
+        BinaryOperator::Eq => Some(FastCmpOp::Eq),
+        BinaryOperator::NotEq => Some(FastCmpOp::NotEq),
+        BinaryOperator::Gt => Some(FastCmpOp::Gt),
+        BinaryOperator::GtEq => Some(FastCmpOp::GtEq),
+        BinaryOperator::Lt => Some(FastCmpOp::Lt),
+        BinaryOperator::LtEq => Some(FastCmpOp::LtEq),
+        _ => None,
+    }
+}
+
+fn invert_fast_cmp_op(op: FastCmpOp) -> FastCmpOp {
+    match op {
+        FastCmpOp::Eq => FastCmpOp::Eq,
+        FastCmpOp::NotEq => FastCmpOp::NotEq,
+        FastCmpOp::Gt => FastCmpOp::Lt,
+        FastCmpOp::GtEq => FastCmpOp::LtEq,
+        FastCmpOp::Lt => FastCmpOp::Gt,
+        FastCmpOp::LtEq => FastCmpOp::GtEq,
+    }
+}
+
 pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
     let payload_value: Value = serde_json::from_slice(&message.payload).ok()?;
     let obj = payload_value.as_object()?;
@@ -315,7 +454,11 @@ pub(crate) fn evaluate_rule_with_payload(
         rule_alias: &rule.aliased_topic_filter,
     };
 
-    if let Some(plan) = &rule.where_plan {
+    if let Some(fast_where) = &rule.fast_where {
+        if !evaluate_fast_predicate(fast_where, &context).unwrap_or(false) {
+            return None;
+        }
+    } else if let Some(plan) = &rule.where_plan {
         if !evaluate_plan_bool(plan, &context).unwrap_or(false) {
             return None;
         }
@@ -359,6 +502,90 @@ fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
                 _ => None,
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeValue<'a> {
+    Number(f64),
+    String(Cow<'a, str>),
+    Bool(bool),
+}
+
+fn evaluate_fast_predicate(pred: &FastPredicate, ctx: &EvalContext) -> Option<bool> {
+    match pred {
+        FastPredicate::Const(value) => Some(*value),
+        FastPredicate::And(left, right) => {
+            Some(evaluate_fast_predicate(left, ctx)? && evaluate_fast_predicate(right, ctx)?)
+        }
+        FastPredicate::Or(left, right) => {
+            Some(evaluate_fast_predicate(left, ctx)? || evaluate_fast_predicate(right, ctx)?)
+        }
+        FastPredicate::Compare { field, op, value } => {
+            let runtime_value = evaluate_fast_field(field, ctx)?;
+            compare_runtime_value(&runtime_value, value, op)
+        }
+    }
+}
+
+fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<RuntimeValue<'a>> {
+    match field {
+        FastField::Payload(name) => match ctx.payload.get(name)? {
+            Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
+            Value::String(value) => Some(RuntimeValue::String(Cow::Borrowed(value))),
+            Value::Bool(value) => Some(RuntimeValue::Bool(*value)),
+            _ => None,
+        },
+        FastField::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
+        FastField::MetaRetain => Some(RuntimeValue::Bool(ctx.message.retain)),
+        FastField::MetaDup => Some(RuntimeValue::Bool(ctx.message.dup)),
+        FastField::MetaTimestamp => Some(RuntimeValue::Number(ctx.message.timestamp_millis as f64)),
+        FastField::MetaClientId => ctx
+            .message
+            .client_id
+            .as_ref()
+            .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
+        FastField::MetaUsername => ctx
+            .message
+            .username
+            .as_ref()
+            .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
+        FastField::TopicLevel(level) => {
+            let index = if *level == 0 { 0 } else { (*level - 1) as usize };
+            let parts: Vec<&str> = ctx.message.topic.split('/').collect();
+            parts
+                .get(index)
+                .map(|value| RuntimeValue::String(Cow::Owned((*value).to_string())))
+        }
+        FastField::Property(key) => ctx
+            .message
+            .properties
+            .get(key)
+            .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
+    }
+}
+
+fn compare_runtime_value(value: &RuntimeValue, expected: &FastValue, op: &FastCmpOp) -> Option<bool> {
+    match (value, expected) {
+        (RuntimeValue::Number(left), FastValue::Number(right)) => Some(match op {
+            FastCmpOp::Eq => (left - right).abs() < f64::EPSILON,
+            FastCmpOp::NotEq => (left - right).abs() >= f64::EPSILON,
+            FastCmpOp::Gt => left > right,
+            FastCmpOp::GtEq => left >= right,
+            FastCmpOp::Lt => left < right,
+            FastCmpOp::LtEq => left <= right,
+        }),
+        (RuntimeValue::String(left), FastValue::String(right)) => Some(match op {
+            FastCmpOp::Eq => left.as_ref() == right,
+            FastCmpOp::NotEq => left.as_ref() != right,
+            _ => return None,
+        }),
+        (RuntimeValue::Bool(left), FastValue::Bool(right)) => Some(match op {
+            FastCmpOp::Eq => left == right,
+            FastCmpOp::NotEq => left != right,
+            _ => return None,
+        }),
+        _ => None,
     }
 }
 
