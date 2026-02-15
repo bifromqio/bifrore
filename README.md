@@ -62,6 +62,14 @@ Supported (current):
 - Metadata: `qos`, `retain`, `dup`, `timestamp`, `clientId`, `username`
 - MQTT v5 properties via `properties['key']`
 
+## Recent Features & Optimizations
+
+- Global payload decode mode at engine init: `JSON` or `Protobuf`.
+- Protobuf support for typed payloads using `google.protobuf.Struct` binary payloads.
+- Compiled expression plan with constant folding at rule compile time.
+- Fast predicate path for common comparisons and adaptive predicate reordering.
+- Automatic fast-path downgrade when runtime miss ratio is persistently high.
+
 ## Build
 
 Requirements:
@@ -77,6 +85,19 @@ Build the artifacts:
 ./build.sh bench   # run runtime benchmarks
 ./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
 ```
+
+Optional feature flags (manual cargo usage):
+
+```bash
+# core with SIMD JSON parser
+cargo build -p bifrore-embed-core --features simd-json
+
+# ffi with mqtt + SIMD JSON parser
+cargo build -p bifrore-embed-ffi --features "mqtt simd-json"
+```
+
+Note: `simd-json` is workload and platform dependent; it is not guaranteed to be faster than
+`serde_json` in every case.
 
 Artifacts are placed under `build/`:
 - `libbifrore_embed.(so|dylib)`
@@ -162,9 +183,24 @@ engine.start_mqtt("127.0.0.1", 1883, "client-1", "bifrore-group")
 A Criterion benchmark is provided at:
 - `engine/bifrore-embed-core/benches/runtime_bench.rs`
 
+Current benchmark scenarios:
+- `rule_eval_100_all_match_json`
+- `rule_eval_100_where_miss_json`
+- `rule_eval_100_topic_miss_json`
+- `rule_eval_100_half_match_json`
+- `rule_eval_100_metadata_topic_json`
+- `rule_eval_100_all_match_protobuf`
+
 Run with:
 
 ```bash
 ./build.sh bench
 ./build.sh bench-diff
 ```
+
+`bench-diff` output includes:
+- JSON parser comparison (`serde_json` vs `simd-json`) for all `_json` cases.
+- Payload comparison (`json` vs `protobuf`) for `all_match` in a `simd-json` build.
+
+Important: benchmark diffs can fluctuate across runs due to CPU scheduling, thermal state, and
+background load. Compare medians over multiple runs.
