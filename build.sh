@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [jni|python|all|bench]"
+  echo "Usage: ./build.sh [jni|python|all|bench|bench-diff]"
   exit 1
 }
 
@@ -80,6 +80,89 @@ run_bench() {
   (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core)
 }
 
+run_bench_diff() {
+  echo "Running benchmark diff: serde_json vs simd-json..."
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap "rm -rf '$tmp_dir'" EXIT
+
+  local serde_dir="$tmp_dir/criterion_serde"
+  local simd_dir="$tmp_dir/criterion_simd"
+
+  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench)
+  cp -R "$RUST_DIR/target/criterion" "$serde_dir"
+
+  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench --features simd-json)
+  cp -R "$RUST_DIR/target/criterion" "$simd_dir"
+
+  node -e '
+const fs = require("fs");
+const path = require("path");
+
+function readBenchNs(baseDir) {
+  const result = {};
+  if (!fs.existsSync(baseDir)) return result;
+  for (const entry of fs.readdirSync(baseDir)) {
+    const estimatePath = path.join(baseDir, entry, "new", "estimates.json");
+    if (!fs.existsSync(estimatePath)) continue;
+    const json = JSON.parse(fs.readFileSync(estimatePath, "utf8"));
+    if (json.mean && typeof json.mean.point_estimate === "number") {
+      result[entry] = json.mean.point_estimate;
+    }
+  }
+  return result;
+}
+
+function fmtNs(ns) {
+  if (ns < 1000) return `${ns.toFixed(3)} ns`;
+  if (ns < 1_000_000) return `${(ns / 1000).toFixed(3)} µs`;
+  if (ns < 1_000_000_000) return `${(ns / 1_000_000).toFixed(3)} ms`;
+  return `${(ns / 1_000_000_000).toFixed(3)} s`;
+}
+
+function pctDelta(newVal, oldVal) {
+  if (!oldVal) return 0;
+  return ((newVal - oldVal) / oldVal) * 100;
+}
+
+const serdeBase = process.argv[1];
+const simdBase = process.argv[2];
+const serde = readBenchNs(serdeBase);
+const simd = readBenchNs(simdBase);
+
+console.log("");
+console.log("=== JSON parser diff (smaller is better) ===");
+const jsonNames = Object.keys(simd)
+  .filter((name) => name.endsWith("_json") && serde[name] !== undefined)
+  .sort();
+if (jsonNames.length === 0) {
+  console.log("No matching JSON benchmarks found.");
+} else {
+  for (const name of jsonNames) {
+    const s = serde[name];
+    const m = simd[name];
+    const d = pctDelta(m, s);
+    console.log(
+      `${name.padEnd(38)} serde=${fmtNs(s).padEnd(14)} simd=${fmtNs(m).padEnd(14)} delta=${d.toFixed(2).padStart(8)}%`
+    );
+  }
+}
+
+console.log("");
+console.log("=== Payload diff inside simd-json run ===");
+const jsonAll = simd["rule_eval_100_all_match_json"];
+const pbAll = simd["rule_eval_100_all_match_protobuf"];
+if (jsonAll !== undefined && pbAll !== undefined) {
+  const d = pctDelta(pbAll, jsonAll);
+  console.log(
+    `${"all_match (simd-json build)".padEnd(38)} json=${fmtNs(jsonAll).padEnd(14)} protobuf=${fmtNs(pbAll).padEnd(14)} delta=${d.toFixed(2).padStart(8)}%`
+  );
+} else {
+  console.log("Required benchmarks not found in simd-json criterion output.");
+}
+' "$serde_dir" "$simd_dir"
+}
+
 case "$TARGET" in
   jni)
     build_rust
@@ -96,6 +179,9 @@ case "$TARGET" in
     ;;
   bench)
     run_bench
+    ;;
+  bench-diff)
+    run_bench_diff
     ;;
   *)
     usage

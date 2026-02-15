@@ -75,6 +75,7 @@ Build the artifacts:
 ./build.sh python  # Rust cdylib only (Python wrapper is pure ctypes)
 ./build.sh all     # both
 ./build.sh bench   # run runtime benchmarks
+./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
 ```
 
 Artifacts are placed under `build/`:
@@ -165,4 +166,5 @@ Run with:
 
 ```bash
 ./build.sh bench
+./build.sh bench-diff
 ```
