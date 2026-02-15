@@ -21,7 +21,9 @@ pub struct CompiledRule {
     pub topic_filter: String,
     pub aliased_topic_filter: String,
     pub select: SelectSpec,
+    pub select_plan: SelectPlan,
     pub where_expr: Option<Expr>,
+    pub where_plan: Option<EvalExprPlan>,
     pub destinations: Vec<String>,
 }
 
@@ -35,6 +37,42 @@ pub enum SelectSpec {
 pub struct SelectedColumn {
     pub expr: Expr,
     pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectPlan {
+    All,
+    Columns(Vec<PlannedColumn>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedColumn {
+    pub expr: EvalExprPlan,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvalExprPlan {
+    Const(Value),
+    PayloadField(String),
+    MetaQos,
+    MetaRetain,
+    MetaDup,
+    MetaTimestamp,
+    MetaClientId,
+    MetaUsername,
+    Binary {
+        left: Box<EvalExprPlan>,
+        op: BinaryOperator,
+        right: Box<EvalExprPlan>,
+    },
+    TopicLevel {
+        level: Box<EvalExprPlan>,
+    },
+    PropertiesKey {
+        key: Box<EvalExprPlan>,
+    },
+    Unknown(Expr),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -62,13 +100,29 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         _ => return Err(RuleError::UnsupportedSql),
     };
     let (topic_filter, aliased_topic_filter, select, where_expr) = parse_query(*query)?;
+    let select_plan = compile_select_plan(&select);
+    let where_plan = where_expr.as_ref().map(compile_expr_plan);
+    let has_unknown_plan = select_plan_has_unknown(&select_plan)
+        || where_plan
+            .as_ref()
+            .map(plan_has_unknown)
+            .unwrap_or(false);
+    if has_unknown_plan {
+        log::warn!(
+            "dropping incompatible rule during compile expression={}",
+            rule.expression
+        );
+        return Err(RuleError::UnsupportedSql);
+    }
     let rule_id = format!("{:x}", fxhash::hash64(&rule.expression));
     Ok(CompiledRule {
         id: rule_id,
         topic_filter,
         aliased_topic_filter,
         select,
+        select_plan,
         where_expr,
+        where_plan,
         destinations: rule.destinations,
     })
 }
@@ -136,6 +190,114 @@ fn parse_select_items(items: &[SelectItem]) -> Result<SelectSpec, RuleError> {
     Ok(SelectSpec::Columns(columns))
 }
 
+fn compile_select_plan(select: &SelectSpec) -> SelectPlan {
+    match select {
+        SelectSpec::All => SelectPlan::All,
+        SelectSpec::Columns(columns) => SelectPlan::Columns(
+            columns
+                .iter()
+                .map(|column| PlannedColumn {
+                    expr: compile_expr_plan(&column.expr),
+                    alias: column.alias.clone(),
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
+    match expr {
+        Expr::Identifier(Ident { value, .. }) => match value.as_str() {
+            "qos" => EvalExprPlan::MetaQos,
+            "retain" => EvalExprPlan::MetaRetain,
+            "dup" => EvalExprPlan::MetaDup,
+            "timestamp" => EvalExprPlan::MetaTimestamp,
+            "clientId" => EvalExprPlan::MetaClientId,
+            "username" => EvalExprPlan::MetaUsername,
+            _ => EvalExprPlan::PayloadField(value.clone()),
+        },
+        Expr::Value(value) => match value {
+            sqlparser::ast::Value::Number(num, _) => num
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .map(EvalExprPlan::Const)
+                .unwrap_or_else(|| EvalExprPlan::Unknown(expr.clone())),
+            sqlparser::ast::Value::SingleQuotedString(s) => {
+                EvalExprPlan::Const(Value::String(s.clone()))
+            }
+            sqlparser::ast::Value::Boolean(b) => EvalExprPlan::Const(Value::Bool(*b)),
+            _ => EvalExprPlan::Unknown(expr.clone()),
+        },
+        Expr::BinaryOp { left, op, right } => EvalExprPlan::Binary {
+            left: Box::new(compile_expr_plan(left)),
+            op: op.clone(),
+            right: Box::new(compile_expr_plan(right)),
+        },
+        Expr::Nested(inner) => compile_expr_plan(inner),
+        Expr::Function(func) => {
+            let name = func.name.to_string().to_lowercase();
+            if name == "topic_level" {
+                if let FunctionArguments::List(list) = &func.args {
+                    if list.args.len() == 2 {
+                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(level_expr)) = &list.args[1] {
+                            return EvalExprPlan::TopicLevel {
+                                level: Box::new(compile_expr_plan(level_expr)),
+                            };
+                        }
+                    }
+                }
+            }
+            EvalExprPlan::Unknown(expr.clone())
+        }
+        Expr::MapAccess { column, keys } => {
+            if let Expr::Identifier(Ident { value, .. }) = &**column {
+                if value == "properties" {
+                    if let Some(first_key) = keys.first() {
+                        return EvalExprPlan::PropertiesKey {
+                            key: Box::new(compile_expr_plan(&first_key.key)),
+                        };
+                    }
+                }
+            }
+            EvalExprPlan::Unknown(expr.clone())
+        }
+        Expr::ArrayIndex { obj, indexes } => {
+            if let Expr::Identifier(Ident { value, .. }) = &**obj {
+                if value == "properties" {
+                    if let Some(first_index) = indexes.first() {
+                        return EvalExprPlan::PropertiesKey {
+                            key: Box::new(compile_expr_plan(first_index)),
+                        };
+                    }
+                }
+            }
+            EvalExprPlan::Unknown(expr.clone())
+        }
+        _ => EvalExprPlan::Unknown(expr.clone()),
+    }
+}
+
+fn select_plan_has_unknown(plan: &SelectPlan) -> bool {
+    match plan {
+        SelectPlan::All => false,
+        SelectPlan::Columns(columns) => columns.iter().any(|column| plan_has_unknown(&column.expr)),
+    }
+}
+
+fn plan_has_unknown(plan: &EvalExprPlan) -> bool {
+    match plan {
+        EvalExprPlan::Unknown(_) => true,
+        EvalExprPlan::Binary { left, right, .. } => {
+            plan_has_unknown(left) || plan_has_unknown(right)
+        }
+        EvalExprPlan::TopicLevel { level } => plan_has_unknown(level),
+        EvalExprPlan::PropertiesKey { key } => plan_has_unknown(key),
+        _ => false,
+    }
+}
+
 pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
     let payload_value: Value = serde_json::from_slice(&message.payload).ok()?;
     let obj = payload_value.as_object()?;
@@ -153,19 +315,19 @@ pub(crate) fn evaluate_rule_with_payload(
         rule_alias: &rule.aliased_topic_filter,
     };
 
-    if let Some(expr) = &rule.where_expr {
-        if !evaluate_where(expr, &context) {
+    if let Some(plan) = &rule.where_plan {
+        if !evaluate_plan_bool(plan, &context).unwrap_or(false) {
             return None;
         }
     }
 
-    match &rule.select {
-        SelectSpec::All => Some(message.clone()),
-        SelectSpec::Columns(columns) => {
+    match &rule.select_plan {
+        SelectPlan::All => Some(message.clone()),
+        SelectPlan::Columns(columns) => {
             let mut output = serde_json::Map::with_capacity(columns.len());
-            for col in columns {
-                let value = evaluate_expr_value(&col.expr, &context).unwrap_or(Value::Null);
-                output.insert(col.alias.clone(), value);
+            for column in columns {
+                let value = evaluate_plan_value(&column.expr, &context).unwrap_or(Value::Null);
+                output.insert(column.alias.clone(), value);
             }
             let new_payload = serde_json::to_vec(&Value::Object(output)).ok()?;
             Some(Message::new(&message.topic, new_payload))
@@ -179,77 +341,54 @@ struct EvalContext<'a> {
     rule_alias: &'a str,
 }
 
-fn evaluate_where(expr: &Expr, ctx: &EvalContext) -> bool {
-    evaluate_expr_bool(expr, ctx).unwrap_or(false)
-}
-
-fn extract_value(expr: &Expr, ctx: &EvalContext) -> Option<Value> {
-    evaluate_expr_value(expr, ctx)
-}
-
-fn evaluate_expr_bool(expr: &Expr, ctx: &EvalContext) -> Option<bool> {
-    match expr {
-        Expr::BinaryOp { left, op, right } => {
-            if matches!(op, BinaryOperator::And | BinaryOperator::Or) {
-                let left_val = evaluate_expr_bool(left, ctx)?;
-                let right_val = evaluate_expr_bool(right, ctx)?;
-                return Some(match op {
-                    BinaryOperator::And => left_val && right_val,
-                    BinaryOperator::Or => left_val || right_val,
-                    _ => false,
-                });
-            }
-
-            let left_val = evaluate_expr_value(left, ctx)?;
-            let right_val = evaluate_expr_value(right, ctx)?;
-            compare_values(&left_val, &right_val, op)
+fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
+    match plan {
+        EvalExprPlan::Binary { left, op, right } if matches!(op, BinaryOperator::And | BinaryOperator::Or) => {
+            let left_val = evaluate_plan_bool(left, ctx)?;
+            let right_val = evaluate_plan_bool(right, ctx)?;
+            Some(match op {
+                BinaryOperator::And => left_val && right_val,
+                BinaryOperator::Or => left_val || right_val,
+                _ => false,
+            })
         }
-        Expr::Nested(inner) => evaluate_expr_bool(inner, ctx),
-        Expr::Value(value) => match value {
-            sqlparser::ast::Value::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        Expr::Identifier(Ident { value, .. }) => match value.as_str() {
-            "retain" => Some(ctx.message.retain),
-            "dup" => Some(ctx.message.dup),
-            _ => ctx.payload.get(value).and_then(|v| v.as_bool()),
-        },
-        _ => None,
+        _ => {
+            let value = evaluate_plan_value(plan, ctx)?;
+            match value {
+                Value::Bool(v) => Some(v),
+                _ => None,
+            }
+        }
     }
 }
 
-fn evaluate_expr_value(expr: &Expr, ctx: &EvalContext) -> Option<Value> {
-    match expr {
-        Expr::Identifier(Ident { value, .. }) => match value.as_str() {
-            "qos" => Some(Value::Number(serde_json::Number::from(ctx.message.qos))),
-            "retain" => Some(Value::Bool(ctx.message.retain)),
-            "dup" => Some(Value::Bool(ctx.message.dup)),
-            "timestamp" => Some(Value::Number(serde_json::Number::from(
-                ctx.message.timestamp_millis,
-            ))),
-            "clientId" => ctx
-                .message
-                .client_id
-                .as_ref()
-                .map(|v| Value::String(v.clone())),
-            "username" => ctx
-                .message
-                .username
-                .as_ref()
-                .map(|v| Value::String(v.clone())),
-            _ => ctx.payload.get(value).cloned(),
-        },
-        Expr::Value(value) => match value {
-            sqlparser::ast::Value::Number(num, _) => num.parse::<f64>().ok().and_then(|v| {
-                serde_json::Number::from_f64(v).map(Value::Number)
-            }),
-            sqlparser::ast::Value::SingleQuotedString(s) => Some(Value::String(s.clone())),
-            sqlparser::ast::Value::Boolean(b) => Some(Value::Bool(*b)),
-            _ => None,
-        },
-        Expr::BinaryOp { left, op, right } => {
-            let left_val = evaluate_expr_value(left, ctx)?;
-            let right_val = evaluate_expr_value(right, ctx)?;
+fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> {
+    match plan {
+        EvalExprPlan::Const(value) => Some(value.clone()),
+        EvalExprPlan::PayloadField(field) => ctx.payload.get(field).cloned(),
+        EvalExprPlan::MetaQos => Some(Value::Number(serde_json::Number::from(ctx.message.qos))),
+        EvalExprPlan::MetaRetain => Some(Value::Bool(ctx.message.retain)),
+        EvalExprPlan::MetaDup => Some(Value::Bool(ctx.message.dup)),
+        EvalExprPlan::MetaTimestamp => Some(Value::Number(serde_json::Number::from(
+            ctx.message.timestamp_millis,
+        ))),
+        EvalExprPlan::MetaClientId => ctx
+            .message
+            .client_id
+            .as_ref()
+            .map(|value| Value::String(value.clone())),
+        EvalExprPlan::MetaUsername => ctx
+            .message
+            .username
+            .as_ref()
+            .map(|value| Value::String(value.clone())),
+        EvalExprPlan::Binary { left, op, right } => {
+            if matches!(op, BinaryOperator::And | BinaryOperator::Or) {
+                return evaluate_plan_bool(plan, ctx).map(Value::Bool);
+            }
+
+            let left_val = evaluate_plan_value(left, ctx)?;
+            let right_val = evaluate_plan_value(right, ctx)?;
             match op {
                 BinaryOperator::Plus
                 | BinaryOperator::Minus
@@ -260,47 +399,31 @@ fn evaluate_expr_value(expr: &Expr, ctx: &EvalContext) -> Option<Value> {
                 | BinaryOperator::Lt
                 | BinaryOperator::LtEq
                 | BinaryOperator::Eq
-                | BinaryOperator::NotEq => compare_values(&left_val, &right_val, op)
-                    .map(Value::Bool),
-                BinaryOperator::And | BinaryOperator::Or => evaluate_expr_bool(expr, ctx).map(Value::Bool),
+                | BinaryOperator::NotEq => compare_values(&left_val, &right_val, op).map(Value::Bool),
                 _ => None,
             }
         }
-        Expr::Nested(inner) => evaluate_expr_value(inner, ctx),
-        Expr::Function(func) => evaluate_function(func, ctx),
-        Expr::MapAccess { column, keys } => {
-            if let Expr::Identifier(Ident { value, .. }) = &**column {
-                if value == "properties" {
-                    if let Some(first_key) = keys.first() {
-                        if let Some(key) = evaluate_expr_value(&first_key.key, ctx) {
-                            if let Value::String(key) = key {
-                                if let Some(val) = ctx.message.properties.get(&key) {
-                                    return Some(Value::String(val.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            None
+        EvalExprPlan::TopicLevel { level } => {
+            let level_value = evaluate_plan_value(level, ctx)?.as_u64()?;
+            let topic_parts: Vec<&str> = ctx.message.topic.split('/').collect();
+            let index = if level_value == 0 {
+                0
+            } else {
+                (level_value - 1) as usize
+            };
+            topic_parts
+                .get(index)
+                .map(|value| Value::String((*value).to_string()))
         }
-        Expr::ArrayIndex { obj, indexes } => {
-            if let Expr::Identifier(Ident { value, .. }) = &**obj {
-                if value == "properties" {
-                    if let Some(index_expr) = indexes.get(0) {
-                        if let Some(key) = evaluate_expr_value(index_expr, ctx) {
-                            if let Value::String(key) = key {
-                                if let Some(val) = ctx.message.properties.get(&key) {
-                                    return Some(Value::String(val.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            None
+        EvalExprPlan::PropertiesKey { key } => {
+            let key_value = evaluate_plan_value(key, ctx)?;
+            let key = key_value.as_str()?;
+            ctx.message
+                .properties
+                .get(key)
+                .map(|value| Value::String(value.clone()))
         }
-        _ => None,
+        EvalExprPlan::Unknown(_) => None,
     }
 }
 
@@ -365,37 +488,6 @@ fn normalize_topic(topic: &str) -> String {
 fn normalize_rule_sql(sql: &str) -> String {
     let re = Regex::new(r"(?i)from\\s+'([^']+)'").expect("regex");
     re.replace(sql, r#"from "$1""#).to_string()
-}
-
-fn evaluate_function(func: &sqlparser::ast::Function, ctx: &EvalContext) -> Option<Value> {
-    let name = func.name.to_string().to_lowercase();
-    match name.as_str() {
-        "topic_level" => {
-            let args = match &func.args {
-                FunctionArguments::List(list) => &list.args,
-                _ => return None,
-            };
-
-            if args.len() != 2 {
-                return None;
-            }
-
-            let level = match &args[1] {
-                FunctionArg::Unnamed(arg_expr) => match arg_expr {
-                    FunctionArgExpr::Expr(expr) => {
-                        evaluate_expr_value(expr, ctx)?.as_u64()
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }?;
-            let topic = ctx.message.topic.as_str();
-            let parts: Vec<&str> = topic.split('/').collect();
-            let idx = if level == 0 { 0 } else { (level - 1) as usize };
-            parts.get(idx).map(|val| Value::String((*val).to_string()))
-        }
-        _ => None,
-    }
 }
 
 pub fn match_topic(filter: &str, topic: &str) -> bool {
