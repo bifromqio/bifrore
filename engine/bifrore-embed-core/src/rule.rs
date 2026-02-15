@@ -530,18 +530,21 @@ fn invert_fast_cmp_op(op: FastCmpOp) -> FastCmpOp {
 pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
     let payload_value: Value = serde_json::from_slice(&message.payload).ok()?;
     let obj = payload_value.as_object()?;
-    evaluate_rule_with_payload(rule, message, obj)
+    let topic_parts: Vec<&str> = message.topic.split('/').collect();
+    evaluate_rule_with_payload_and_topic_parts(rule, message, obj, &topic_parts)
 }
 
-pub(crate) fn evaluate_rule_with_payload(
+pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     rule: &CompiledRule,
     message: &Message,
     payload_obj: &serde_json::Map<String, Value>,
+    topic_parts: &[&str],
 ) -> Option<Message> {
     let context = EvalContext {
         message,
         payload: payload_obj,
         rule_alias: &rule.aliased_topic_filter,
+        topic_parts,
     };
 
     if let Some(fast_where) = &rule.fast_where {
@@ -599,6 +602,7 @@ struct EvalContext<'a> {
     message: &'a Message,
     payload: &'a serde_json::Map<String, Value>,
     rule_alias: &'a str,
+    topic_parts: &'a [&'a str],
 }
 
 fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
@@ -769,8 +773,7 @@ fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<Ru
             .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
         FastField::TopicLevel(level) => {
             let index = if *level == 0 { 0 } else { (*level - 1) as usize };
-            let parts: Vec<&str> = ctx.message.topic.split('/').collect();
-            parts
+            ctx.topic_parts
                 .get(index)
                 .map(|value| RuntimeValue::String(Cow::Owned((*value).to_string())))
         }
@@ -849,13 +852,12 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> 
         }
         EvalExprPlan::TopicLevel { level } => {
             let level_value = value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?)?;
-            let topic_parts: Vec<&str> = ctx.message.topic.split('/').collect();
             let index = if level_value == 0 {
                 0
             } else {
                 (level_value - 1) as usize
             };
-            topic_parts
+            ctx.topic_parts
                 .get(index)
                 .map(|value| Value::String((*value).to_string()))
         }

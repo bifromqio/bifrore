@@ -1,7 +1,10 @@
 use crate::message::Message;
 use crate::metrics::EvalMetrics;
 use crate::payload::{decode_payload_object, PayloadFormat};
-use crate::rule::{compile_rule, evaluate_rule_with_payload, CompiledRule, RuleDefinition, RuleError};
+use crate::rule::{
+    compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
+    RuleError,
+};
 use serde::Deserialize;
 use std::fs;
 use std::collections::{HashMap, HashSet};
@@ -80,10 +83,16 @@ impl RuleEngine {
                 return results;
             }
         };
+        let topic_parts: Vec<&str> = message.topic.split('/').collect();
 
         for rule in matched_rules {
             let start = Instant::now();
-            let evaluated = evaluate_rule_with_payload(rule, message, &payload_obj);
+            let evaluated = evaluate_rule_with_payload_and_topic_parts(
+                rule,
+                message,
+                &payload_obj,
+                &topic_parts,
+            );
             let duration = start.elapsed().as_nanos() as u64;
             let success = evaluated.is_some();
             self.metrics.record(duration, success);
