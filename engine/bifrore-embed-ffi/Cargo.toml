@@ -15,3 +15,4 @@ log = "0.4"
 
 [features]
 mqtt = ["bifrore-embed-core/mqtt"]
+simd-json = ["bifrore-embed-core/simd-json"]

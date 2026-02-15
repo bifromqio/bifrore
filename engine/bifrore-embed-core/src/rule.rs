@@ -1,8 +1,9 @@
 use crate::message::Message;
+#[cfg(test)]
+use crate::payload::{decode_payload_object, PayloadFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, Query, Select,
@@ -527,13 +528,6 @@ fn invert_fast_cmp_op(op: FastCmpOp) -> FastCmpOp {
     }
 }
 
-pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
-    let payload_value: Value = serde_json::from_slice(&message.payload).ok()?;
-    let obj = payload_value.as_object()?;
-    let topic_parts: Vec<&str> = message.topic.split('/').collect();
-    evaluate_rule_with_payload_and_topic_parts(rule, message, obj, &topic_parts)
-}
-
 pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     rule: &CompiledRule,
     message: &Message,
@@ -616,6 +610,24 @@ fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
                 _ => false,
             })
         }
+        EvalExprPlan::Binary { left, op, right }
+            if matches!(
+                op,
+                BinaryOperator::Gt
+                    | BinaryOperator::GtEq
+                    | BinaryOperator::Lt
+                    | BinaryOperator::LtEq
+                    | BinaryOperator::Eq
+                    | BinaryOperator::NotEq
+            ) =>
+        {
+            if let Some(value) = evaluate_plan_compare_bool(left, op, right, ctx) {
+                return Some(value);
+            }
+            let left_val = evaluate_plan_value(left, ctx)?;
+            let right_val = evaluate_plan_value(right, ctx)?;
+            compare_values(&left_val, &right_val, op)
+        }
         _ => {
             let value = evaluate_plan_value(plan, ctx)?;
             match value {
@@ -629,7 +641,7 @@ fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
 #[derive(Debug, Clone)]
 enum RuntimeValue<'a> {
     Number(f64),
-    String(Cow<'a, str>),
+    String(&'a str),
     Bool(bool),
 }
 
@@ -753,7 +765,7 @@ fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<Ru
     match field {
         FastField::Payload(name) => match ctx.payload.get(name)? {
             Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
-            Value::String(value) => Some(RuntimeValue::String(Cow::Borrowed(value))),
+            Value::String(value) => Some(RuntimeValue::String(value)),
             Value::Bool(value) => Some(RuntimeValue::Bool(*value)),
             _ => None,
         },
@@ -765,23 +777,23 @@ fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<Ru
             .message
             .client_id
             .as_ref()
-            .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
+            .map(|value| RuntimeValue::String(value)),
         FastField::MetaUsername => ctx
             .message
             .username
             .as_ref()
-            .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
+            .map(|value| RuntimeValue::String(value)),
         FastField::TopicLevel(level) => {
             let index = if *level == 0 { 0 } else { (*level - 1) as usize };
             ctx.topic_parts
                 .get(index)
-                .map(|value| RuntimeValue::String(Cow::Owned((*value).to_string())))
+                .map(|value| RuntimeValue::String(value))
         }
         FastField::Property(key) => ctx
             .message
             .properties
             .get(key)
-            .map(|value| RuntimeValue::String(Cow::Borrowed(value))),
+            .map(|value| RuntimeValue::String(value)),
     }
 }
 
@@ -796,13 +808,108 @@ fn compare_runtime_value(value: &RuntimeValue, expected: &FastValue, op: &FastCm
             FastCmpOp::LtEq => left <= right,
         }),
         (RuntimeValue::String(left), FastValue::String(right)) => Some(match op {
-            FastCmpOp::Eq => left.as_ref() == right,
-            FastCmpOp::NotEq => left.as_ref() != right,
+            FastCmpOp::Eq => *left == right,
+            FastCmpOp::NotEq => *left != right,
             _ => return None,
         }),
         (RuntimeValue::Bool(left), FastValue::Bool(right)) => Some(match op {
             FastCmpOp::Eq => left == right,
             FastCmpOp::NotEq => left != right,
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
+fn evaluate_plan_compare_bool(
+    left: &EvalExprPlan,
+    op: &BinaryOperator,
+    right: &EvalExprPlan,
+    ctx: &EvalContext,
+) -> Option<bool> {
+    let left_val = evaluate_plan_runtime_value(left, ctx)?;
+    let right_val = evaluate_plan_runtime_value(right, ctx)?;
+    compare_runtime_runtime(&left_val, &right_val, op)
+}
+
+fn evaluate_plan_runtime_value<'a>(
+    plan: &'a EvalExprPlan,
+    ctx: &'a EvalContext,
+) -> Option<RuntimeValue<'a>> {
+    match plan {
+        EvalExprPlan::Const(value) => match value {
+            Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
+            Value::String(text) => Some(RuntimeValue::String(text)),
+            Value::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
+            _ => None,
+        },
+        EvalExprPlan::PayloadField(field) => match ctx.payload.get(field)? {
+            Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
+            Value::String(text) => Some(RuntimeValue::String(text)),
+            Value::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
+            _ => None,
+        },
+        EvalExprPlan::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
+        EvalExprPlan::MetaRetain => Some(RuntimeValue::Bool(ctx.message.retain)),
+        EvalExprPlan::MetaDup => Some(RuntimeValue::Bool(ctx.message.dup)),
+        EvalExprPlan::MetaTimestamp => Some(RuntimeValue::Number(ctx.message.timestamp_millis as f64)),
+        EvalExprPlan::MetaClientId => ctx
+            .message
+            .client_id
+            .as_ref()
+            .map(|value| RuntimeValue::String(value)),
+        EvalExprPlan::MetaUsername => ctx
+            .message
+            .username
+            .as_ref()
+            .map(|value| RuntimeValue::String(value)),
+        EvalExprPlan::TopicLevel { level } => {
+            let level_value = value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?)?;
+            let index = if level_value == 0 {
+                0
+            } else {
+                (level_value - 1) as usize
+            };
+            ctx.topic_parts
+                .get(index)
+                .copied()
+                .map(RuntimeValue::String)
+        }
+        EvalExprPlan::PropertiesKey { key } => {
+            let key_value = evaluate_plan_value(key, ctx)?;
+            let key = key_value.as_str()?;
+            ctx.message
+                .properties
+                .get(key)
+                .map(|value| RuntimeValue::String(value))
+        }
+        _ => None,
+    }
+}
+
+fn compare_runtime_runtime(
+    left: &RuntimeValue,
+    right: &RuntimeValue,
+    op: &BinaryOperator,
+) -> Option<bool> {
+    match (left, right) {
+        (RuntimeValue::Number(l), RuntimeValue::Number(r)) => Some(match op {
+            BinaryOperator::Gt => l > r,
+            BinaryOperator::GtEq => l >= r,
+            BinaryOperator::Lt => l < r,
+            BinaryOperator::LtEq => l <= r,
+            BinaryOperator::Eq => (l - r).abs() < f64::EPSILON,
+            BinaryOperator::NotEq => (l - r).abs() >= f64::EPSILON,
+            _ => return None,
+        }),
+        (RuntimeValue::String(l), RuntimeValue::String(r)) => Some(match op {
+            BinaryOperator::Eq => l == r,
+            BinaryOperator::NotEq => l != r,
+            _ => return None,
+        }),
+        (RuntimeValue::Bool(l), RuntimeValue::Bool(r)) => Some(match op {
+            BinaryOperator::Eq => l == r,
+            BinaryOperator::NotEq => l != r,
             _ => return None,
         }),
         _ => None,
@@ -992,6 +1099,12 @@ pub fn match_topic(filter: &str, topic: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    
+    pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
+        let obj = decode_payload_object(&message.payload, PayloadFormat::Json).ok()?;
+        let topic_parts: Vec<&str> = message.topic.split('/').collect();
+        evaluate_rule_with_payload_and_topic_parts(rule, message, &obj, &topic_parts)
+    }
 
     #[test]
     fn compile_basic_rule() {

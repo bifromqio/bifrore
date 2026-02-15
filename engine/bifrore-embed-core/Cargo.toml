@@ -16,9 +16,11 @@ log = "0.4"
 flume = "0.11"
 prost = "0.13"
 prost-types = "0.13"
+simd-json = { version = "0.14", optional = true, features = ["serde_impl"] }
 
 [features]
 mqtt = ["dep:rumqttc", "dep:tokio"]
+simd-json = ["dep:simd-json"]
 
 [dev-dependencies]
 pretty_assertions = "1.4"
