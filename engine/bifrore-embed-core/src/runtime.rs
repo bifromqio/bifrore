@@ -1,6 +1,6 @@
 use crate::message::Message;
 use crate::metrics::EvalMetrics;
-use crate::rule::{compile_rule, evaluate_rule, CompiledRule, RuleDefinition, RuleError};
+use crate::rule::{compile_rule, evaluate_rule_with_payload, CompiledRule, RuleDefinition, RuleError};
 use serde::Deserialize;
 use std::fs;
 use std::collections::{HashMap, HashSet};
@@ -56,9 +56,33 @@ impl RuleEngine {
 
     pub fn evaluate(&self, message: &Message) -> Vec<RuleEvaluation> {
         let mut results = Vec::new();
-        for rule in self.matcher.match_topic(&message.topic, &self.rules) {
+        let matched_rules = self.matcher.match_topic(&message.topic, &self.rules);
+        if matched_rules.is_empty() {
+            return results;
+        }
+
+        let parsed_payload = match serde_json::from_slice::<serde_json::Value>(&message.payload) {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!(
+                    "dropping message with invalid JSON payload topic={} error={}",
+                    message.topic,
+                    err
+                );
+                return results;
+            }
+        };
+        let Some(payload_obj) = parsed_payload.as_object() else {
+            log::warn!(
+                "dropping message with non-object JSON payload topic={}",
+                message.topic
+            );
+            return results;
+        };
+
+        for rule in matched_rules {
             let start = Instant::now();
-            let evaluated = evaluate_rule(rule, message);
+            let evaluated = evaluate_rule_with_payload(rule, message, payload_obj);
             let duration = start.elapsed().as_nanos() as u64;
             let success = evaluated.is_some();
             self.metrics.record(duration, success);

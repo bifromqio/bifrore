@@ -139,9 +139,17 @@ fn parse_select_items(items: &[SelectItem]) -> Result<SelectSpec, RuleError> {
 pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
     let payload_value: Value = serde_json::from_slice(&message.payload).ok()?;
     let obj = payload_value.as_object()?;
+    evaluate_rule_with_payload(rule, message, obj)
+}
+
+pub(crate) fn evaluate_rule_with_payload(
+    rule: &CompiledRule,
+    message: &Message,
+    payload_obj: &serde_json::Map<String, Value>,
+) -> Option<Message> {
     let context = EvalContext {
         message,
-        payload: obj,
+        payload: payload_obj,
         rule_alias: &rule.aliased_topic_filter,
     };
 
