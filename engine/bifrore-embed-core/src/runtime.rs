@@ -1,5 +1,6 @@
 use crate::message::Message;
 use crate::metrics::EvalMetrics;
+use crate::payload::{decode_payload_object, PayloadFormat};
 use crate::rule::{compile_rule, evaluate_rule_with_payload, CompiledRule, RuleDefinition, RuleError};
 use serde::Deserialize;
 use std::fs;
@@ -13,15 +14,21 @@ pub struct RuleEngine {
     rule_index_by_id: HashMap<String, usize>,
     matcher: TopicTrie,
     metrics: EvalMetrics,
+    payload_format: PayloadFormat,
 }
 
 impl RuleEngine {
     pub fn new() -> Self {
+        Self::with_payload_format(PayloadFormat::Json)
+    }
+
+    pub fn with_payload_format(payload_format: PayloadFormat) -> Self {
         Self {
             rules: Vec::new(),
             rule_index_by_id: HashMap::new(),
             matcher: TopicTrie::default(),
             metrics: EvalMetrics::default(),
+            payload_format,
         }
     }
 
@@ -61,28 +68,22 @@ impl RuleEngine {
             return results;
         }
 
-        let parsed_payload = match serde_json::from_slice::<serde_json::Value>(&message.payload) {
+        let payload_obj = match decode_payload_object(&message.payload, self.payload_format) {
             Ok(value) => value,
             Err(err) => {
                 log::warn!(
-                    "dropping message with invalid JSON payload topic={} error={}",
+                    "dropping message with invalid payload topic={} format={:?} error={}",
                     message.topic,
+                    self.payload_format,
                     err
                 );
                 return results;
             }
         };
-        let Some(payload_obj) = parsed_payload.as_object() else {
-            log::warn!(
-                "dropping message with non-object JSON payload topic={}",
-                message.topic
-            );
-            return results;
-        };
 
         for rule in matched_rules {
             let start = Instant::now();
-            let evaluated = evaluate_rule_with_payload(rule, message, payload_obj);
+            let evaluated = evaluate_rule_with_payload(rule, message, &payload_obj);
             let duration = start.elapsed().as_nanos() as u64;
             let success = evaluated.is_some();
             self.metrics.record(duration, success);
@@ -269,6 +270,9 @@ impl TopicTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payload::PayloadFormat;
+    use prost::Message as _;
+    use prost_types::{Struct, Value as ProstValue};
 
     #[test]
     fn load_rules_from_json() {
@@ -347,5 +351,84 @@ mod tests {
         assert!(engine.remove_rule(&rule_id));
         let results = engine.evaluate(&message);
         assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn evaluate_with_protobuf_struct_payload() {
+        let mut engine = RuleEngine::with_payload_format(PayloadFormat::Protobuf);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select * from data where temp > 20".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "temp".to_string(),
+            ProstValue {
+                kind: Some(prost_types::value::Kind::NumberValue(25.0)),
+            },
+        );
+        let payload = Struct { fields };
+        let message = Message::new("data", payload.encode_to_vec());
+        let results = engine.evaluate(&message);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn evaluate_with_protobuf_typed_predicates_and_projection() {
+        let mut engine = RuleEngine::with_payload_format(PayloadFormat::Protobuf);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select device as d from data where temp >= 20 and online = true"
+                    .to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "temp".to_string(),
+            ProstValue {
+                kind: Some(prost_types::value::Kind::NumberValue(21.0)),
+            },
+        );
+        fields.insert(
+            "online".to_string(),
+            ProstValue {
+                kind: Some(prost_types::value::Kind::BoolValue(true)),
+            },
+        );
+        fields.insert(
+            "device".to_string(),
+            ProstValue {
+                kind: Some(prost_types::value::Kind::StringValue("sensor-1".to_string())),
+            },
+        );
+        let payload = Struct { fields };
+
+        let message = Message::new("data", payload.encode_to_vec());
+        let results = engine.evaluate(&message);
+        assert_eq!(results.len(), 1);
+
+        let output: serde_json::Value =
+            serde_json::from_slice(&results[0].message.payload).expect("output json");
+        assert_eq!(output["d"], serde_json::Value::from("sensor-1"));
+    }
+
+    #[test]
+    fn evaluate_with_protobuf_invalid_payload_is_dropped() {
+        let mut engine = RuleEngine::with_payload_format(PayloadFormat::Protobuf);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select * from data where temp > 10".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+
+        let message = Message::new("data", vec![1, 2, 3, 4, 5]);
+        let results = engine.evaluate(&message);
+        assert!(results.is_empty());
     }
 }

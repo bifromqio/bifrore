@@ -1,5 +1,6 @@
 use bifrore_embed_core::message::Message;
 use bifrore_embed_core::mqtt::{start_mqtt, MessageHandler, MqttAdapterHandle, MqttConfig};
+use bifrore_embed_core::payload::PayloadFormat;
 use bifrore_embed_core::runtime::RuleEngine;
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
@@ -15,6 +16,13 @@ pub enum BifroRELogLevel {
     Info = 3,
     Debug = 4,
     Trace = 5,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BifroREPayloadFormat {
+    Json = 1,
+    Protobuf = 2,
 }
 
 pub type BifroRELogCallback =
@@ -161,7 +169,7 @@ pub type BifroEvalCallback = extern "C" fn(
 pub extern "C" fn bre_create() -> *mut BifroRE {
     ensure_logger_initialized();
     let engine = BifroRE {
-        inner: Mutex::new(RuleEngine::new()),
+        inner: Mutex::new(RuleEngine::with_payload_format(PayloadFormat::Json)),
         adapter: None,
     };
     log::info!("Bifro engine created");
@@ -169,18 +177,43 @@ pub extern "C" fn bre_create() -> *mut BifroRE {
 }
 
 #[no_mangle]
+pub extern "C" fn bre_create_with_payload_format(payload_format: c_int) -> *mut BifroRE {
+    ensure_logger_initialized();
+    let Some(payload_format) = PayloadFormat::from_ffi_code(payload_format) else {
+        return ptr::null_mut();
+    };
+    let engine = BifroRE {
+        inner: Mutex::new(RuleEngine::with_payload_format(payload_format)),
+        adapter: None,
+    };
+    log::info!("Bifro engine created with payload_format={:?}", payload_format);
+    Box::into_raw(Box::new(engine))
+}
+
+#[no_mangle]
 pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroRE {
+    bre_create_with_rules_and_payload_format(path, BifroREPayloadFormat::Json as c_int)
+}
+
+#[no_mangle]
+pub extern "C" fn bre_create_with_rules_and_payload_format(
+    path: *const c_char,
+    payload_format: c_int,
+) -> *mut BifroRE {
     ensure_logger_initialized();
     if path.is_null() {
         return ptr::null_mut();
     }
+    let Some(payload_format) = PayloadFormat::from_ffi_code(payload_format) else {
+        return ptr::null_mut();
+    };
 
     let path = unsafe { CStr::from_ptr(path) };
     let Ok(path) = path.to_str() else {
         return ptr::null_mut();
     };
 
-    let mut rule_engine = RuleEngine::new();
+    let mut rule_engine = RuleEngine::with_payload_format(payload_format);
     if rule_engine.load_rules_from_json(path).is_err() {
         return ptr::null_mut();
     }
@@ -189,7 +222,11 @@ pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroRE {
         inner: Mutex::new(rule_engine),
         adapter: None,
     };
-    log::info!("BifroRE created with rules from path={}", path);
+    log::info!(
+        "BifroRE created with rules path={} payload_format={:?}",
+        path,
+        payload_format
+    );
     Box::into_raw(Box::new(engine))
 }
 
