@@ -81,7 +81,7 @@ run_bench() {
 }
 
 run_bench_diff() {
-  echo "Running benchmark diff: serde_json vs simd-json..."
+  echo "Running parse-only benchmark diff: serde_json vs simd-json..."
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap "rm -rf '$tmp_dir'" EXIT
@@ -89,10 +89,10 @@ run_bench_diff() {
   local serde_dir="$tmp_dir/criterion_serde"
   local simd_dir="$tmp_dir/criterion_simd"
 
-  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench)
+  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench parse_only)
   cp -R "$RUST_DIR/target/criterion" "$serde_dir"
 
-  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench --features simd-json)
+  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench --features simd-json parse_only)
   cp -R "$RUST_DIR/target/criterion" "$simd_dir"
 
   node -e '
@@ -131,9 +131,9 @@ const serde = readBenchNs(serdeBase);
 const simd = readBenchNs(simdBase);
 
 console.log("");
-console.log("=== JSON parser diff (smaller is better) ===");
+console.log("=== Parse-only JSON parser diff (smaller is better) ===");
 const jsonNames = Object.keys(simd)
-  .filter((name) => name.endsWith("_json") && serde[name] !== undefined)
+  .filter((name) => name.startsWith("parse_only_") && name.endsWith("_json") && serde[name] !== undefined)
   .sort();
 if (jsonNames.length === 0) {
   console.log("No matching JSON benchmarks found.");
@@ -149,16 +149,27 @@ if (jsonNames.length === 0) {
 }
 
 console.log("");
-console.log("=== Payload diff inside simd-json run ===");
-const jsonAll = simd["rule_eval_100_all_match_json"];
-const pbAll = simd["rule_eval_100_all_match_protobuf"];
-if (jsonAll !== undefined && pbAll !== undefined) {
-  const d = pctDelta(pbAll, jsonAll);
-  console.log(
-    `${"all_match (simd-json build)".padEnd(38)} json=${fmtNs(jsonAll).padEnd(14)} protobuf=${fmtNs(pbAll).padEnd(14)} delta=${d.toFixed(2).padStart(8)}%`
-  );
+console.log("=== Parse-only payload diff inside simd-json run ===");
+const protobufNames = Object.keys(simd)
+  .filter((name) => name.startsWith("parse_only_") && name.endsWith("_protobuf"))
+  .sort();
+if (protobufNames.length === 0) {
+  console.log("No parse-only protobuf benchmarks found in simd-json run.");
 } else {
-  console.log("Required benchmarks not found in simd-json criterion output.");
+  let printed = 0;
+  for (const pbName of protobufNames) {
+    const jsonName = pbName.replace(/_protobuf$/, "_json");
+    if (simd[jsonName] === undefined) continue;
+    const d = pctDelta(simd[pbName], simd[jsonName]);
+    const label = pbName.replace(/^parse_only_/, "").replace(/_protobuf$/, "");
+    console.log(
+      `${label.padEnd(38)} json=${fmtNs(simd[jsonName]).padEnd(14)} protobuf=${fmtNs(simd[pbName]).padEnd(14)} delta=${d.toFixed(2).padStart(8)}%`
+    );
+    printed += 1;
+  }
+  if (printed === 0) {
+    console.log("No matching parse_only_*_json benchmark found for parse_only_*_protobuf cases.");
+  }
 }
 ' "$serde_dir" "$simd_dir"
 }

@@ -1,6 +1,6 @@
 use crate::message::Message;
 use crate::metrics::EvalMetrics;
-use crate::payload::{decode_payload_object, PayloadFormat};
+use crate::payload::{decode_payload_object_with_decoder, PayloadDecoder, PayloadFormat};
 use crate::rule::{
     compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
     RuleError,
@@ -11,13 +11,19 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RuleEngine {
     rules: Vec<Option<CompiledRule>>,
     rule_index_by_id: HashMap<String, usize>,
     matcher: TopicTrie,
     metrics: EvalMetrics,
-    payload_format: PayloadFormat,
+    payload_decoder: PayloadDecoder,
+}
+
+impl Default for RuleEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RuleEngine {
@@ -26,12 +32,16 @@ impl RuleEngine {
     }
 
     pub fn with_payload_format(payload_format: PayloadFormat) -> Self {
+        Self::with_payload_decoder(PayloadDecoder::from_format(payload_format))
+    }
+
+    pub fn with_payload_decoder(payload_decoder: PayloadDecoder) -> Self {
         Self {
             rules: Vec::new(),
             rule_index_by_id: HashMap::new(),
             matcher: TopicTrie::default(),
             metrics: EvalMetrics::default(),
-            payload_format,
+            payload_decoder,
         }
     }
 
@@ -71,13 +81,13 @@ impl RuleEngine {
             return results;
         }
 
-        let payload_obj = match decode_payload_object(&message.payload, self.payload_format) {
+        let payload_obj = match decode_payload_object_with_decoder(&message.payload, &self.payload_decoder) {
             Ok(value) => value,
             Err(err) => {
                 log::warn!(
-                    "dropping message with invalid payload topic={} format={:?} error={}",
+                    "dropping message with invalid payload topic={} decoder={:?} error={}",
                     message.topic,
-                    self.payload_format,
+                    self.payload_decoder,
                     err
                 );
                 return results;
@@ -279,9 +289,18 @@ impl TopicTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::payload::PayloadFormat;
+    use crate::payload::typed_protobuf_decoder;
     use prost::Message as _;
-    use prost_types::{Struct, Value as ProstValue};
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct TypedRuntimePayload {
+        #[prost(double, tag = "1")]
+        temp: f64,
+        #[prost(string, tag = "2")]
+        device: String,
+        #[prost(bool, tag = "3")]
+        online: bool,
+    }
 
     #[test]
     fn load_rules_from_json() {
@@ -363,31 +382,15 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_with_protobuf_struct_payload() {
-        let mut engine = RuleEngine::with_payload_format(PayloadFormat::Protobuf);
-        engine
-            .add_rule(RuleDefinition {
-                expression: "select * from data where temp > 20".to_string(),
-                destinations: vec!["dest".to_string()],
-            })
-            .expect("add rule");
-
-        let mut fields = std::collections::BTreeMap::new();
-        fields.insert(
-            "temp".to_string(),
-            ProstValue {
-                kind: Some(prost_types::value::Kind::NumberValue(25.0)),
-            },
-        );
-        let payload = Struct { fields };
-        let message = Message::new("data", payload.encode_to_vec());
-        let results = engine.evaluate(&message);
-        assert_eq!(results.len(), 1);
-    }
-
-    #[test]
-    fn evaluate_with_protobuf_typed_predicates_and_projection() {
-        let mut engine = RuleEngine::with_payload_format(PayloadFormat::Protobuf);
+    fn evaluate_with_typed_protobuf_typed_predicates_and_projection() {
+        let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
+            let mut output = serde_json::Map::new();
+            output.insert("temp".to_string(), serde_json::Value::from(message.temp));
+            output.insert("device".to_string(), serde_json::Value::from(message.device));
+            output.insert("online".to_string(), serde_json::Value::from(message.online));
+            Ok(output)
+        });
+        let mut engine = RuleEngine::with_payload_decoder(decoder);
         engine
             .add_rule(RuleDefinition {
                 expression: "select device as d from data where temp >= 20 and online = true"
@@ -396,27 +399,11 @@ mod tests {
             })
             .expect("add rule");
 
-        let mut fields = std::collections::BTreeMap::new();
-        fields.insert(
-            "temp".to_string(),
-            ProstValue {
-                kind: Some(prost_types::value::Kind::NumberValue(21.0)),
-            },
-        );
-        fields.insert(
-            "online".to_string(),
-            ProstValue {
-                kind: Some(prost_types::value::Kind::BoolValue(true)),
-            },
-        );
-        fields.insert(
-            "device".to_string(),
-            ProstValue {
-                kind: Some(prost_types::value::Kind::StringValue("sensor-1".to_string())),
-            },
-        );
-        let payload = Struct { fields };
-
+        let payload = TypedRuntimePayload {
+            temp: 21.0,
+            device: "sensor-1".to_string(),
+            online: true,
+        };
         let message = Message::new("data", payload.encode_to_vec());
         let results = engine.evaluate(&message);
         assert_eq!(results.len(), 1);
@@ -427,8 +414,15 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_with_protobuf_invalid_payload_is_dropped() {
-        let mut engine = RuleEngine::with_payload_format(PayloadFormat::Protobuf);
+    fn evaluate_with_typed_protobuf_invalid_payload_is_dropped() {
+        let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
+            let mut output = serde_json::Map::new();
+            output.insert("temp".to_string(), serde_json::Value::from(message.temp));
+            output.insert("device".to_string(), serde_json::Value::from(message.device));
+            output.insert("online".to_string(), serde_json::Value::from(message.online));
+            Ok(output)
+        });
+        let mut engine = RuleEngine::with_payload_decoder(decoder);
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from data where temp > 10".to_string(),
@@ -439,5 +433,35 @@ mod tests {
         let message = Message::new("data", vec![1, 2, 3, 4, 5]);
         let results = engine.evaluate(&message);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn evaluate_with_typed_protobuf_decoder() {
+        let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
+            let mut output = serde_json::Map::new();
+            output.insert("temp".to_string(), serde_json::Value::from(message.temp));
+            output.insert("device".to_string(), serde_json::Value::from(message.device));
+            Ok(output)
+        });
+        let mut engine = RuleEngine::with_payload_decoder(decoder);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select device as d from data where temp > 20".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+
+        let payload = TypedRuntimePayload {
+            temp: 30.0,
+            device: "typed-dev".to_string(),
+            online: true,
+        };
+        let message = Message::new("data", payload.encode_to_vec());
+        let results = engine.evaluate(&message);
+        assert_eq!(results.len(), 1);
+
+        let output: serde_json::Value =
+            serde_json::from_slice(&results[0].message.payload).expect("output json");
+        assert_eq!(output["d"], serde_json::Value::from("typed-dev"));
     }
 }

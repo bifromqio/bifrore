@@ -22,7 +22,6 @@ pub enum BifroRELogLevel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BifroREPayloadFormat {
     Json = 1,
-    Protobuf = 2,
 }
 
 pub type BifroRELogCallback =
