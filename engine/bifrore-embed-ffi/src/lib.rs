@@ -310,6 +310,24 @@ pub extern "C" fn bre_metrics_snapshot(
 }
 
 #[no_mangle]
+pub extern "C" fn bre_set_eval_parallel_threshold(
+    engine: *mut BifroRE,
+    threshold: u32,
+) -> c_int {
+    if engine.is_null() {
+        return -1;
+    }
+    let engine = unsafe { &mut *engine };
+    let mut guard = engine.inner.lock().unwrap();
+    if threshold == 0 {
+        guard.set_eval_parallel_threshold(None);
+    } else {
+        guard.set_eval_parallel_threshold(Some(threshold as usize));
+    }
+    0
+}
+
+#[no_mangle]
 pub extern "C" fn bre_start_mqtt(
     engine: *mut BifroRE,
     host: *const c_char,

@@ -5,6 +5,7 @@ use crate::rule::{
     compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
     RuleError,
 };
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,6 +13,8 @@ use std::path::Path;
 use std::time::Instant;
 
 const DEFAULT_TOPIC_CACHE_CAPACITY: usize = 4096;
+const DEFAULT_EVAL_PARALLEL_THRESHOLD: usize = 16;
+const DEFAULT_EVAL_PARALLEL_MAX_WORKERS: usize = 8;
 
 #[derive(Debug)]
 pub struct RuleEngine {
@@ -21,6 +24,8 @@ pub struct RuleEngine {
     metrics: EvalMetrics,
     payload_decoder: PayloadDecoder,
     topic_match_cache: TopicMatchCache,
+    eval_parallel_threshold: usize,
+    eval_pool: Option<rayon::ThreadPool>,
 }
 
 impl Default for RuleEngine {
@@ -53,11 +58,21 @@ impl RuleEngine {
             metrics: EvalMetrics::default(),
             payload_decoder,
             topic_match_cache: TopicMatchCache::new(topic_cache_capacity),
+            eval_parallel_threshold: DEFAULT_EVAL_PARALLEL_THRESHOLD,
+            eval_pool: build_eval_pool(),
         }
     }
 
     pub fn metrics(&self) -> &EvalMetrics {
         &self.metrics
+    }
+
+    pub fn set_eval_parallel_threshold(&mut self, threshold: Option<usize>) {
+        self.eval_parallel_threshold = threshold.unwrap_or(DEFAULT_EVAL_PARALLEL_THRESHOLD).max(1);
+    }
+
+    pub fn eval_parallel_threshold(&self) -> usize {
+        self.eval_parallel_threshold
     }
 
     pub fn add_rule(&mut self, rule: RuleDefinition) -> Result<String, RuleError> {
@@ -109,22 +124,49 @@ impl RuleEngine {
             };
         let topic_parts: Vec<&str> = message.topic.split('/').collect();
 
-        for rule_index in matched_rule_indexes {
-            let Some(rule) = self.rules.get(rule_index).and_then(|slot| slot.as_ref()) else {
-                continue;
-            };
-            let start = Instant::now();
-            let evaluated =
-                evaluate_rule_with_payload_and_topic_parts(rule, message, &payload_obj, &topic_parts);
-            let duration = start.elapsed().as_nanos() as u64;
-            let success = evaluated.is_some();
-            self.metrics.record(duration, success);
-            if let Some(evaluated_message) = evaluated {
-                results.push(RuleEvaluation {
-                    message: evaluated_message,
-                    destinations: rule.destinations.clone(),
-                    rule_id: rule.id.clone(),
-                });
+        let use_parallel = matched_rule_indexes.len() >= self.eval_parallel_threshold
+            && self
+                .eval_pool
+                .as_ref()
+                .map(|pool| pool.current_num_threads() > 1)
+                .unwrap_or(false);
+        let attempts = if use_parallel {
+            let rules = &self.rules;
+            self.eval_pool
+                .as_ref()
+                .expect("eval pool checked")
+                .install(|| {
+                    matched_rule_indexes
+                        .par_iter()
+                        .filter_map(|rule_index| {
+                            evaluate_single_rule(
+                                *rule_index,
+                                rules,
+                                message,
+                                &payload_obj,
+                                &topic_parts,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+        } else {
+            matched_rule_indexes
+                .iter()
+                .filter_map(|rule_index| {
+                    evaluate_single_rule(
+                        *rule_index,
+                        &self.rules,
+                        message,
+                        &payload_obj,
+                        &topic_parts,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for attempt in attempts {
+            self.metrics.record(attempt.duration_nanos, attempt.success);
+            if let Some(evaluation) = attempt.evaluation {
+                results.push(evaluation);
             }
         }
         results
@@ -175,6 +217,47 @@ pub struct RuleEvaluation {
 #[derive(Debug, Deserialize)]
 struct RuleFile {
     rules: Vec<RuleDefinition>,
+}
+
+struct EvalAttempt {
+    duration_nanos: u64,
+    success: bool,
+    evaluation: Option<RuleEvaluation>,
+}
+
+fn evaluate_single_rule(
+    rule_index: usize,
+    rules: &[Option<CompiledRule>],
+    message: &Message,
+    payload_obj: &serde_json::Map<String, serde_json::Value>,
+    topic_parts: &[&str],
+) -> Option<EvalAttempt> {
+    let rule = rules.get(rule_index).and_then(|slot| slot.as_ref())?;
+    let start = Instant::now();
+    let evaluated = evaluate_rule_with_payload_and_topic_parts(rule, message, payload_obj, topic_parts);
+    let duration_nanos = start.elapsed().as_nanos() as u64;
+    let success = evaluated.is_some();
+    let evaluation = evaluated.map(|evaluated_message| RuleEvaluation {
+        message: evaluated_message,
+        destinations: rule.destinations.clone(),
+        rule_id: rule.id.clone(),
+    });
+    Some(EvalAttempt {
+        duration_nanos,
+        success,
+        evaluation,
+    })
+}
+
+fn build_eval_pool() -> Option<rayon::ThreadPool> {
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get().clamp(1, DEFAULT_EVAL_PARALLEL_MAX_WORKERS))
+        .unwrap_or(1);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|idx| format!("bifrore-eval-{idx}"))
+        .build()
+        .ok()
 }
 
 #[derive(Debug)]
