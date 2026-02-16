@@ -6,10 +6,12 @@ use crate::rule::{
     RuleError,
 };
 use serde::Deserialize;
-use std::fs;
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 use std::time::Instant;
+
+const DEFAULT_TOPIC_CACHE_CAPACITY: usize = 4096;
 
 #[derive(Debug)]
 pub struct RuleEngine {
@@ -18,6 +20,7 @@ pub struct RuleEngine {
     matcher: TopicTrie,
     metrics: EvalMetrics,
     payload_decoder: PayloadDecoder,
+    topic_match_cache: TopicMatchCache,
 }
 
 impl Default for RuleEngine {
@@ -36,12 +39,20 @@ impl RuleEngine {
     }
 
     pub fn with_payload_decoder(payload_decoder: PayloadDecoder) -> Self {
+        Self::with_payload_decoder_and_cache_capacity(payload_decoder, DEFAULT_TOPIC_CACHE_CAPACITY)
+    }
+
+    pub fn with_payload_decoder_and_cache_capacity(
+        payload_decoder: PayloadDecoder,
+        topic_cache_capacity: usize,
+    ) -> Self {
         Self {
             rules: Vec::new(),
             rule_index_by_id: HashMap::new(),
             matcher: TopicTrie::default(),
             metrics: EvalMetrics::default(),
             payload_decoder,
+            topic_match_cache: TopicMatchCache::new(topic_cache_capacity),
         }
     }
 
@@ -58,6 +69,7 @@ impl RuleEngine {
         if let Some(rule_ref) = self.rules[index].as_ref() {
             self.matcher.insert(&rule_ref.topic_filter, index);
         }
+        self.clear_topic_cache();
         Ok(id)
     }
 
@@ -71,38 +83,39 @@ impl RuleEngine {
         if let Some(slot) = self.rules.get_mut(index) {
             *slot = None;
         }
+        self.clear_topic_cache();
         true
     }
 
-    pub fn evaluate(&self, message: &Message) -> Vec<RuleEvaluation> {
+    pub fn evaluate(&mut self, message: &Message) -> Vec<RuleEvaluation> {
         let mut results = Vec::new();
-        let matched_rules = self.matcher.match_topic(&message.topic, &self.rules);
-        if matched_rules.is_empty() {
+        let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
+        if matched_rule_indexes.is_empty() {
             return results;
         }
 
-        let payload_obj = match decode_payload_object_with_decoder(&message.payload, &self.payload_decoder) {
-            Ok(value) => value,
-            Err(err) => {
-                log::warn!(
-                    "dropping message with invalid payload topic={} decoder={:?} error={}",
-                    message.topic,
-                    self.payload_decoder,
-                    err
-                );
-                return results;
-            }
-        };
+        let payload_obj =
+            match decode_payload_object_with_decoder(&message.payload, &self.payload_decoder) {
+                Ok(value) => value,
+                Err(err) => {
+                    log::warn!(
+                        "dropping message with invalid payload topic={} decoder={:?} error={}",
+                        message.topic,
+                        self.payload_decoder,
+                        err
+                    );
+                    return results;
+                }
+            };
         let topic_parts: Vec<&str> = message.topic.split('/').collect();
 
-        for rule in matched_rules {
+        for rule_index in matched_rule_indexes {
+            let Some(rule) = self.rules.get(rule_index).and_then(|slot| slot.as_ref()) else {
+                continue;
+            };
             let start = Instant::now();
-            let evaluated = evaluate_rule_with_payload_and_topic_parts(
-                rule,
-                message,
-                &payload_obj,
-                &topic_parts,
-            );
+            let evaluated =
+                evaluate_rule_with_payload_and_topic_parts(rule, message, &payload_obj, &topic_parts);
             let duration = start.elapsed().as_nanos() as u64;
             let success = evaluated.is_some();
             self.metrics.record(duration, success);
@@ -126,14 +139,29 @@ impl RuleEngine {
 
     pub fn load_rules_from_json<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, RuleError> {
         let content = fs::read_to_string(path).map_err(|e| RuleError::SqlParse(e.to_string()))?;
-        let parsed: RuleFile = serde_json::from_str(&content)
-            .map_err(|e| RuleError::SqlParse(e.to_string()))?;
+        let parsed: RuleFile =
+            serde_json::from_str(&content).map_err(|e| RuleError::SqlParse(e.to_string()))?;
         let mut count = 0;
         for rule in parsed.rules {
             self.add_rule(rule)?;
             count += 1;
         }
         Ok(count)
+    }
+
+    fn clear_topic_cache(&mut self) {
+        self.topic_match_cache.clear();
+    }
+
+    fn match_rule_indexes_with_cache(&mut self, topic: &str) -> Vec<usize> {
+        if let Some(cached) = self.topic_match_cache.get(topic) {
+            return cached;
+        }
+
+        let matched = self.matcher.match_topic_indexes(topic);
+        self.topic_match_cache
+            .insert(topic.to_string(), matched.clone());
+        matched
     }
 }
 
@@ -147,6 +175,81 @@ pub struct RuleEvaluation {
 #[derive(Debug, Deserialize)]
 struct RuleFile {
     rules: Vec<RuleDefinition>,
+}
+
+#[derive(Debug)]
+struct TopicMatchCache {
+    capacity: usize,
+    access_seq: u64,
+    entries: HashMap<String, TopicMatchCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct TopicMatchCacheEntry {
+    matched_rule_indexes: Vec<usize>,
+    use_count: u64,
+    last_access_seq: u64,
+}
+
+impl TopicMatchCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            access_seq: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.access_seq = 0;
+    }
+
+    fn get(&mut self, topic: &str) -> Option<Vec<usize>> {
+        self.access_seq = self.access_seq.saturating_add(1);
+        let entry = self.entries.get_mut(topic)?;
+        entry.use_count = entry.use_count.saturating_add(1);
+        entry.last_access_seq = self.access_seq;
+        Some(entry.matched_rule_indexes.clone())
+    }
+
+    fn insert(&mut self, topic: String, matched_rule_indexes: Vec<usize>) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        self.access_seq = self.access_seq.saturating_add(1);
+        if let Some(entry) = self.entries.get_mut(&topic) {
+            entry.matched_rule_indexes = matched_rule_indexes;
+            entry.use_count = entry.use_count.saturating_add(1);
+            entry.last_access_seq = self.access_seq;
+            return;
+        }
+
+        if self.entries.len() >= self.capacity {
+            self.evict_lfu();
+        }
+
+        self.entries.insert(
+            topic,
+            TopicMatchCacheEntry {
+                matched_rule_indexes,
+                use_count: 1,
+                last_access_seq: self.access_seq,
+            },
+        );
+    }
+
+    fn evict_lfu(&mut self) {
+        let Some(evict_key) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| (entry.use_count, entry.last_access_seq))
+            .map(|(key, _)| key.clone()) else {
+            return;
+        };
+        self.entries.remove(&evict_key);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -172,7 +275,6 @@ impl TrieNode {
 }
 
 impl TopicTrie {
-
     fn insert(&mut self, filter: &str, rule_index: usize) {
         let levels: Vec<&str> = filter.split('/').collect();
         let mut node = &mut self.root;
@@ -198,28 +300,14 @@ impl TopicTrie {
         Self::remove_from_node(&mut self.root, &levels, 0, rule_index);
     }
 
-    fn match_topic<'a>(
-        &'a self,
-        topic: &str,
-        rules: &'a [Option<CompiledRule>],
-    ) -> Vec<&'a CompiledRule> {
+    fn match_topic_indexes(&self, topic: &str) -> Vec<usize> {
         let levels: Vec<&str> = topic.split('/').collect();
         let mut matched = HashSet::new();
-        self.match_node(&self.root, &levels, 0, rules, &mut matched);
-        matched
-            .into_iter()
-            .filter_map(|idx| rules.get(idx).and_then(|slot| slot.as_ref()))
-            .collect()
+        self.match_node(&self.root, &levels, 0, &mut matched);
+        matched.into_iter().collect()
     }
 
-    fn match_node<'a>(
-        &'a self,
-        node: &'a TrieNode,
-        levels: &[&str],
-        index: usize,
-        rules: &'a [Option<CompiledRule>],
-        out: &mut HashSet<usize>,
-    ) {
+    fn match_node(&self, node: &TrieNode, levels: &[&str], index: usize, out: &mut HashSet<usize>) {
         if let Some(hash_node) = &node.hash_child {
             out.extend(hash_node.rule_indexes.iter().copied());
         }
@@ -231,10 +319,10 @@ impl TopicTrie {
 
         let level = levels[index];
         if let Some(child) = node.children.get(level) {
-            self.match_node(child, levels, index + 1, rules, out);
+            self.match_node(child, levels, index + 1, out);
         }
         if let Some(plus_child) = &node.plus_child {
-            self.match_node(plus_child, levels, index + 1, rules, out);
+            self.match_node(plus_child, levels, index + 1, out);
         }
     }
 
@@ -463,5 +551,54 @@ mod tests {
         let output: serde_json::Value =
             serde_json::from_slice(&results[0].message.payload).expect("output json");
         assert_eq!(output["d"], serde_json::Value::from("typed-dev"));
+    }
+
+    #[test]
+    fn topic_match_cache_reuses_entries() {
+        let mut engine = RuleEngine::with_payload_decoder_and_cache_capacity(PayloadDecoder::Json, 8);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select * from sensors/+/temp".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+        let payload = serde_json::json!({"temp": 10});
+        let message = Message::new("sensors/room1/temp", serde_json::to_vec(&payload).unwrap());
+
+        assert_eq!(engine.evaluate(&message).len(), 1);
+        assert_eq!(engine.evaluate(&message).len(), 1);
+
+        assert_eq!(engine.topic_match_cache.entries.len(), 1);
+        let entry = engine
+            .topic_match_cache
+            .entries
+            .get("sensors/room1/temp")
+            .expect("cache entry");
+        assert_eq!(entry.use_count, 2);
+    }
+
+    #[test]
+    fn topic_match_cache_evicts_least_used_entry() {
+        let mut engine = RuleEngine::with_payload_decoder_and_cache_capacity(PayloadDecoder::Json, 2);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select * from sensors/#".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+        let payload = serde_json::json!({"temp": 10});
+
+        let message_a = Message::new("sensors/a/temp", serde_json::to_vec(&payload).unwrap());
+        let message_b = Message::new("sensors/b/temp", serde_json::to_vec(&payload).unwrap());
+        let message_c = Message::new("sensors/c/temp", serde_json::to_vec(&payload).unwrap());
+
+        assert_eq!(engine.evaluate(&message_a).len(), 1);
+        assert_eq!(engine.evaluate(&message_a).len(), 1);
+        assert_eq!(engine.evaluate(&message_b).len(), 1);
+        assert_eq!(engine.evaluate(&message_c).len(), 1);
+
+        assert!(engine.topic_match_cache.entries.get("sensors/a/temp").is_some());
+        assert!(engine.topic_match_cache.entries.get("sensors/c/temp").is_some());
+        assert!(engine.topic_match_cache.entries.get("sensors/b/temp").is_none());
     }
 }

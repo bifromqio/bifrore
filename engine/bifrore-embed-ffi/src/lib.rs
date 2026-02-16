@@ -6,6 +6,7 @@ use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
 use std::ptr;
 use std::sync::{Mutex, Once, OnceLock, RwLock};
+use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[repr(C)]
@@ -154,6 +155,8 @@ fn generate_default_node_id() -> String {
 pub struct BifroRE {
     inner: Mutex<RuleEngine>,
     adapter: Option<MqttAdapterHandle>,
+    core_queue_tx: Option<flume::Sender<Message>>,
+    core_worker: Option<JoinHandle<()>>,
 }
 
 pub type BifroEvalCallback = extern "C" fn(
@@ -170,6 +173,8 @@ pub extern "C" fn bre_create() -> *mut BifroRE {
     let engine = BifroRE {
         inner: Mutex::new(RuleEngine::with_payload_format(PayloadFormat::Json)),
         adapter: None,
+        core_queue_tx: None,
+        core_worker: None,
     };
     log::info!("Bifro engine created");
     Box::into_raw(Box::new(engine))
@@ -184,6 +189,8 @@ pub extern "C" fn bre_create_with_payload_format(payload_format: c_int) -> *mut 
     let engine = BifroRE {
         inner: Mutex::new(RuleEngine::with_payload_format(payload_format)),
         adapter: None,
+        core_queue_tx: None,
+        core_worker: None,
     };
     log::info!("Bifro engine created with payload_format={:?}", payload_format);
     Box::into_raw(Box::new(engine))
@@ -220,6 +227,8 @@ pub extern "C" fn bre_create_with_rules_and_payload_format(
     let engine = BifroRE {
         inner: Mutex::new(rule_engine),
         adapter: None,
+        core_queue_tx: None,
+        core_worker: None,
     };
     log::info!(
         "BifroRE created with rules path={} payload_format={:?}",
@@ -240,6 +249,7 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
             let _ = adapter.stop();
             log::info!("BifroRE destroy requested MQTT stop");
         }
+        stop_core_worker(&mut boxed);
         log::info!("BifroRE destroyed");
         drop(boxed);
     }
@@ -327,6 +337,10 @@ pub extern "C" fn bre_start_mqtt(
         return -1;
     }
     let Some(callback) = callback else { return -2 };
+    let engine_ref = unsafe { &mut *engine };
+    if engine_ref.adapter.is_some() {
+        return -5;
+    }
 
     let host = unsafe { CStr::from_ptr(host) };
     let client_prefix = unsafe { CStr::from_ptr(client_prefix) };
@@ -387,9 +401,7 @@ pub extern "C" fn bre_start_mqtt(
         node_id,
         client_count,
         io_threads: 2,
-        eval_threads: std::thread::available_parallelism()
-            .map(|count| count.get().clamp(1, 4) as u16)
-            .unwrap_or(2),
+        eval_threads: 1,
         queue_capacity: 4096,
         username,
         password,
@@ -411,41 +423,56 @@ pub extern "C" fn bre_start_mqtt(
 
     let engine_addr = engine as usize;
     let user_data_addr = user_data as usize;
-    let handler: MessageHandler = std::sync::Arc::new(move |message: Message| {
+    let (core_queue_tx, core_queue_rx) = flume::bounded::<Message>(config.queue_capacity.max(1) as usize);
+    let core_worker = std::thread::spawn(move || {
         let engine_ptr = engine_addr as *mut BifroRE;
         let user_data_ptr = user_data_addr as *mut c_void;
-        let engine = unsafe { &*engine_ptr };
-        let guard = engine.inner.lock().unwrap();
-        let results = guard.evaluate(&message);
-        drop(guard);
-        for result in results {
-            let rule_id =
-                CString::new(result.rule_id).unwrap_or_else(|_| CString::new("").unwrap());
-            let destinations_json = serde_json::to_string(&result.destinations)
-                .unwrap_or_else(|_| "[]".to_string());
-            let destinations_json = CString::new(destinations_json)
-                .unwrap_or_else(|_| CString::new("[]").unwrap());
-            callback(
-                user_data_ptr,
-                rule_id.as_ptr(),
-                result.message.payload.as_ptr(),
-                result.message.payload.len() as size_t,
-                destinations_json.as_ptr(),
-            );
+        while let Ok(message) = core_queue_rx.recv() {
+            let engine = unsafe { &*engine_ptr };
+            let mut guard = engine.inner.lock().unwrap();
+            let results = guard.evaluate(&message);
+            drop(guard);
+            for result in results {
+                let rule_id =
+                    CString::new(result.rule_id).unwrap_or_else(|_| CString::new("").unwrap());
+                let destinations_json = serde_json::to_string(&result.destinations)
+                    .unwrap_or_else(|_| "[]".to_string());
+                let destinations_json = CString::new(destinations_json)
+                    .unwrap_or_else(|_| CString::new("[]").unwrap());
+                callback(
+                    user_data_ptr,
+                    rule_id.as_ptr(),
+                    result.message.payload.as_ptr(),
+                    result.message.payload.len() as size_t,
+                    destinations_json.as_ptr(),
+                );
+            }
+        }
+    });
+
+    let core_queue_tx_for_handler = core_queue_tx.clone();
+    let handler: MessageHandler = std::sync::Arc::new(move |message: Message| {
+        if core_queue_tx_for_handler.send(message).is_err() {
+            log::warn!("dropping incoming message because core queue is closed");
         }
     });
 
     let topics = {
-        let engine_ref = unsafe { &mut *engine };
         let guard = engine_ref.inner.lock().unwrap();
         guard.topic_filters()
     };
 
     let adapter = match start_mqtt(config, topics, handler) {
         Ok(adapter) => adapter,
-        Err(_) => return -4,
+        Err(_) => {
+            drop(core_queue_tx);
+            let _ = core_worker.join();
+            return -4;
+        }
     };
-    unsafe { &mut *engine }.adapter = Some(adapter);
+    engine_ref.adapter = Some(adapter);
+    engine_ref.core_queue_tx = Some(core_queue_tx);
+    engine_ref.core_worker = Some(core_worker);
     0
 }
 
@@ -458,10 +485,21 @@ pub extern "C" fn bre_stop_mqtt(engine: *mut BifroRE) -> c_int {
     if let Some(adapter) = engine.adapter.take() {
         log::info!("stopping MQTT adapter from FFI");
         match adapter.stop() {
-            Ok(_) => 0,
+            Ok(_) => {
+                stop_core_worker(engine);
+                0
+            }
             Err(_) => -2,
         }
     } else {
+        stop_core_worker(engine);
         0
+    }
+}
+
+fn stop_core_worker(engine: &mut BifroRE) {
+    engine.core_queue_tx.take();
+    if let Some(worker) = engine.core_worker.take() {
+        let _ = worker.join();
     }
 }

@@ -80,6 +80,7 @@ name = "bifrore-embed-ffi"
 version = "0.1.0"
 dependencies = [
  "bifrore-embed-core",
+ "flume",
  "libc",
  "log",
  "serde_json",

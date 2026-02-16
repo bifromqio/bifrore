@@ -53,7 +53,7 @@ pub struct MqttAdapterHandle {
     #[cfg(feature = "mqtt")]
     runtime_thread: Option<JoinHandle<()>>,
     #[cfg(feature = "mqtt")]
-    eval_workers: Vec<JoinHandle<()>>,
+    eval_worker: Option<JoinHandle<()>>,
 }
 
 impl MqttAdapterHandle {
@@ -67,8 +67,8 @@ impl MqttAdapterHandle {
             if let Some(runtime_thread) = self.runtime_thread.take() {
                 let _ = runtime_thread.join();
             }
-            for worker in self.eval_workers.drain(..) {
-                let _ = worker.join();
+            if let Some(eval_worker) = self.eval_worker.take() {
+                let _ = eval_worker.join();
             }
             Ok(())
         }
@@ -90,32 +90,33 @@ pub fn start_mqtt(
 
     let client_count = config.client_count.max(1);
     let io_threads = config.io_threads.max(1) as usize;
-    let eval_threads = config.eval_threads.max(1) as usize;
     let queue_capacity = config.queue_capacity.max(1) as usize;
 
     log::info!(
-        "starting MQTT adapter host={} port={} topics={} clients={} io_threads={} eval_threads={} queue_capacity={}",
+        "starting MQTT adapter host={} port={} topics={} clients={} io_threads={} queue_capacity={}",
         config.host,
         config.port,
         topics.len(),
         client_count,
         io_threads,
-        eval_threads,
         queue_capacity
     );
 
     let (queue_tx, queue_rx) = flume::bounded::<Message>(queue_capacity);
-    let mut eval_workers = Vec::with_capacity(eval_threads);
-    for _ in 0..eval_threads {
-        let rx = queue_rx.clone();
+    if config.eval_threads > 1 {
+        log::warn!(
+            "eval_threads={} requested but adapter uses single consumer (MPSC) for ordering simplicity",
+            config.eval_threads
+        );
+    }
+    let eval_worker = {
         let eval_handler = handler.clone();
-        eval_workers.push(std::thread::spawn(move || {
-            while let Ok(message) = rx.recv() {
+        std::thread::spawn(move || {
+            while let Ok(message) = queue_rx.recv() {
                 eval_handler(message);
             }
-        }));
-    }
-    drop(queue_rx);
+        })
+    };
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let runtime_thread = std::thread::spawn(move || {
@@ -177,7 +178,7 @@ pub fn start_mqtt(
     Ok(MqttAdapterHandle {
         stop: Some(stop_tx),
         runtime_thread: Some(runtime_thread),
-        eval_workers,
+        eval_worker: Some(eval_worker),
     })
 }
 

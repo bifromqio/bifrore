@@ -217,7 +217,7 @@ fn parse_protobuf_typed_bytes(payload: &[u8]) -> bool {
 }
 
 fn bench_evaluate(c: &mut Criterion) {
-    let all_match_engine = build_engine(100);
+    let mut all_match_engine = build_engine(100);
     let all_match_payload = serde_json::json!({"temp": 30, "hum": 40});
     let all_match_message = Message::new(
         "sensors/room1/temp",
@@ -256,7 +256,7 @@ fn bench_evaluate(c: &mut Criterion) {
         })
     });
 
-    let half_match_engine = build_engine_with_expr(100, |idx| {
+    let mut half_match_engine = build_engine_with_expr(100, |idx| {
         let threshold = if idx % 2 == 0 { 20 } else { 40 };
         format!(
             "select (temp + {idx}) * 2 as t from sensors/+/temp where temp > {threshold} and hum < 80"
@@ -275,7 +275,7 @@ fn bench_evaluate(c: &mut Criterion) {
         })
     });
 
-    let metadata_engine = build_engine_with_expr(100, |idx| {
+    let mut metadata_engine = build_engine_with_expr(100, |idx| {
         format!(
             "select temp as t{idx} from sensors/+/temp where qos >= 1 and retain = false and topic_level(dev, 2) = 'room1'"
         )
@@ -294,7 +294,7 @@ fn bench_evaluate(c: &mut Criterion) {
         })
     });
 
-    let protobuf_engine = build_protobuf_engine(100);
+    let mut protobuf_engine = build_protobuf_engine(100);
     let protobuf_message = build_protobuf_message("sensors/room1/temp", 30.0, 40.0);
 
     c.bench_function("rule_eval_100_all_match_protobuf", |b| {
