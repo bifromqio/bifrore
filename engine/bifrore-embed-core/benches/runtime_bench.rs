@@ -64,6 +64,26 @@ fn build_engine(rule_count: usize) -> RuleEngine {
     engine
 }
 
+fn build_engine_with_cache_capacity(rule_count: usize, cache_capacity: usize) -> RuleEngine {
+    let mut engine =
+        RuleEngine::with_payload_decoder_and_cache_capacity(
+            bifrore_embed_core::payload::PayloadDecoder::Json,
+            cache_capacity,
+        );
+    for idx in 0..rule_count {
+        let expression = format!(
+            "select (temp + {idx}) * 2 as t from sensors/+/temp where temp > 20 and hum < 80"
+        );
+        engine
+            .add_rule(RuleDefinition {
+                expression,
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+    }
+    engine
+}
+
 fn build_engine_with_expr(rule_count: usize, expr_builder: impl Fn(usize) -> String) -> RuleEngine {
     let mut engine = RuleEngine::new();
     for idx in 0..rule_count {
@@ -301,6 +321,33 @@ fn bench_evaluate(c: &mut Criterion) {
         b.iter(|| {
             let results = protobuf_engine.evaluate(&protobuf_message);
             assert_eq!(results.len(), 100);
+        })
+    });
+
+    let mut repeat_cache_on_engine = build_engine_with_cache_capacity(100, 4096);
+    let mut repeat_cache_off_engine = build_engine_with_cache_capacity(100, 0);
+    let repeat_message = Message::new(
+        "sensors/room1/temp",
+        serde_json::to_vec(&all_match_payload).unwrap(),
+    );
+
+    c.bench_function("rule_eval_100x_repeated_same_topic_cache_on_json", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for _ in 0..100 {
+                total += repeat_cache_on_engine.evaluate(&repeat_message).len();
+            }
+            assert_eq!(total, 100 * 100);
+        })
+    });
+
+    c.bench_function("rule_eval_100x_repeated_same_topic_cache_off_json", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for _ in 0..100 {
+                total += repeat_cache_off_engine.evaluate(&repeat_message).len();
+            }
+            assert_eq!(total, 100 * 100);
         })
     });
 }

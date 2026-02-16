@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::Instant;
 
 const DEFAULT_TOPIC_CACHE_CAPACITY: usize = 4096;
-const DEFAULT_EVAL_PARALLEL_THRESHOLD: usize = 16;
+const DEFAULT_EVAL_PARALLEL_THRESHOLD: usize = 64;
 const DEFAULT_EVAL_PARALLEL_MAX_WORKERS: usize = 8;
 
 #[derive(Debug)]
