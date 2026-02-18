@@ -537,7 +537,6 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     let context = EvalContext {
         message,
         payload: payload_obj,
-        rule_alias: &rule.aliased_topic_filter,
         topic_parts,
     };
 
@@ -595,7 +594,6 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
 struct EvalContext<'a> {
     message: &'a Message,
     payload: &'a serde_json::Map<String, Value>,
-    rule_alias: &'a str,
     topic_parts: &'a [&'a str],
 }
 

@@ -1,17 +1,16 @@
 package com.bifrore;
 
+import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 public final class BifroRE implements AutoCloseable {
     static {
         System.loadLibrary("bifrore_jni");
     }
 
-    public interface MessageHandler {
-        void onMessage(String ruleId, byte[] payload, String destinationsJson);
-    }
     public interface LogHandler {
         void onLog(
             int level,
@@ -25,8 +24,19 @@ public final class BifroRE implements AutoCloseable {
         );
     }
 
+    public static final class EvalResult {
+        public final String ruleId;
+        public final byte[] payload;
+        public final String destinationsJson;
+
+        EvalResult(String ruleId, byte[] payload, String destinationsJson) {
+            this.ruleId = ruleId;
+            this.payload = payload;
+            this.destinationsJson = destinationsJson;
+        }
+    }
+
     private long handle;
-    private long callbackHandle;
     private long logCallbackHandle;
     private final ExecutorService defaultMessageExecutor;
     private final ExecutorService defaultLogExecutor;
@@ -35,6 +45,11 @@ public final class BifroRE implements AutoCloseable {
     private final String clientPrefix;
     private final String nodeId;
     private final int clientCount;
+    private volatile boolean mqttStarted;
+    private volatile boolean pollRunning;
+    private volatile Thread pollThread;
+    private volatile Consumer<EvalResult> nextHandler;
+    private volatile Executor nextExecutor;
 
     public BifroRE(String host, int port, String ruleJsonPath) {
         this(host, port, ruleJsonPath, "bifrore-embed", null, 1);
@@ -48,44 +63,30 @@ public final class BifroRE implements AutoCloseable {
         String nodeId,
         int clientCount
     ) {
-        this.host = host;
+        this.host = Objects.requireNonNull(host, "host");
         this.port = port;
-        this.clientPrefix = clientPrefix;
+        this.clientPrefix = Objects.requireNonNull(clientPrefix, "clientPrefix");
         this.nodeId = nodeId;
         this.clientCount = clientCount;
         this.handle = nativeCreateWithRules(ruleJsonPath);
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
         }
-        this.callbackHandle = 0;
         this.logCallbackHandle = 0;
         this.defaultMessageExecutor = Executors.newSingleThreadExecutor();
         this.defaultLogExecutor = Executors.newSingleThreadExecutor();
+        this.mqttStarted = false;
+        this.pollRunning = false;
+        this.pollThread = null;
+        this.nextHandler = null;
+        this.nextExecutor = defaultMessageExecutor;
     }
 
-    public void onMessage(MessageHandler handler) {
-        onMessage(handler, null);
-    }
-
-    public void onMessage(MessageHandler handler, Executor executor) {
-        if (handler == null) {
-            if (callbackHandle != 0) {
-                nativeFreeHandler(callbackHandle);
-                callbackHandle = 0;
-            }
-            return;
+    public synchronized int start() {
+        if (mqttStarted) {
+            return 0;
         }
-        Executor targetExecutor = executor != null ? executor : defaultMessageExecutor;
-        MessageHandler wrapped = (ruleId, payload, destinationsJson) ->
-            targetExecutor.execute(() -> handler.onMessage(ruleId, payload, destinationsJson));
-        if (callbackHandle != 0) {
-            nativeFreeHandler(callbackHandle);
-        }
-        this.callbackHandle = nativeRegisterHandler(wrapped);
-    }
-
-    public int start() {
-        return nativeStartMqtt(
+        int rc = nativeStartMqtt(
             handle,
             host,
             port,
@@ -100,12 +101,35 @@ public final class BifroRE implements AutoCloseable {
             false,
             "",
             30,
-            callbackHandle
+            0
         );
+        if (rc == 0) {
+            mqttStarted = true;
+            ensurePollerRunning();
+        }
+        return rc;
     }
 
-    public int stop() {
-        return nativeStopMqtt(handle);
+    public synchronized int stop() {
+        stopPoller();
+        if (!mqttStarted || handle == 0) {
+            return 0;
+        }
+        int rc = nativeStopMqtt(handle);
+        mqttStarted = false;
+        return rc;
+    }
+
+    public void onNext(Consumer<EvalResult> handler) {
+        onNext(handler, null);
+    }
+
+    public synchronized void onNext(Consumer<EvalResult> handler, Executor executor) {
+        this.nextHandler = handler;
+        this.nextExecutor = executor != null ? executor : defaultMessageExecutor;
+        if (handler != null && mqttStarted) {
+            ensurePollerRunning();
+        }
     }
 
     public int onLog(LogHandler handler, int minLevel) {
@@ -140,16 +164,49 @@ public final class BifroRE implements AutoCloseable {
         return nativeSetLogCallback(logCallbackHandle, minLevel);
     }
 
+    private synchronized void ensurePollerRunning() {
+        if (pollRunning || !mqttStarted || handle == 0) {
+            return;
+        }
+        pollRunning = true;
+        pollThread = new Thread(() -> {
+            while (pollRunning && handle != 0 && mqttStarted) {
+                EvalResult result = nativePollResult(handle, -1);
+                if (result == null) {
+                    continue;
+                }
+                Consumer<EvalResult> handler = nextHandler;
+                Executor executor = nextExecutor;
+                if (handler != null && executor != null) {
+                    executor.execute(() -> handler.accept(result));
+                }
+            }
+        }, "bifrore-msg-poller");
+        pollThread.setDaemon(true);
+        pollThread.start();
+    }
+
+    private synchronized void stopPoller() {
+        pollRunning = false;
+        Thread thread = pollThread;
+        pollThread = null;
+        if (thread != null) {
+            thread.interrupt();
+            try {
+                thread.join(1000);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     @Override
-    public void close() {
+    public synchronized void close() {
+        stop();
         if (logCallbackHandle != 0) {
             nativeSetLogCallback(0, 3);
             nativeFreeLogHandler(logCallbackHandle);
             logCallbackHandle = 0;
-        }
-        if (callbackHandle != 0) {
-            nativeFreeHandler(callbackHandle);
-            callbackHandle = 0;
         }
         if (handle != 0) {
             nativeDestroy(handle);
@@ -179,8 +236,7 @@ public final class BifroRE implements AutoCloseable {
         long cbHandle
     );
     private static native int nativeStopMqtt(long handle);
-    private static native long nativeRegisterHandler(MessageHandler handler);
-    private static native void nativeFreeHandler(long cbHandle);
+    private static native EvalResult nativePollResult(long handle, int timeoutMillis);
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);

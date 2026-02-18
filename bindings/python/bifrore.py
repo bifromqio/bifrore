@@ -1,6 +1,25 @@
+import asyncio
 import ctypes
 import json
-from ctypes import c_char_p, c_void_p, c_int, c_uint16, c_uint32, c_size_t, c_bool
+import threading
+from dataclasses import dataclass
+from ctypes import c_bool, c_char_p, c_int, c_size_t, c_uint16, c_uint32, c_void_p
+
+
+class _EvalResult(ctypes.Structure):
+    _fields_ = [
+        ("rule_id", c_char_p),
+        ("payload", ctypes.POINTER(ctypes.c_ubyte)),
+        ("payload_len", c_size_t),
+        ("destinations_json", c_char_p),
+    ]
+
+
+@dataclass
+class EvalMessage:
+    rule_id: str
+    payload: bytes
+    destinations: list
 
 
 class BifroRE:
@@ -27,11 +46,13 @@ class BifroRE:
         self.handle = self.lib.bre_create_with_rules(rule_path.encode("utf-8"))
         if not self.handle:
             raise RuntimeError("Failed to create engine with rule file")
-        self._callback = None
-        self._callback_c = None
         self._log_callback = None
         self._log_callback_c = None
         self._mqtt_started = False
+        self._poll_thread = None
+        self._poll_stop = threading.Event()
+        self._loop = None
+        self._queue = None
         self._mqtt_config = {
             "host": host,
             "port": port,
@@ -73,6 +94,14 @@ class BifroRE:
         self.lib.bre_start_mqtt.restype = c_int
         self.lib.bre_stop_mqtt.argtypes = [c_void_p]
         self.lib.bre_stop_mqtt.restype = c_int
+        self.lib.bre_poll_eval_result.argtypes = [
+            c_void_p,
+            c_uint32,
+            ctypes.POINTER(_EvalResult),
+        ]
+        self.lib.bre_poll_eval_result.restype = c_int
+        self.lib.bre_free_eval_result.argtypes = [ctypes.POINTER(_EvalResult)]
+        self.lib.bre_free_eval_result.restype = None
         self.lib.bre_metrics_snapshot.argtypes = [
             c_void_p,
             ctypes.POINTER(ctypes.c_uint64),
@@ -84,35 +113,36 @@ class BifroRE:
         self.lib.bre_set_log_callback.argtypes = [c_void_p, c_void_p, c_int]
         self.lib.bre_set_log_callback.restype = c_int
 
-    def on_message(self, handler, executor=None, loop=None):
-        CALLBACK = ctypes.CFUNCTYPE(
-            None,
-            c_void_p,
-            c_char_p,
-            ctypes.POINTER(ctypes.c_ubyte),
-            c_size_t,
-            c_char_p,
-        )
+    async def __aenter__(self):
+        await self._ensure_started()
+        return self
 
-        def _callback(user_data, rule_id, payload, payload_len, destinations_json):
-            _ = user_data
-            payload_bytes = bytes(payload[: payload_len])
-            destinations = json.loads(destinations_json.decode("utf-8"))
-            args = (rule_id.decode("utf-8"), payload_bytes, destinations)
-            if loop is not None:
-                loop.call_soon_threadsafe(handler, *args)
-            elif executor is not None:
-                executor.submit(handler, *args)
-            else:
-                handler(*args)
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.stop()
+        self.close()
 
-        self._callback = handler
-        self._callback_c = CALLBACK(_callback)
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._queue is None:
+            raise StopAsyncIteration
+        item = await self._queue.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
+    async def _ensure_started(self):
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+        if self._queue is None:
+            self._queue = asyncio.Queue()
         if not self._mqtt_started:
             rc = self._start_mqtt()
             if rc != 0:
                 raise RuntimeError(f"Failed to start MQTT, error code: {rc}")
             self._mqtt_started = True
+        self._start_poll_loop()
 
     def on_log(self, handler, min_level=3, executor=None, loop=None):
         LOG_CALLBACK = ctypes.CFUNCTYPE(
@@ -167,8 +197,6 @@ class BifroRE:
         return self.lib.bre_set_log_callback(self._log_callback_c, None, min_level)
 
     def _start_mqtt(self):
-        if self._callback_c is None:
-            raise RuntimeError("on_message handler not set")
         cfg = self._mqtt_config
         return self.lib.bre_start_mqtt(
             self.handle,
@@ -185,12 +213,58 @@ class BifroRE:
             cfg["ordered"],
             cfg["ordered_prefix"].encode("utf-8"),
             cfg["keep_alive_secs"],
-            self._callback_c,
+            None,
             None,
         )
 
     def _stop_mqtt(self):
         return self.lib.bre_stop_mqtt(self.handle)
+
+    def _start_poll_loop(self):
+        if self._poll_thread is not None and self._poll_thread.is_alive():
+            return
+        self._poll_stop.clear()
+
+        def _poll():
+            while not self._poll_stop.is_set() and self.handle:
+                result = _EvalResult()
+                rc = self.lib.bre_poll_eval_result(self.handle, 0xFFFFFFFF, ctypes.byref(result))
+                if rc != 1:
+                    if rc == -3:
+                        break
+                    continue
+                try:
+                    rule_id = result.rule_id.decode("utf-8") if result.rule_id else ""
+                    payload = (
+                        ctypes.string_at(result.payload, result.payload_len)
+                        if result.payload and result.payload_len > 0
+                        else b""
+                    )
+                    destinations_raw = (
+                        result.destinations_json.decode("utf-8")
+                        if result.destinations_json
+                        else "[]"
+                    )
+                    destinations = json.loads(destinations_raw)
+                    message = EvalMessage(rule_id=rule_id, payload=payload, destinations=destinations)
+                    if self._loop is not None and self._queue is not None:
+                        self._loop.call_soon_threadsafe(self._queue.put_nowait, message)
+                finally:
+                    self.lib.bre_free_eval_result(ctypes.byref(result))
+
+        self._poll_thread = threading.Thread(target=_poll, name="bifrore-poller", daemon=True)
+        self._poll_thread.start()
+
+    async def stop(self):
+        if self.handle and self._mqtt_started:
+            self._stop_mqtt()
+            self._mqtt_started = False
+        self._poll_stop.set()
+        if self._poll_thread is not None:
+            await asyncio.to_thread(self._poll_thread.join, 1.0)
+            self._poll_thread = None
+        if self._queue is not None:
+            await self._queue.put(None)
 
     def metrics(self):
         eval_count = ctypes.c_uint64()
@@ -215,17 +289,22 @@ class BifroRE:
 
     def close(self):
         self.lib.bre_set_log_callback(None, None, 3)
-        if self.handle:
+        if self.handle and self._mqtt_started:
             self._stop_mqtt()
             self._mqtt_started = False
+        self._poll_stop.set()
+        if self._poll_thread is not None:
+            self._poll_thread.join(timeout=1.0)
+            self._poll_thread = None
         if self.handle:
             self.lib.bre_destroy(self.handle)
             self.handle = None
 
 
 if __name__ == "__main__":
-    # Example usage (adjust library path)
-    engine = BifroRE("./libbifrore_embed.dylib", "./rule.json")
-    engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
+    async def main():
+        async with BifroRE("./libbifrore_embed.dylib", "./rule.json") as msg_stream:
+            async for msg in msg_stream:
+                print(f"msg: {msg}")
 
-    engine.close()
+    asyncio.run(main())

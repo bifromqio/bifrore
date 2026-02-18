@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 use std::sync::{Mutex, Once, OnceLock, RwLock};
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +157,8 @@ pub struct BifroRE {
     adapter: Option<MqttAdapterHandle>,
     core_queue_tx: Option<flume::Sender<Message>>,
     core_worker: Option<JoinHandle<()>>,
+    eval_result_tx: Option<flume::Sender<EvalResultRecord>>,
+    eval_result_rx: Option<flume::Receiver<EvalResultRecord>>,
 }
 
 pub type BifroEvalCallback = extern "C" fn(
@@ -167,6 +169,32 @@ pub type BifroEvalCallback = extern "C" fn(
     destinations_json: *const c_char,
 );
 
+#[derive(Debug)]
+struct EvalResultRecord {
+    rule_id: String,
+    payload: Vec<u8>,
+    destinations_json: String,
+}
+
+#[repr(C)]
+pub struct BifroEvalResult {
+    pub rule_id: *mut c_char,
+    pub payload: *mut u8,
+    pub payload_len: size_t,
+    pub destinations_json: *mut c_char,
+}
+
+impl Default for BifroEvalResult {
+    fn default() -> Self {
+        Self {
+            rule_id: ptr::null_mut(),
+            payload: ptr::null_mut(),
+            payload_len: 0,
+            destinations_json: ptr::null_mut(),
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn bre_create() -> *mut BifroRE {
     ensure_logger_initialized();
@@ -175,6 +203,8 @@ pub extern "C" fn bre_create() -> *mut BifroRE {
         adapter: None,
         core_queue_tx: None,
         core_worker: None,
+        eval_result_tx: None,
+        eval_result_rx: None,
     };
     log::info!("Bifro engine created");
     Box::into_raw(Box::new(engine))
@@ -191,6 +221,8 @@ pub extern "C" fn bre_create_with_payload_format(payload_format: c_int) -> *mut 
         adapter: None,
         core_queue_tx: None,
         core_worker: None,
+        eval_result_tx: None,
+        eval_result_rx: None,
     };
     log::info!("Bifro engine created with payload_format={:?}", payload_format);
     Box::into_raw(Box::new(engine))
@@ -229,6 +261,8 @@ pub extern "C" fn bre_create_with_rules_and_payload_format(
         adapter: None,
         core_queue_tx: None,
         core_worker: None,
+        eval_result_tx: None,
+        eval_result_rx: None,
     };
     log::info!(
         "BifroRE created with rules path={} payload_format={:?}",
@@ -343,8 +377,8 @@ pub extern "C" fn bre_start_mqtt(
     ordered: bool,
     ordered_prefix: *const c_char,
     keep_alive_secs: u16,
-    callback: Option<BifroEvalCallback>,
-    user_data: *mut c_void,
+    _callback: Option<BifroEvalCallback>,
+    _user_data: *mut c_void,
 ) -> c_int {
     if engine.is_null()
         || host.is_null()
@@ -354,7 +388,6 @@ pub extern "C" fn bre_start_mqtt(
     {
         return -1;
     }
-    let Some(callback) = callback else { return -2 };
     let engine_ref = unsafe { &mut *engine };
     if engine_ref.adapter.is_some() {
         return -5;
@@ -440,30 +473,29 @@ pub extern "C" fn bre_start_mqtt(
     );
 
     let engine_addr = engine as usize;
-    let user_data_addr = user_data as usize;
     let (core_queue_tx, core_queue_rx) = flume::bounded::<Message>(config.queue_capacity.max(1) as usize);
+    let (eval_result_tx, eval_result_rx) =
+        flume::bounded::<EvalResultRecord>(config.queue_capacity.max(1) as usize);
+    let eval_result_tx_for_worker = eval_result_tx.clone();
     let core_worker = std::thread::spawn(move || {
         let engine_ptr = engine_addr as *mut BifroRE;
-        let user_data_ptr = user_data_addr as *mut c_void;
         while let Ok(message) = core_queue_rx.recv() {
             let engine = unsafe { &*engine_ptr };
             let mut guard = engine.inner.lock().unwrap();
             let results = guard.evaluate(&message);
             drop(guard);
             for result in results {
-                let rule_id =
-                    CString::new(result.rule_id).unwrap_or_else(|_| CString::new("").unwrap());
                 let destinations_json = serde_json::to_string(&result.destinations)
                     .unwrap_or_else(|_| "[]".to_string());
-                let destinations_json = CString::new(destinations_json)
-                    .unwrap_or_else(|_| CString::new("[]").unwrap());
-                callback(
-                    user_data_ptr,
-                    rule_id.as_ptr(),
-                    result.message.payload.as_ptr(),
-                    result.message.payload.len() as size_t,
-                    destinations_json.as_ptr(),
-                );
+                let eval_result = EvalResultRecord {
+                    rule_id: result.rule_id,
+                    payload: result.message.payload,
+                    destinations_json,
+                };
+                if eval_result_tx_for_worker.send(eval_result).is_err() {
+                    log::warn!("dropping eval result because poll queue is closed");
+                    break;
+                }
             }
         }
     });
@@ -484,6 +516,7 @@ pub extern "C" fn bre_start_mqtt(
         Ok(adapter) => adapter,
         Err(_) => {
             drop(core_queue_tx);
+            drop(eval_result_tx);
             let _ = core_worker.join();
             return -4;
         }
@@ -491,6 +524,8 @@ pub extern "C" fn bre_start_mqtt(
     engine_ref.adapter = Some(adapter);
     engine_ref.core_queue_tx = Some(core_queue_tx);
     engine_ref.core_worker = Some(core_worker);
+    engine_ref.eval_result_tx = Some(eval_result_tx);
+    engine_ref.eval_result_rx = Some(eval_result_rx);
     0
 }
 
@@ -517,7 +552,96 @@ pub extern "C" fn bre_stop_mqtt(engine: *mut BifroRE) -> c_int {
 
 fn stop_core_worker(engine: &mut BifroRE) {
     engine.core_queue_tx.take();
+    engine.eval_result_tx.take();
     if let Some(worker) = engine.core_worker.take() {
         let _ = worker.join();
+    }
+    engine.eval_result_rx.take();
+}
+
+#[no_mangle]
+pub extern "C" fn bre_poll_eval_result(
+    engine: *mut BifroRE,
+    timeout_millis: u32,
+    out_result: *mut BifroEvalResult,
+) -> c_int {
+    if engine.is_null() || out_result.is_null() {
+        return -1;
+    }
+    let engine = unsafe { &mut *engine };
+    let Some(receiver) = engine.eval_result_rx.as_ref() else {
+        return -2;
+    };
+
+    let record = if timeout_millis == 0 {
+        match receiver.try_recv() {
+            Ok(value) => value,
+            Err(flume::TryRecvError::Empty) => return 0,
+            Err(flume::TryRecvError::Disconnected) => return -3,
+        }
+    } else if timeout_millis == u32::MAX {
+        match receiver.recv() {
+            Ok(value) => value,
+            Err(_) => return -3,
+        }
+    } else {
+        match receiver.recv_timeout(Duration::from_millis(timeout_millis as u64)) {
+            Ok(value) => value,
+            Err(flume::RecvTimeoutError::Timeout) => return 0,
+            Err(flume::RecvTimeoutError::Disconnected) => return -3,
+        }
+    };
+
+    let rule_id = CString::new(record.rule_id.replace('\0', "\\0"))
+        .unwrap_or_else(|_| CString::new("").unwrap())
+        .into_raw();
+    let destinations_json = CString::new(record.destinations_json.replace('\0', "\\0"))
+        .unwrap_or_else(|_| CString::new("[]").unwrap())
+        .into_raw();
+    let payload_len = record.payload.len();
+    let payload = if payload_len == 0 {
+        ptr::null_mut()
+    } else {
+        let mut payload = record.payload.into_boxed_slice();
+        let payload_ptr = payload.as_mut_ptr();
+        std::mem::forget(payload);
+        payload_ptr
+    };
+
+    unsafe {
+        *out_result = BifroEvalResult {
+            rule_id,
+            payload,
+            payload_len,
+            destinations_json,
+        };
+    }
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn bre_free_eval_result(result: *mut BifroEvalResult) {
+    if result.is_null() {
+        return;
+    }
+    unsafe {
+        let result_ref = &mut *result;
+        if !result_ref.rule_id.is_null() {
+            let _ = CString::from_raw(result_ref.rule_id);
+            result_ref.rule_id = ptr::null_mut();
+        }
+        if !result_ref.destinations_json.is_null() {
+            let _ = CString::from_raw(result_ref.destinations_json);
+            result_ref.destinations_json = ptr::null_mut();
+        }
+        if !result_ref.payload.is_null() && result_ref.payload_len > 0 {
+            let _ = Vec::from_raw_parts(
+                result_ref.payload,
+                result_ref.payload_len,
+                result_ref.payload_len,
+            );
+            result_ref.payload = ptr::null_mut();
+            result_ref.payload_len = 0;
+        }
     }
 }
