@@ -56,6 +56,18 @@ pub struct MqttAdapterHandle {
     eval_worker: Option<JoinHandle<()>>,
 }
 
+#[cfg(feature = "mqtt")]
+struct QueuedIncoming {
+    message: Message,
+    ack: Option<DeferredAck>,
+}
+
+#[cfg(feature = "mqtt")]
+struct DeferredAck {
+    client: rumqttc::v5::AsyncClient,
+    publish: rumqttc::v5::mqttbytes::v5::Publish,
+}
+
 impl MqttAdapterHandle {
     #[allow(unused_mut)]
     pub fn stop(mut self) -> Result<(), MqttError> {
@@ -102,7 +114,7 @@ pub fn start_mqtt(
         queue_capacity
     );
 
-    let (queue_tx, queue_rx) = flume::bounded::<Message>(queue_capacity);
+    let (queue_tx, queue_rx) = flume::bounded::<QueuedIncoming>(queue_capacity);
     if config.eval_threads > 1 {
         log::warn!(
             "eval_threads={} requested but adapter uses single consumer (MPSC) for ordering simplicity",
@@ -112,8 +124,13 @@ pub fn start_mqtt(
     let eval_worker = {
         let eval_handler = handler.clone();
         std::thread::spawn(move || {
-            while let Ok(message) = queue_rx.recv() {
-                eval_handler(message);
+            while let Ok(task) = queue_rx.recv() {
+                eval_handler(task.message);
+                if let Some(ack) = task.ack {
+                    if let Err(err) = ack.client.try_ack(&ack.publish) {
+                        log::warn!("failed to send MQTT PUBACK/PUBREC after eval: {err}");
+                    }
+                }
             }
         })
     };
@@ -143,6 +160,7 @@ pub fn start_mqtt(
                     MqttOptions::new(client_id.clone(), config.host.clone(), config.port);
                 mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.into()));
                 mqtt_options.set_clean_start(config.clean_start);
+                mqtt_options.set_manual_acks(true);
                 let mut connect_properties = rumqttc::v5::mqttbytes::v5::ConnectProperties::new();
                 connect_properties.session_expiry_interval = Some(config.session_expiry_interval);
                 mqtt_options.set_connect_properties(connect_properties);
@@ -164,7 +182,12 @@ pub fn start_mqtt(
                 log::info!("MQTT subscriptions established for client_id={client_id}");
                 let tx = queue_tx.clone();
                 let shutdown_rx = shutdown_tx.subscribe();
-                tasks.push(tokio::spawn(run_event_loop(event_loop, tx, shutdown_rx)));
+                tasks.push(tokio::spawn(run_event_loop(
+                    client.clone(),
+                    event_loop,
+                    tx,
+                    shutdown_rx,
+                )));
             }
 
             let _ = stop_rx.await;
@@ -201,8 +224,9 @@ async fn subscribe_topics(
 
 #[cfg(feature = "mqtt")]
 async fn run_event_loop(
+    client: rumqttc::v5::AsyncClient,
     mut event_loop: rumqttc::v5::EventLoop,
-    queue_tx: flume::Sender<Message>,
+    queue_tx: flume::Sender<QueuedIncoming>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
@@ -224,16 +248,23 @@ async fn run_event_loop(
                             .duration_since(UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
-                        if let Some(properties) = publish.properties {
-                            if let Some(content_type) = properties.content_type {
+                        if let Some(properties) = publish.properties.as_ref() {
+                            if let Some(content_type) = properties.content_type.as_ref() {
                                 msg.properties
-                                    .insert("content-type".to_string(), content_type);
+                                    .insert("content-type".to_string(), content_type.clone());
                             }
-                            for (key, value) in properties.user_properties {
-                                msg.properties.insert(key, value);
+                            for (key, value) in properties.user_properties.iter() {
+                                msg.properties.insert(key.clone(), value.clone());
                             }
                         }
-                        if queue_tx.send_async(msg).await.is_err() {
+                        let task = QueuedIncoming {
+                            message: msg,
+                            ack: Some(DeferredAck {
+                                client: client.clone(),
+                                publish,
+                            }),
+                        };
+                        if queue_tx.send_async(task).await.is_err() {
                             break;
                         }
                     }
