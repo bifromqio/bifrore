@@ -40,6 +40,7 @@ class BifroRE:
         ordered=False,
         ordered_prefix="",
         keep_alive_secs=30,
+        multi_nci=False,
     ):
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
@@ -67,6 +68,7 @@ class BifroRE:
             "ordered": ordered,
             "ordered_prefix": ordered_prefix,
             "keep_alive_secs": keep_alive_secs,
+            "multi_nci": multi_nci,
         }
 
     def _setup_signatures(self):
@@ -88,6 +90,7 @@ class BifroRE:
             c_bool,
             c_char_p,
             c_uint16,
+            c_bool,
             c_void_p,
             c_void_p,
         ]
@@ -213,6 +216,7 @@ class BifroRE:
             cfg["ordered"],
             cfg["ordered_prefix"].encode("utf-8"),
             cfg["keep_alive_secs"],
+            cfg["multi_nci"],
             None,
             None,
         )

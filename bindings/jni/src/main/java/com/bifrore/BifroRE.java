@@ -45,6 +45,7 @@ public final class BifroRE implements AutoCloseable {
     private final String clientPrefix;
     private final String nodeId;
     private final int clientCount;
+    private final boolean multiNci;
     private volatile boolean mqttStarted;
     private volatile boolean pollRunning;
     private volatile Thread pollThread;
@@ -52,7 +53,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile Executor nextExecutor;
 
     public BifroRE(String host, int port, String ruleJsonPath) {
-        this(host, port, ruleJsonPath, "bifrore-embed", null, 1);
+        this(host, port, ruleJsonPath, "bifrore-embed", null, 1, false);
     }
 
     public BifroRE(
@@ -61,13 +62,15 @@ public final class BifroRE implements AutoCloseable {
         String ruleJsonPath,
         String clientPrefix,
         String nodeId,
-        int clientCount
+        int clientCount,
+        boolean multiNci
     ) {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.clientPrefix = Objects.requireNonNull(clientPrefix, "clientPrefix");
         this.nodeId = nodeId;
         this.clientCount = clientCount;
+        this.multiNci = multiNci;
         this.handle = nativeCreateWithRules(ruleJsonPath);
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
@@ -101,6 +104,7 @@ public final class BifroRE implements AutoCloseable {
             false,
             "",
             30,
+            multiNci,
             0
         );
         if (rc == 0) {
@@ -233,6 +237,7 @@ public final class BifroRE implements AutoCloseable {
         boolean ordered,
         String orderedPrefix,
         int keepAliveSecs,
+        boolean multiNci,
         long cbHandle
     );
     private static native int nativeStopMqtt(long handle);

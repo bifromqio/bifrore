@@ -28,6 +28,7 @@ extern int bre_start_mqtt(
     jboolean ordered,
     const char *ordered_prefix,
     uint16_t keep_alive_secs,
+    jboolean multi_nci,
     void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
     void *user_data);
 extern int bre_stop_mqtt(void *engine);
@@ -135,6 +136,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     jboolean ordered,
     jstring ordered_prefix,
     jint keep_alive_secs,
+    jboolean multi_nci,
     jlong cb_handle) {
     (void)cls;
     (void)cb_handle;
@@ -175,6 +177,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
         ordered,
         ordered_prefix_str,
         (uint16_t)keep_alive_secs,
+        multi_nci,
         NULL,
         NULL);
 
