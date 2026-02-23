@@ -5,6 +5,8 @@ use std::thread::JoinHandle;
 #[cfg(feature = "mqtt")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const DEFAULT_MAX_CLIENTS_PER_NCI: u32 = 55_000;
+
 #[derive(Clone)]
 pub struct MqttConfig {
     pub host: String,
@@ -24,7 +26,6 @@ pub struct MqttConfig {
     pub ordered_prefix: String,
     pub keep_alive_secs: u16,
     pub multi_nci: bool,
-    pub network_provider: Arc<dyn NetworkProvider>,
 }
 
 impl MqttConfig {
@@ -42,54 +43,6 @@ impl MqttConfig {
 }
 
 pub type MessageHandler = Arc<dyn Fn(Message) + Send + Sync + 'static>;
-
-#[derive(Debug, Clone, Default)]
-pub struct NetworkBinding {
-    pub bind_device: Option<String>,
-}
-
-pub trait NetworkProvider: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn initialize(&self, config: &MqttConfig) -> Result<Box<dyn NetworkProviderSession>, String>;
-}
-
-pub trait NetworkProviderSession: Send {
-    fn binding_for_client(&mut self, client_index: u16, client_id: &str) -> NetworkBinding;
-    fn shutdown(&mut self) {}
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct OssNetworkProvider;
-
-impl OssNetworkProvider {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl NetworkProvider for OssNetworkProvider {
-    fn name(&self) -> &'static str {
-        "oss-noop"
-    }
-
-    fn initialize(&self, config: &MqttConfig) -> Result<Box<dyn NetworkProviderSession>, String> {
-        if config.multi_nci {
-            log::info!(
-                "multi_nci is enabled but OSS network provider is no-op"
-            );
-        }
-        Ok(Box::new(OssNetworkProviderSession))
-    }
-}
-
-#[derive(Debug, Default)]
-struct OssNetworkProviderSession;
-
-impl NetworkProviderSession for OssNetworkProviderSession {
-    fn binding_for_client(&mut self, _client_index: u16, _client_id: &str) -> NetworkBinding {
-        NetworkBinding::default()
-    }
-}
 
 #[derive(Debug)]
 pub enum MqttError {
@@ -154,8 +107,9 @@ pub fn start_mqtt(
     let io_threads = config.io_threads.max(1) as usize;
     let queue_capacity = config.queue_capacity.max(1) as usize;
 
+    let multi_nci_devices = select_multi_nci_devices(config.multi_nci, client_count);
     log::info!(
-        "starting MQTT adapter host={} port={} topics={} clients={} io_threads={} queue_capacity={} multi_nci={} provider={}",
+        "starting MQTT adapter host={} port={} topics={} clients={} io_threads={} queue_capacity={} multi_nci={} devices={}",
         config.host,
         config.port,
         topics.len(),
@@ -163,7 +117,7 @@ pub fn start_mqtt(
         io_threads,
         queue_capacity,
         config.multi_nci,
-        config.network_provider.name()
+        multi_nci_devices.as_ref().map(|v| v.len()).unwrap_or(0)
     );
 
     let (queue_tx, queue_rx) = flume::bounded::<QueuedIncoming>(queue_capacity);
@@ -205,13 +159,6 @@ pub fn start_mqtt(
         runtime.block_on(async move {
             let (shutdown_tx, _) = tokio::sync::watch::channel(false);
             let mut tasks = Vec::with_capacity(client_count as usize);
-            let mut provider_session = match config.network_provider.initialize(&config) {
-                Ok(session) => session,
-                Err(err) => {
-                    log::error!("failed to initialize network provider: {err}");
-                    return;
-                }
-            };
 
             for index in 0..client_count {
                 let client_id = config.client_id_for(index);
@@ -220,8 +167,11 @@ pub fn start_mqtt(
                 mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.into()));
                 mqtt_options.set_clean_start(config.clean_start);
                 mqtt_options.set_manual_acks(true);
-                let binding = provider_session.binding_for_client(index, &client_id);
-                apply_binding(&mut mqtt_options, &binding, &client_id);
+                let bind_device = multi_nci_devices
+                    .as_ref()
+                    .and_then(|devices| devices.get((index as usize) % devices.len()))
+                    .map(|value| value.as_str());
+                apply_bind_device(&mut mqtt_options, bind_device, &client_id);
                 let mut connect_properties = rumqttc::v5::mqttbytes::v5::ConnectProperties::new();
                 connect_properties.session_expiry_interval = Some(config.session_expiry_interval);
                 mqtt_options.set_connect_properties(connect_properties);
@@ -256,7 +206,6 @@ pub fn start_mqtt(
             for task in tasks {
                 let _ = task.await;
             }
-            provider_session.shutdown();
         });
     });
 
@@ -268,12 +217,61 @@ pub fn start_mqtt(
 }
 
 #[cfg(feature = "mqtt")]
-fn apply_binding(
+fn select_multi_nci_devices(multi_nci: bool, client_count: u16) -> Option<Vec<String>> {
+    if !multi_nci {
+        return None;
+    }
+    let required_nci = (client_count.max(1) as u32)
+        .div_ceil(DEFAULT_MAX_CLIENTS_PER_NCI)
+        .max(1);
+    if required_nci <= 1 {
+        return None;
+    }
+    let devices = detect_provisioned_ncis();
+    if devices.len() < required_nci as usize {
+        log::warn!(
+            "multi_nci enabled but detected interfaces={} required={}; fallback to default interface",
+            devices.len(),
+            required_nci
+        );
+        return None;
+    }
+    let selected = devices.into_iter().take(required_nci as usize).collect::<Vec<_>>();
+    log::info!(
+        "multi_nci enabled with {} provisioned interfaces: {:?}",
+        selected.len(),
+        selected
+    );
+    Some(selected)
+}
+
+#[cfg(feature = "mqtt")]
+fn detect_provisioned_ncis() -> Vec<String> {
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    {
+        let mut interfaces = std::fs::read_dir("/sys/class/net")
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.flatten())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name != "lo")
+            .collect::<Vec<_>>();
+        interfaces.sort();
+        interfaces
+    }
+    #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(feature = "mqtt")]
+fn apply_bind_device(
     mqtt_options: &mut rumqttc::v5::MqttOptions,
-    binding: &NetworkBinding,
+    bind_device: Option<&str>,
     client_id: &str,
 ) {
-    if let Some(bind_device) = binding.bind_device.as_deref() {
+    if let Some(bind_device) = bind_device {
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         {
             let mut network_options = mqtt_options.network_options();

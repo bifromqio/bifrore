@@ -1,7 +1,5 @@
 use bifrore_embed_core::message::Message;
-use bifrore_embed_core::mqtt::{
-    start_mqtt, MessageHandler, MqttAdapterHandle, MqttConfig, OssNetworkProvider,
-};
+use bifrore_embed_core::mqtt::{start_mqtt, MessageHandler, MqttAdapterHandle, MqttConfig};
 use bifrore_embed_core::payload::PayloadFormat;
 use bifrore_embed_core::runtime::RuleEngine;
 use libc::{c_char, c_int, c_void, size_t};
@@ -466,7 +464,6 @@ pub extern "C" fn bre_start_mqtt(
         ordered_prefix,
         keep_alive_secs,
         multi_nci,
-        network_provider: std::sync::Arc::new(OssNetworkProvider::new()),
     };
     log::info!(
         "Starting MQTT from FFI host={} port={} client_prefix={} node_id={} clients={}",
