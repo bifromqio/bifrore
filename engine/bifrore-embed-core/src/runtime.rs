@@ -166,6 +166,7 @@ impl RuleEngine {
         for attempt in attempts {
             self.metrics.record(attempt.duration_nanos, attempt.success);
             if let Some(evaluation) = attempt.evaluation {
+                log::info!("evaluation={:?}", evaluation);
                 results.push(evaluation);
             }
         }

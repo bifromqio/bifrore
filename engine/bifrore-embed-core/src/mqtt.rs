@@ -101,6 +101,7 @@ pub fn start_mqtt(
     handler: MessageHandler,
 ) -> Result<MqttAdapterHandle, MqttError> {
     use rumqttc::v5::{AsyncClient, MqttOptions};
+    use std::sync::mpsc;
     use std::time::Duration;
 
     let client_count = config.client_count.max(1);
@@ -142,6 +143,8 @@ pub fn start_mqtt(
     };
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+    let queue_tx_runtime = queue_tx.clone();
     let runtime_thread = std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -152,6 +155,7 @@ pub fn start_mqtt(
             Ok(runtime) => runtime,
             Err(err) => {
                 log::error!("failed to create shared tokio runtime: {err}");
+                let _ = ready_tx.send(Err(format!("failed to create runtime: {err}")));
                 return;
             }
         };
@@ -159,6 +163,7 @@ pub fn start_mqtt(
         runtime.block_on(async move {
             let (shutdown_tx, _) = tokio::sync::watch::channel(false);
             let mut tasks = Vec::with_capacity(client_count as usize);
+            let mut subscribed_clients = 0usize;
 
             for index in 0..client_count {
                 let client_id = config.client_id_for(index);
@@ -191,7 +196,8 @@ pub fn start_mqtt(
                 }
 
                 log::info!("MQTT subscriptions established for client_id={client_id}");
-                let tx = queue_tx.clone();
+                subscribed_clients += 1;
+                let tx = queue_tx_runtime.clone();
                 let shutdown_rx = shutdown_tx.subscribe();
                 tasks.push(tokio::spawn(run_event_loop(
                     client.clone(),
@@ -201,6 +207,12 @@ pub fn start_mqtt(
                 )));
             }
 
+            if subscribed_clients == 0 {
+                let _ = ready_tx.send(Err("no MQTT clients subscribed".to_string()));
+            } else {
+                let _ = ready_tx.send(Ok(()));
+            }
+
             let _ = stop_rx.await;
             let _ = shutdown_tx.send(true);
             for task in tasks {
@@ -208,6 +220,27 @@ pub fn start_mqtt(
             }
         });
     });
+
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            log::error!("MQTT startup failed: {err}");
+            drop(queue_tx);
+            let _ = stop_tx.send(());
+            let _ = runtime_thread.join();
+            let _ = eval_worker.join();
+            return Err(MqttError::StartFailed(err));
+        }
+        Err(_) => {
+            let err = "timeout waiting MQTT startup readiness".to_string();
+            log::error!("{err}");
+            drop(queue_tx);
+            let _ = stop_tx.send(());
+            let _ = runtime_thread.join();
+            let _ = eval_worker.join();
+            return Err(MqttError::StartFailed(err));
+        }
+    }
 
     Ok(MqttAdapterHandle {
         stop: Some(stop_tx),
@@ -319,6 +352,8 @@ async fn run_event_loop(
     queue_tx: flume::Sender<QueuedIncoming>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
+    use std::time::Duration;
+
     loop {
         tokio::select! {
             changed = shutdown_rx.changed() => {
@@ -331,6 +366,7 @@ async fn run_event_loop(
                     Ok(rumqttc::v5::Event::Incoming(rumqttc::v5::mqttbytes::v5::Packet::Publish(publish))) => {
                         let topic = String::from_utf8_lossy(&publish.topic).into_owned();
                         let mut msg = Message::new(topic, publish.payload.to_vec());
+                        log::info!("Received publish packet: {:?}", msg);
                         msg.qos = publish.qos as u8;
                         msg.retain = publish.retain;
                         msg.dup = publish.dup;
@@ -354,8 +390,16 @@ async fn run_event_loop(
                                 publish,
                             }),
                         };
-                        if queue_tx.send_async(task).await.is_err() {
-                            break;
+                        let send_result = tokio::time::timeout(
+                            Duration::from_millis(100),
+                            queue_tx.send_async(task),
+                        ).await;
+                        match send_result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => break,
+                            Err(_) => {
+                                log::warn!("dropping message because adapter->core queue is full");
+                            }
                         }
                     }
                     Ok(_) => {}

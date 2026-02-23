@@ -151,6 +151,53 @@ fn generate_default_node_id() -> String {
     format!("node_{}_{}", pid, millis)
 }
 
+fn create_notify_pipe() -> Option<(c_int, c_int)> {
+    let mut fds = [0; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    for fd in &fds {
+        let flags = unsafe { libc::fcntl(*fd, libc::F_GETFL) };
+        if flags >= 0 {
+            unsafe {
+                libc::fcntl(*fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+        let fd_flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
+        if fd_flags >= 0 {
+            unsafe {
+                libc::fcntl(*fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Some((fds[0], fds[1]))
+}
+
+fn notify_eval_ready(fd: c_int) {
+    if fd < 0 {
+        return;
+    }
+    let byte: [u8; 1] = [1];
+    let rc = unsafe { libc::write(fd, byte.as_ptr().cast(), 1) };
+    if rc < 0 {
+        let errno = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or_default();
+        if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
+            log::debug!("notify pipe write failed errno={}", errno);
+        }
+    }
+}
+
+fn close_notify_pipe(fd: c_int) {
+    if fd >= 0 {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
 #[repr(C)]
 pub struct BifroRE {
     inner: Mutex<RuleEngine>,
@@ -159,6 +206,8 @@ pub struct BifroRE {
     core_worker: Option<JoinHandle<()>>,
     eval_result_tx: Option<flume::Sender<EvalResultRecord>>,
     eval_result_rx: Option<flume::Receiver<EvalResultRecord>>,
+    notify_read_fd: c_int,
+    notify_write_fd: c_int,
 }
 
 pub type BifroEvalCallback = extern "C" fn(
@@ -198,6 +247,7 @@ impl Default for BifroEvalResult {
 #[no_mangle]
 pub extern "C" fn bre_create() -> *mut BifroRE {
     ensure_logger_initialized();
+    let (notify_read_fd, notify_write_fd) = create_notify_pipe().unwrap_or((-1, -1));
     let engine = BifroRE {
         inner: Mutex::new(RuleEngine::with_payload_format(PayloadFormat::Json)),
         adapter: None,
@@ -205,6 +255,8 @@ pub extern "C" fn bre_create() -> *mut BifroRE {
         core_worker: None,
         eval_result_tx: None,
         eval_result_rx: None,
+        notify_read_fd,
+        notify_write_fd,
     };
     log::info!("Bifro engine created");
     Box::into_raw(Box::new(engine))
@@ -216,6 +268,7 @@ pub extern "C" fn bre_create_with_payload_format(payload_format: c_int) -> *mut 
     let Some(payload_format) = PayloadFormat::from_ffi_code(payload_format) else {
         return ptr::null_mut();
     };
+    let (notify_read_fd, notify_write_fd) = create_notify_pipe().unwrap_or((-1, -1));
     let engine = BifroRE {
         inner: Mutex::new(RuleEngine::with_payload_format(payload_format)),
         adapter: None,
@@ -223,6 +276,8 @@ pub extern "C" fn bre_create_with_payload_format(payload_format: c_int) -> *mut 
         core_worker: None,
         eval_result_tx: None,
         eval_result_rx: None,
+        notify_read_fd,
+        notify_write_fd,
     };
     log::info!("Bifro engine created with payload_format={:?}", payload_format);
     Box::into_raw(Box::new(engine))
@@ -256,6 +311,7 @@ pub extern "C" fn bre_create_with_rules_and_payload_format(
         return ptr::null_mut();
     }
 
+    let (notify_read_fd, notify_write_fd) = create_notify_pipe().unwrap_or((-1, -1));
     let engine = BifroRE {
         inner: Mutex::new(rule_engine),
         adapter: None,
@@ -263,6 +319,8 @@ pub extern "C" fn bre_create_with_rules_and_payload_format(
         core_worker: None,
         eval_result_tx: None,
         eval_result_rx: None,
+        notify_read_fd,
+        notify_write_fd,
     };
     log::info!(
         "BifroRE created with rules path={} payload_format={:?}",
@@ -284,9 +342,22 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
             log::info!("BifroRE destroy requested MQTT stop");
         }
         stop_core_worker(&mut boxed);
+        close_notify_pipe(boxed.notify_read_fd);
+        close_notify_pipe(boxed.notify_write_fd);
+        boxed.notify_read_fd = -1;
+        boxed.notify_write_fd = -1;
         log::info!("BifroRE destroyed");
         drop(boxed);
     }
+}
+
+#[no_mangle]
+pub extern "C" fn bre_get_notify_fd(engine: *const BifroRE) -> c_int {
+    if engine.is_null() {
+        return -1;
+    }
+    let engine = unsafe { &*engine };
+    engine.notify_read_fd
 }
 
 #[no_mangle]
@@ -479,6 +550,7 @@ pub extern "C" fn bre_start_mqtt(
     let (eval_result_tx, eval_result_rx) =
         flume::bounded::<EvalResultRecord>(config.queue_capacity.max(1) as usize);
     let eval_result_tx_for_worker = eval_result_tx.clone();
+    let notify_write_fd = engine_ref.notify_write_fd;
     let core_worker = std::thread::spawn(move || {
         let engine_ptr = engine_addr as *mut BifroRE;
         while let Ok(message) = core_queue_rx.recv() {
@@ -498,6 +570,7 @@ pub extern "C" fn bre_start_mqtt(
                     log::warn!("dropping eval result because poll queue is closed");
                     break;
                 }
+                notify_eval_ready(notify_write_fd);
             }
         }
     });

@@ -1,7 +1,7 @@
 import asyncio
 import ctypes
 import json
-import threading
+import os
 from dataclasses import dataclass
 from ctypes import c_bool, c_char_p, c_int, c_size_t, c_uint16, c_uint32, c_void_p
 
@@ -50,10 +50,10 @@ class BifroRE:
         self._log_callback = None
         self._log_callback_c = None
         self._mqtt_started = False
-        self._poll_thread = None
-        self._poll_stop = threading.Event()
         self._loop = None
         self._queue = None
+        self._notify_fd = -1
+        self._reader_attached = False
         self._mqtt_config = {
             "host": host,
             "port": port,
@@ -97,6 +97,8 @@ class BifroRE:
         self.lib.bre_start_mqtt.restype = c_int
         self.lib.bre_stop_mqtt.argtypes = [c_void_p]
         self.lib.bre_stop_mqtt.restype = c_int
+        self.lib.bre_get_notify_fd.argtypes = [c_void_p]
+        self.lib.bre_get_notify_fd.restype = c_int
         self.lib.bre_poll_eval_result.argtypes = [
             c_void_p,
             c_uint32,
@@ -145,7 +147,7 @@ class BifroRE:
             if rc != 0:
                 raise RuntimeError(f"Failed to start MQTT, error code: {rc}")
             self._mqtt_started = True
-        self._start_poll_loop()
+        self._attach_notify_reader()
 
     def on_log(self, handler, min_level=3, executor=None, loop=None):
         LOG_CALLBACK = ctypes.CFUNCTYPE(
@@ -224,49 +226,75 @@ class BifroRE:
     def _stop_mqtt(self):
         return self.lib.bre_stop_mqtt(self.handle)
 
-    def _start_poll_loop(self):
-        if self._poll_thread is not None and self._poll_thread.is_alive():
+    def _attach_notify_reader(self):
+        if self._reader_attached:
             return
-        self._poll_stop.clear()
+        if self._loop is None:
+            raise RuntimeError("Event loop is not initialized")
+        self._notify_fd = self.lib.bre_get_notify_fd(self.handle)
+        if self._notify_fd < 0:
+            raise RuntimeError("Failed to acquire notify fd from engine")
+        self._loop.add_reader(self._notify_fd, self._on_notify_fd_ready)
+        self._reader_attached = True
+        self._loop.call_soon(self._drain_eval_results)
 
-        def _poll():
-            while not self._poll_stop.is_set() and self.handle:
-                result = _EvalResult()
-                rc = self.lib.bre_poll_eval_result(self.handle, 0xFFFFFFFF, ctypes.byref(result))
-                if rc != 1:
-                    if rc == -3:
-                        break
-                    continue
+    def _detach_notify_reader(self):
+        if self._reader_attached and self._loop is not None and self._notify_fd >= 0:
+            self._loop.remove_reader(self._notify_fd)
+        self._reader_attached = False
+
+    def _on_notify_fd_ready(self):
+        if self._notify_fd < 0:
+            return
+        try:
+            while True:
                 try:
-                    rule_id = result.rule_id.decode("utf-8") if result.rule_id else ""
-                    payload = (
-                        ctypes.string_at(result.payload, result.payload_len)
-                        if result.payload and result.payload_len > 0
-                        else b""
-                    )
-                    destinations_raw = (
-                        result.destinations_json.decode("utf-8")
-                        if result.destinations_json
-                        else "[]"
-                    )
-                    destinations = json.loads(destinations_raw)
-                    message = EvalMessage(rule_id=rule_id, payload=payload, destinations=destinations)
-                    if self._loop is not None and self._queue is not None:
-                        self._loop.call_soon_threadsafe(self._queue.put_nowait, message)
-                finally:
-                    self.lib.bre_free_eval_result(ctypes.byref(result))
+                    data = os.read(self._notify_fd, 4096)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    break
+                if not data:
+                    break
+                if len(data) < 4096:
+                    break
+            self._drain_eval_results()
+        except Exception:
+            return
 
-        self._poll_thread = threading.Thread(target=_poll, name="bifrore-poller", daemon=True)
-        self._poll_thread.start()
+    def _drain_eval_results(self):
+        while self.handle:
+            result = _EvalResult()
+            rc = self.lib.bre_poll_eval_result(self.handle, 0, ctypes.byref(result))
+            if rc != 1:
+                break
+            try:
+                rule_id = result.rule_id.decode("utf-8") if result.rule_id else ""
+                payload = (
+                    ctypes.string_at(result.payload, result.payload_len)
+                    if result.payload and result.payload_len > 0
+                    else b""
+                )
+                destinations_raw = (
+                    result.destinations_json.decode("utf-8")
+                    if result.destinations_json
+                    else "[]"
+                )
+                try:
+                    destinations = json.loads(destinations_raw)
+                except Exception:
+                    destinations = []
+                message = EvalMessage(rule_id=rule_id, payload=payload, destinations=destinations)
+                if self._queue is not None:
+                    self._queue.put_nowait(message)
+            finally:
+                self.lib.bre_free_eval_result(ctypes.byref(result))
 
     async def stop(self):
         if self.handle and self._mqtt_started:
             self._stop_mqtt()
             self._mqtt_started = False
-        self._poll_stop.set()
-        if self._poll_thread is not None:
-            await asyncio.to_thread(self._poll_thread.join, 1.0)
-            self._poll_thread = None
+        self._detach_notify_reader()
         if self._queue is not None:
             await self._queue.put(None)
 
@@ -296,10 +324,7 @@ class BifroRE:
         if self.handle and self._mqtt_started:
             self._stop_mqtt()
             self._mqtt_started = False
-        self._poll_stop.set()
-        if self._poll_thread is not None:
-            self._poll_thread.join(timeout=1.0)
-            self._poll_thread = None
+        self._detach_notify_reader()
         if self.handle:
             self.lib.bre_destroy(self.handle)
             self.handle = None
@@ -307,7 +332,12 @@ class BifroRE:
 
 if __name__ == "__main__":
     async def main():
-        async with BifroRE("./libbifrore_embed.dylib", "./rule.json") as msg_stream:
+        async with BifroRE(
+                lib_path="/Users/kugejoe/Desktop/work/github/bifrore/engine/target/debug/libbifrore_embed.dylib",
+                rule_path="/Users/kugejoe/Desktop/work/github/bifrore/bindings/python/rule.json",
+                username="dev",
+                password="dev"
+        ) as msg_stream:
             async for msg in msg_stream:
                 print(f"msg: {msg}")
 
