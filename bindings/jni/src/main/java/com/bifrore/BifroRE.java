@@ -24,6 +24,9 @@ public final class BifroRE implements AutoCloseable {
         );
     }
 
+    public static final int PAYLOAD_JSON = 1;
+    public static final int PAYLOAD_PROTOBUF = 2;
+
     public static final class EvalResult {
         public final String ruleId;
         public final byte[] payload;
@@ -53,7 +56,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile Executor nextExecutor;
 
     public BifroRE(String host, int port, String ruleJsonPath) {
-        this(host, port, ruleJsonPath, "bifrore-embed", null, 1, false);
+        this(host, port, ruleJsonPath, "bifrore-embed", null, 1, false, PAYLOAD_JSON);
     }
 
     public BifroRE(
@@ -65,13 +68,26 @@ public final class BifroRE implements AutoCloseable {
         int clientCount,
         boolean multiNci
     ) {
+        this(host, port, ruleJsonPath, clientPrefix, nodeId, clientCount, multiNci, PAYLOAD_JSON);
+    }
+
+    public BifroRE(
+        String host,
+        int port,
+        String ruleJsonPath,
+        String clientPrefix,
+        String nodeId,
+        int clientCount,
+        boolean multiNci,
+        int payloadFormat
+    ) {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.clientPrefix = Objects.requireNonNull(clientPrefix, "clientPrefix");
         this.nodeId = nodeId;
         this.clientCount = clientCount;
         this.multiNci = multiNci;
-        this.handle = nativeCreateWithRules(ruleJsonPath);
+        this.handle = nativeCreateWithConfigAndPayloadFormat(ruleJsonPath, payloadFormat);
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
         }
@@ -175,14 +191,18 @@ public final class BifroRE implements AutoCloseable {
         pollRunning = true;
         pollThread = new Thread(() -> {
             while (pollRunning && handle != 0 && mqttStarted) {
-                EvalResult result = nativePollResult(handle, -1);
-                if (result == null) {
+                EvalResult[] results = nativePollResultsBatch(handle, -1);
+                if (results == null || results.length == 0) {
                     continue;
                 }
                 Consumer<EvalResult> handler = nextHandler;
                 Executor executor = nextExecutor;
                 if (handler != null && executor != null) {
-                    executor.execute(() -> handler.accept(result));
+                    for (EvalResult result : results) {
+                        if (result != null) {
+                            executor.execute(() -> handler.accept(result));
+                        }
+                    }
                 }
             }
         }, "bifrore-msg-poller");
@@ -220,7 +240,8 @@ public final class BifroRE implements AutoCloseable {
         defaultLogExecutor.shutdown();
     }
 
-    private static native long nativeCreateWithRules(String path);
+    private static native long nativeCreateWithConfig(String path);
+    private static native long nativeCreateWithConfigAndPayloadFormat(String path, int payloadFormat);
     private static native void nativeDestroy(long handle);
     private static native int nativeStartMqtt(
         long handle,
@@ -241,7 +262,7 @@ public final class BifroRE implements AutoCloseable {
         long cbHandle
     );
     private static native int nativeStopMqtt(long handle);
-    private static native EvalResult nativePollResult(long handle, int timeoutMillis);
+    private static native EvalResult[] nativePollResultsBatch(long handle, int timeoutMillis);
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);

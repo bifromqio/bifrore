@@ -11,7 +11,8 @@ struct BifroEvalResult {
 };
 
 // FFI functions from Rust cdylib
-extern void *bre_create_with_rules(const char *path);
+extern void *bre_create_with_config(const char *path);
+extern void *bre_create_with_config_and_payload_format(const char *path, int payload_format);
 extern void bre_destroy(void *engine);
 extern int bre_start_mqtt(
     void *engine,
@@ -32,8 +33,12 @@ extern int bre_start_mqtt(
     void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
     void *user_data);
 extern int bre_stop_mqtt(void *engine);
-extern int bre_poll_eval_result(void *engine, uint32_t timeout_millis, struct BifroEvalResult *out_result);
-extern void bre_free_eval_result(struct BifroEvalResult *result);
+extern int bre_poll_eval_results_batch(
+    void *engine,
+    uint32_t timeout_millis,
+    struct BifroEvalResult **out_results,
+    size_t *out_len);
+extern void bre_free_eval_results_batch(struct BifroEvalResult *results, size_t len);
 extern int bre_set_log_callback(
     void (*callback)(void *, int, const char *, const char *, uint64_t, const char *, const char *, const char *, uint32_t),
     void *user_data,
@@ -100,13 +105,27 @@ static void call_java_log_handler(
     }
 }
 
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithRules(JNIEnv *env, jclass cls, jstring path) {
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(
+    JNIEnv *env,
+    jclass cls,
+    jstring path,
+    jint payload_format);
+
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfig(JNIEnv *env, jclass cls, jstring path) {
+    return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(env, cls, path, 1);
+}
+
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(
+    JNIEnv *env,
+    jclass cls,
+    jstring path,
+    jint payload_format) {
     (void)cls;
     if (path == NULL) {
         return 0;
     }
     const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
-    void *engine = bre_create_with_rules(path_str);
+    void *engine = bre_create_with_config_and_payload_format(path_str, (int)payload_format);
     (*env)->ReleaseStringUTFChars(env, path, path_str);
     return (jlong)engine;
 }
@@ -208,7 +227,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStopMqtt(JNIEnv *env, jcla
     return bre_stop_mqtt((void *)handle);
 }
 
-JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResult(
+JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
     JNIEnv *env,
     jclass cls,
     jlong handle,
@@ -218,43 +237,59 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResult(
         return NULL;
     }
 
-    struct BifroEvalResult result;
-    memset(&result, 0, sizeof(result));
-    int rc = bre_poll_eval_result((void *)handle, (uint32_t)timeout_millis, &result);
-    if (rc <= 0) {
+    struct BifroEvalResult *results = NULL;
+    size_t result_len = 0;
+    int rc = bre_poll_eval_results_batch(
+        (void *)handle,
+        (uint32_t)timeout_millis,
+        &results,
+        &result_len);
+    if (rc <= 0 || results == NULL || result_len == 0) {
         return NULL;
     }
 
     jclass result_cls = (*env)->FindClass(env, "com/bifrore/BifroRE$EvalResult");
     if (result_cls == NULL) {
-        bre_free_eval_result(&result);
+        bre_free_eval_results_batch(results, result_len);
         return NULL;
     }
     jmethodID ctor = (*env)->GetMethodID(env, result_cls, "<init>", "(Ljava/lang/String;[BLjava/lang/String;)V");
     if (ctor == NULL) {
-        bre_free_eval_result(&result);
+        bre_free_eval_results_batch(results, result_len);
+        return NULL;
+    }
+    jobjectArray array = (*env)->NewObjectArray(env, (jsize)result_len, result_cls, NULL);
+    if (array == NULL) {
+        bre_free_eval_results_batch(results, result_len);
         return NULL;
     }
 
-    jstring rule_id = (*env)->NewStringUTF(env, result.rule_id ? result.rule_id : "");
-    jbyteArray payload = (*env)->NewByteArray(env, (jsize)result.payload_len);
-    if (payload != NULL && result.payload != NULL && result.payload_len > 0) {
-        (*env)->SetByteArrayRegion(env, payload, 0, (jsize)result.payload_len, (const jbyte *)result.payload);
+    for (size_t i = 0; i < result_len; i++) {
+        struct BifroEvalResult *result = &results[i];
+        jstring rule_id = (*env)->NewStringUTF(env, result->rule_id ? result->rule_id : "");
+        jbyteArray payload = (*env)->NewByteArray(env, (jsize)result->payload_len);
+        if (payload != NULL && result->payload != NULL && result->payload_len > 0) {
+            (*env)->SetByteArrayRegion(env, payload, 0, (jsize)result->payload_len, (const jbyte *)result->payload);
+        }
+        jstring destinations = (*env)->NewStringUTF(env, result->destinations_json ? result->destinations_json : "[]");
+        jobject obj = (*env)->NewObject(env, result_cls, ctor, rule_id, payload, destinations);
+        if (obj != NULL) {
+            (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
+            (*env)->DeleteLocalRef(env, obj);
+        }
+        if (rule_id) {
+            (*env)->DeleteLocalRef(env, rule_id);
+        }
+        if (payload) {
+            (*env)->DeleteLocalRef(env, payload);
+        }
+        if (destinations) {
+            (*env)->DeleteLocalRef(env, destinations);
+        }
     }
-    jstring destinations = (*env)->NewStringUTF(env, result.destinations_json ? result.destinations_json : "[]");
-    jobject obj = (*env)->NewObject(env, result_cls, ctor, rule_id, payload, destinations);
 
-    if (rule_id) {
-        (*env)->DeleteLocalRef(env, rule_id);
-    }
-    if (payload) {
-        (*env)->DeleteLocalRef(env, payload);
-    }
-    if (destinations) {
-        (*env)->DeleteLocalRef(env, destinations);
-    }
-    bre_free_eval_result(&result);
-    return obj;
+    bre_free_eval_results_batch(results, result_len);
+    return array;
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(

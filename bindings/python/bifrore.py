@@ -23,6 +23,9 @@ class EvalMessage:
 
 
 class BifroRE:
+    PAYLOAD_JSON = 1
+    PAYLOAD_PROTOBUF = 2
+
     def __init__(
         self,
         lib_path,
@@ -41,10 +44,14 @@ class BifroRE:
         ordered_prefix="",
         keep_alive_secs=30,
         multi_nci=False,
+        payload_format=PAYLOAD_JSON,
     ):
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
-        self.handle = self.lib.bre_create_with_rules(rule_path.encode("utf-8"))
+        self.handle = self.lib.bre_create_with_config_and_payload_format(
+            rule_path.encode("utf-8"),
+            payload_format,
+        )
         if not self.handle:
             raise RuntimeError("Failed to create engine with rule file")
         self._log_callback = None
@@ -72,8 +79,10 @@ class BifroRE:
         }
 
     def _setup_signatures(self):
-        self.lib.bre_create_with_rules.argtypes = [c_char_p]
-        self.lib.bre_create_with_rules.restype = c_void_p
+        self.lib.bre_create_with_config.argtypes = [c_char_p]
+        self.lib.bre_create_with_config.restype = c_void_p
+        self.lib.bre_create_with_config_and_payload_format.argtypes = [c_char_p, c_int]
+        self.lib.bre_create_with_config_and_payload_format.restype = c_void_p
         self.lib.bre_destroy.argtypes = [c_void_p]
         self.lib.bre_start_mqtt.argtypes = [
             c_void_p,
@@ -99,14 +108,17 @@ class BifroRE:
         self.lib.bre_stop_mqtt.restype = c_int
         self.lib.bre_get_notify_fd.argtypes = [c_void_p]
         self.lib.bre_get_notify_fd.restype = c_int
-        self.lib.bre_poll_eval_result.argtypes = [
+        self.lib.bre_poll_eval_results_batch.argtypes = [
             c_void_p,
             c_uint32,
-            ctypes.POINTER(_EvalResult),
+            ctypes.POINTER(ctypes.POINTER(_EvalResult)),
+            ctypes.POINTER(c_size_t),
         ]
-        self.lib.bre_poll_eval_result.restype = c_int
+        self.lib.bre_poll_eval_results_batch.restype = c_int
         self.lib.bre_free_eval_result.argtypes = [ctypes.POINTER(_EvalResult)]
         self.lib.bre_free_eval_result.restype = None
+        self.lib.bre_free_eval_results_batch.argtypes = [ctypes.POINTER(_EvalResult), c_size_t]
+        self.lib.bre_free_eval_results_batch.restype = None
         self.lib.bre_metrics_snapshot.argtypes = [
             c_void_p,
             ctypes.POINTER(ctypes.c_uint64),
@@ -263,12 +275,21 @@ class BifroRE:
             return
 
     def _drain_eval_results(self):
-        while self.handle:
-            result = _EvalResult()
-            rc = self.lib.bre_poll_eval_result(self.handle, 0, ctypes.byref(result))
-            if rc != 1:
-                break
-            try:
+        if not self.handle:
+            return
+        out_results = ctypes.POINTER(_EvalResult)()
+        out_len = c_size_t(0)
+        rc = self.lib.bre_poll_eval_results_batch(
+            self.handle,
+            0,
+            ctypes.byref(out_results),
+            ctypes.byref(out_len),
+        )
+        if rc != 1 or out_len.value == 0:
+            return
+        try:
+            for idx in range(out_len.value):
+                result = out_results[idx]
                 rule_id = result.rule_id.decode("utf-8") if result.rule_id else ""
                 payload = (
                     ctypes.string_at(result.payload, result.payload_len)
@@ -287,8 +308,11 @@ class BifroRE:
                 message = EvalMessage(rule_id=rule_id, payload=payload, destinations=destinations)
                 if self._queue is not None:
                     self._queue.put_nowait(message)
-            finally:
-                self.lib.bre_free_eval_result(ctypes.byref(result))
+        finally:
+            self.lib.bre_free_eval_results_batch(out_results, out_len.value)
+
+        if out_len.value > 0 and self._loop is not None:
+            self._loop.call_soon(self._drain_eval_results)
 
     async def stop(self):
         if self.handle and self._mqtt_started:

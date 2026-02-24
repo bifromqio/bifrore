@@ -5,9 +5,12 @@ use bifrore_embed_core::runtime::RuleEngine;
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const DEFAULT_POLL_BATCH_SIZE: usize = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +26,7 @@ pub enum BifroRELogLevel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BifroREPayloadFormat {
     Json = 1,
+    Protobuf = 2,
 }
 
 pub type BifroRELogCallback =
@@ -190,6 +194,13 @@ fn notify_eval_ready(fd: c_int) {
     }
 }
 
+fn maybe_notify_eval_ready(fd: c_int, pending: &AtomicBool) {
+    if pending.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    notify_eval_ready(fd);
+}
+
 fn close_notify_pipe(fd: c_int) {
     if fd >= 0 {
         unsafe {
@@ -208,6 +219,7 @@ pub struct BifroRE {
     eval_result_rx: Option<flume::Receiver<EvalResultRecord>>,
     notify_read_fd: c_int,
     notify_write_fd: c_int,
+    notify_pending: AtomicBool,
 }
 
 pub type BifroEvalCallback = extern "C" fn(
@@ -244,70 +256,77 @@ impl Default for BifroEvalResult {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn bre_create() -> *mut BifroRE {
-    ensure_logger_initialized();
-    let (notify_read_fd, notify_write_fd) = create_notify_pipe().unwrap_or((-1, -1));
-    let engine = BifroRE {
-        inner: Mutex::new(RuleEngine::with_payload_format(PayloadFormat::Json)),
-        adapter: None,
-        core_queue_tx: None,
-        core_worker: None,
-        eval_result_tx: None,
-        eval_result_rx: None,
-        notify_read_fd,
-        notify_write_fd,
+fn to_ffi_eval_result(record: EvalResultRecord) -> BifroEvalResult {
+    let rule_id = CString::new(record.rule_id.replace('\0', "\\0"))
+        .unwrap_or_else(|_| CString::new("").unwrap())
+        .into_raw();
+    let destinations_json = CString::new(record.destinations_json.replace('\0', "\\0"))
+        .unwrap_or_else(|_| CString::new("[]").unwrap())
+        .into_raw();
+    let payload_len = record.payload.len();
+    let payload = if payload_len == 0 {
+        ptr::null_mut()
+    } else {
+        let mut payload = record.payload.into_boxed_slice();
+        let payload_ptr = payload.as_mut_ptr();
+        std::mem::forget(payload);
+        payload_ptr
     };
-    log::info!("Bifro engine created");
-    Box::into_raw(Box::new(engine))
+    BifroEvalResult {
+        rule_id,
+        payload,
+        payload_len,
+        destinations_json,
+    }
+}
+
+fn free_eval_result_inner(result_ref: &mut BifroEvalResult) {
+    unsafe {
+        if !result_ref.rule_id.is_null() {
+            let _ = CString::from_raw(result_ref.rule_id);
+            result_ref.rule_id = ptr::null_mut();
+        }
+        if !result_ref.destinations_json.is_null() {
+            let _ = CString::from_raw(result_ref.destinations_json);
+            result_ref.destinations_json = ptr::null_mut();
+        }
+        if !result_ref.payload.is_null() && result_ref.payload_len > 0 {
+            let _ = Vec::from_raw_parts(
+                result_ref.payload,
+                result_ref.payload_len,
+                result_ref.payload_len,
+            );
+            result_ref.payload = ptr::null_mut();
+            result_ref.payload_len = 0;
+        }
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn bre_create_with_payload_format(payload_format: c_int) -> *mut BifroRE {
-    ensure_logger_initialized();
-    let Some(payload_format) = PayloadFormat::from_ffi_code(payload_format) else {
-        return ptr::null_mut();
-    };
-    let (notify_read_fd, notify_write_fd) = create_notify_pipe().unwrap_or((-1, -1));
-    let engine = BifroRE {
-        inner: Mutex::new(RuleEngine::with_payload_format(payload_format)),
-        adapter: None,
-        core_queue_tx: None,
-        core_worker: None,
-        eval_result_tx: None,
-        eval_result_rx: None,
-        notify_read_fd,
-        notify_write_fd,
-    };
-    log::info!("Bifro engine created with payload_format={:?}", payload_format);
-    Box::into_raw(Box::new(engine))
+pub extern "C" fn bre_create_with_config(config_path: *const c_char) -> *mut BifroRE {
+    bre_create_with_config_and_payload_format(config_path, BifroREPayloadFormat::Json as c_int)
 }
 
 #[no_mangle]
-pub extern "C" fn bre_create_with_rules(path: *const c_char) -> *mut BifroRE {
-    bre_create_with_rules_and_payload_format(path, BifroREPayloadFormat::Json as c_int)
-}
-
-#[no_mangle]
-pub extern "C" fn bre_create_with_rules_and_payload_format(
-    path: *const c_char,
+pub extern "C" fn bre_create_with_config_and_payload_format(
+    config_path: *const c_char,
     payload_format: c_int,
 ) -> *mut BifroRE {
     ensure_logger_initialized();
-    if path.is_null() {
+    if config_path.is_null() {
         return ptr::null_mut();
     }
     let Some(payload_format) = PayloadFormat::from_ffi_code(payload_format) else {
         return ptr::null_mut();
     };
 
-    let path = unsafe { CStr::from_ptr(path) };
-    let Ok(path) = path.to_str() else {
+    let config_path = unsafe { CStr::from_ptr(config_path) };
+    let Ok(config_path) = config_path.to_str() else {
         return ptr::null_mut();
     };
 
     let mut rule_engine = RuleEngine::with_payload_format(payload_format);
-    if rule_engine.load_rules_from_json(path).is_err() {
+    if rule_engine.load_rules_from_json(config_path).is_err() {
         return ptr::null_mut();
     }
 
@@ -321,10 +340,11 @@ pub extern "C" fn bre_create_with_rules_and_payload_format(
         eval_result_rx: None,
         notify_read_fd,
         notify_write_fd,
+        notify_pending: AtomicBool::new(false),
     };
     log::info!(
-        "BifroRE created with rules path={} payload_format={:?}",
-        path,
+        "BifroRE created with config path={} payload_format={:?}",
+        config_path,
         payload_format
     );
     Box::into_raw(Box::new(engine))
@@ -558,6 +578,7 @@ pub extern "C" fn bre_start_mqtt(
             let mut guard = engine.inner.lock().unwrap();
             let results = guard.evaluate(&message);
             drop(guard);
+            let mut enqueued_any = false;
             for result in results {
                 let destinations_json = serde_json::to_string(&result.destinations)
                     .unwrap_or_else(|_| "[]".to_string());
@@ -570,7 +591,10 @@ pub extern "C" fn bre_start_mqtt(
                     log::warn!("dropping eval result because poll queue is closed");
                     break;
                 }
-                notify_eval_ready(notify_write_fd);
+                enqueued_any = true;
+            }
+            if enqueued_any {
+                maybe_notify_eval_ready(notify_write_fd, &engine.notify_pending);
             }
         }
     });
@@ -635,23 +659,31 @@ fn stop_core_worker(engine: &mut BifroRE) {
 }
 
 #[no_mangle]
-pub extern "C" fn bre_poll_eval_result(
+pub extern "C" fn bre_poll_eval_results_batch(
     engine: *mut BifroRE,
     timeout_millis: u32,
-    out_result: *mut BifroEvalResult,
+    out_results: *mut *mut BifroEvalResult,
+    out_len: *mut size_t,
 ) -> c_int {
-    if engine.is_null() || out_result.is_null() {
+    if engine.is_null() || out_results.is_null() || out_len.is_null() {
         return -1;
     }
     let engine = unsafe { &mut *engine };
     let Some(receiver) = engine.eval_result_rx.as_ref() else {
         return -2;
     };
+    let max_results = DEFAULT_POLL_BATCH_SIZE;
 
-    let record = if timeout_millis == 0 {
+    let first_record = if timeout_millis == 0 {
         match receiver.try_recv() {
             Ok(value) => value,
-            Err(flume::TryRecvError::Empty) => return 0,
+            Err(flume::TryRecvError::Empty) => {
+                engine.notify_pending.store(false, Ordering::Release);
+                if !receiver.is_empty() {
+                    maybe_notify_eval_ready(engine.notify_write_fd, &engine.notify_pending);
+                }
+                return 0;
+            }
             Err(flume::TryRecvError::Disconnected) => return -3,
         }
     } else if timeout_millis == u32::MAX {
@@ -667,29 +699,28 @@ pub extern "C" fn bre_poll_eval_result(
         }
     };
 
-    let rule_id = CString::new(record.rule_id.replace('\0', "\\0"))
-        .unwrap_or_else(|_| CString::new("").unwrap())
-        .into_raw();
-    let destinations_json = CString::new(record.destinations_json.replace('\0', "\\0"))
-        .unwrap_or_else(|_| CString::new("[]").unwrap())
-        .into_raw();
-    let payload_len = record.payload.len();
-    let payload = if payload_len == 0 {
-        ptr::null_mut()
-    } else {
-        let mut payload = record.payload.into_boxed_slice();
-        let payload_ptr = payload.as_mut_ptr();
-        std::mem::forget(payload);
-        payload_ptr
-    };
+    let mut results = Vec::with_capacity(max_results as usize);
+    results.push(to_ffi_eval_result(first_record));
 
+    while results.len() < max_results as usize {
+        match receiver.try_recv() {
+            Ok(record) => results.push(to_ffi_eval_result(record)),
+            Err(flume::TryRecvError::Empty) => break,
+            Err(flume::TryRecvError::Disconnected) => break,
+        }
+    }
+
+    if receiver.is_empty() {
+        engine.notify_pending.store(false, Ordering::Release);
+    }
+
+    let mut boxed = results.into_boxed_slice();
+    let len = boxed.len();
+    let ptr = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
     unsafe {
-        *out_result = BifroEvalResult {
-            rule_id,
-            payload,
-            payload_len,
-            destinations_json,
-        };
+        *out_results = ptr;
+        *out_len = len;
     }
     1
 }
@@ -699,24 +730,19 @@ pub extern "C" fn bre_free_eval_result(result: *mut BifroEvalResult) {
     if result.is_null() {
         return;
     }
+    let result_ref = unsafe { &mut *result };
+    free_eval_result_inner(result_ref);
+}
+
+#[no_mangle]
+pub extern "C" fn bre_free_eval_results_batch(results: *mut BifroEvalResult, len: size_t) {
+    if results.is_null() || len == 0 {
+        return;
+    }
     unsafe {
-        let result_ref = &mut *result;
-        if !result_ref.rule_id.is_null() {
-            let _ = CString::from_raw(result_ref.rule_id);
-            result_ref.rule_id = ptr::null_mut();
-        }
-        if !result_ref.destinations_json.is_null() {
-            let _ = CString::from_raw(result_ref.destinations_json);
-            result_ref.destinations_json = ptr::null_mut();
-        }
-        if !result_ref.payload.is_null() && result_ref.payload_len > 0 {
-            let _ = Vec::from_raw_parts(
-                result_ref.payload,
-                result_ref.payload_len,
-                result_ref.payload_len,
-            );
-            result_ref.payload = ptr::null_mut();
-            result_ref.payload_len = 0;
+        let mut records = Vec::from_raw_parts(results, len, len);
+        for result in &mut records {
+            free_eval_result_inner(result);
         }
     }
 }

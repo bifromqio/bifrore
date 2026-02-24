@@ -1,4 +1,5 @@
 use prost::Message;
+use prost_types::{value, ListValue, Struct, Value as PbValue};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
@@ -6,12 +7,14 @@ use std::sync::Arc;
 pub enum PayloadFormat {
     #[default]
     Json,
+    Protobuf,
 }
 
 impl PayloadFormat {
     pub fn from_ffi_code(code: i32) -> Option<Self> {
         match code {
             1 => Some(Self::Json),
+            2 => Some(Self::Protobuf),
             _ => None,
         }
     }
@@ -45,6 +48,7 @@ impl PayloadDecoder {
     pub fn from_format(format: PayloadFormat) -> Self {
         match format {
             PayloadFormat::Json => Self::Json,
+            PayloadFormat::Protobuf => Self::ProtobufTyped(Arc::new(decode_protobuf_struct_object)),
         }
     }
 }
@@ -93,6 +97,39 @@ fn decode_json_object(payload: &[u8]) -> Result<Map<String, Value>, String> {
         .cloned()
         .ok_or_else(|| "payload must be a JSON object".to_string())
 }
+
+fn decode_protobuf_struct_object(payload: &[u8]) -> Result<Map<String, Value>, String> {
+    let parsed = Struct::decode(payload).map_err(|err| err.to_string())?;
+    Ok(convert_protobuf_struct(parsed))
+}
+
+fn convert_protobuf_struct(input: Struct) -> Map<String, Value> {
+    input
+        .fields
+        .into_iter()
+        .map(|(key, value)| (key, convert_protobuf_value(value)))
+        .collect()
+}
+
+fn convert_protobuf_list(input: ListValue) -> Vec<Value> {
+    input
+        .values
+        .into_iter()
+        .map(convert_protobuf_value)
+        .collect()
+}
+
+fn convert_protobuf_value(input: PbValue) -> Value {
+    match input.kind {
+        Some(value::Kind::NullValue(_)) => Value::Null,
+        Some(value::Kind::NumberValue(number)) => Value::from(number),
+        Some(value::Kind::StringValue(text)) => Value::from(text),
+        Some(value::Kind::BoolValue(flag)) => Value::from(flag),
+        Some(value::Kind::StructValue(object)) => Value::Object(convert_protobuf_struct(object)),
+        Some(value::Kind::ListValue(list)) => Value::Array(convert_protobuf_list(list)),
+        None => Value::Null,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +166,36 @@ mod tests {
             decode_payload_object_with_decoder(&payload, &decoder).expect("decode typed protobuf");
         assert_eq!(decoded.get("temp"), Some(&Value::from(30.0)));
         assert_eq!(decoded.get("device"), Some(&Value::from("sensor-a")));
+    }
+
+    #[test]
+    fn decode_protobuf_struct_payload() {
+        let mut nested = Struct::default();
+        nested
+            .fields
+            .insert("hum".to_string(), PbValue { kind: Some(value::Kind::NumberValue(61.0)) });
+
+        let mut root = Struct::default();
+        root.fields.insert(
+            "temp".to_string(),
+            PbValue {
+                kind: Some(value::Kind::NumberValue(30.0)),
+            },
+        );
+        root.fields.insert(
+            "meta".to_string(),
+            PbValue {
+                kind: Some(value::Kind::StructValue(nested)),
+            },
+        );
+        let payload = root.encode_to_vec();
+
+        let decoded =
+            decode_payload_object(&payload, PayloadFormat::Protobuf).expect("decode protobuf struct");
+        assert_eq!(decoded.get("temp"), Some(&Value::from(30.0)));
+        assert_eq!(
+            decoded.get("meta").and_then(|value| value.get("hum")),
+            Some(&Value::from(61.0))
+        );
     }
 }
