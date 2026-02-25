@@ -352,17 +352,3 @@ class BifroRE:
         if self.handle:
             self.lib.bre_destroy(self.handle)
             self.handle = None
-
-
-if __name__ == "__main__":
-    async def main():
-        async with BifroRE(
-                lib_path="/Users/kugejoe/Desktop/work/github/bifrore/engine/target/debug/libbifrore_embed.dylib",
-                rule_path="/Users/kugejoe/Desktop/work/github/bifrore/bindings/python/rule.json",
-                username="dev",
-                password="dev"
-        ) as msg_stream:
-            async for msg in msg_stream:
-                print(f"msg: {msg}")
-
-    asyncio.run(main())
