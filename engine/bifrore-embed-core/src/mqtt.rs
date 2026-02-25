@@ -42,7 +42,29 @@ impl MqttConfig {
     }
 }
 
-pub type MessageHandler = Arc<dyn Fn(Message) + Send + Sync + 'static>;
+pub struct IncomingDelivery {
+    pub message: Message,
+    #[cfg(feature = "mqtt")]
+    ack: Option<DeferredAck>,
+}
+
+impl IncomingDelivery {
+    #[cfg(feature = "mqtt")]
+    pub fn ack(self) {
+        if let Some(ack) = self.ack {
+            if let Err(err) = ack.client.try_ack(&ack.publish) {
+                log::warn!("failed to send MQTT PUBACK/PUBREC after eval: {err}");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "mqtt"))]
+    pub fn ack(self) {
+        let _ = self;
+    }
+}
+
+pub type MessageHandler = Arc<dyn Fn(IncomingDelivery) + Send + Sync + 'static>;
 
 #[derive(Debug)]
 pub enum MqttError {
@@ -57,12 +79,6 @@ pub struct MqttAdapterHandle {
     runtime_thread: Option<JoinHandle<()>>,
     #[cfg(feature = "mqtt")]
     eval_worker: Option<JoinHandle<()>>,
-}
-
-#[cfg(feature = "mqtt")]
-struct QueuedIncoming {
-    message: Message,
-    ack: Option<DeferredAck>,
 }
 
 #[cfg(feature = "mqtt")]
@@ -121,7 +137,7 @@ pub fn start_mqtt(
         multi_nci_devices.as_ref().map(|v| v.len()).unwrap_or(0)
     );
 
-    let (queue_tx, queue_rx) = flume::bounded::<QueuedIncoming>(queue_capacity);
+    let (queue_tx, queue_rx) = flume::bounded::<IncomingDelivery>(queue_capacity);
     if config.eval_threads > 1 {
         log::warn!(
             "eval_threads={} requested but adapter uses single consumer (MPSC) for ordering simplicity",
@@ -132,12 +148,7 @@ pub fn start_mqtt(
         let eval_handler = handler.clone();
         std::thread::spawn(move || {
             while let Ok(task) = queue_rx.recv() {
-                eval_handler(task.message);
-                if let Some(ack) = task.ack {
-                    if let Err(err) = ack.client.try_ack(&ack.publish) {
-                        log::warn!("failed to send MQTT PUBACK/PUBREC after eval: {err}");
-                    }
-                }
+                eval_handler(task);
             }
         })
     };
@@ -349,7 +360,7 @@ async fn subscribe_topics(
 async fn run_event_loop(
     client: rumqttc::v5::AsyncClient,
     mut event_loop: rumqttc::v5::EventLoop,
-    queue_tx: flume::Sender<QueuedIncoming>,
+    queue_tx: flume::Sender<IncomingDelivery>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     use std::time::Duration;
@@ -383,7 +394,7 @@ async fn run_event_loop(
                                 msg.properties.insert(key.clone(), value.clone());
                             }
                         }
-                        let task = QueuedIncoming {
+                        let task = IncomingDelivery {
                             message: msg,
                             ack: Some(DeferredAck {
                                 client: client.clone(),

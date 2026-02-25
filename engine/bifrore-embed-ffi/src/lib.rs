@@ -1,5 +1,7 @@
 use bifrore_embed_core::message::Message;
-use bifrore_embed_core::mqtt::{start_mqtt, MessageHandler, MqttAdapterHandle, MqttConfig};
+use bifrore_embed_core::mqtt::{
+    start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
+};
 use bifrore_embed_core::payload::PayloadFormat;
 use bifrore_embed_core::runtime::RuleEngine;
 use libc::{c_char, c_int, c_void, size_t};
@@ -213,7 +215,7 @@ fn close_notify_pipe(fd: c_int) {
 pub struct BifroRE {
     inner: Mutex<RuleEngine>,
     adapter: Option<MqttAdapterHandle>,
-    core_queue_tx: Option<flume::Sender<Message>>,
+    core_queue_tx: Option<flume::Sender<IncomingDelivery>>,
     core_worker: Option<JoinHandle<()>>,
     eval_result_tx: Option<flume::Sender<EvalResultRecord>>,
     eval_result_rx: Option<flume::Receiver<EvalResultRecord>>,
@@ -566,18 +568,21 @@ pub extern "C" fn bre_start_mqtt(
     );
 
     let engine_addr = engine as usize;
-    let (core_queue_tx, core_queue_rx) = flume::bounded::<Message>(config.queue_capacity.max(1) as usize);
+    let (core_queue_tx, core_queue_rx) =
+        flume::bounded::<IncomingDelivery>(config.queue_capacity.max(1) as usize);
     let (eval_result_tx, eval_result_rx) =
         flume::bounded::<EvalResultRecord>(config.queue_capacity.max(1) as usize);
     let eval_result_tx_for_worker = eval_result_tx.clone();
     let notify_write_fd = engine_ref.notify_write_fd;
     let core_worker = std::thread::spawn(move || {
         let engine_ptr = engine_addr as *mut BifroRE;
-        while let Ok(message) = core_queue_rx.recv() {
+        while let Ok(delivery) = core_queue_rx.recv() {
+            let message: &Message = &delivery.message;
             let engine = unsafe { &*engine_ptr };
             let mut guard = engine.inner.lock().unwrap();
-            let results = guard.evaluate(&message);
+            let results = guard.evaluate(message);
             drop(guard);
+            delivery.ack();
             let mut enqueued_any = false;
             for result in results {
                 let destinations_json = serde_json::to_string(&result.destinations)
@@ -600,8 +605,8 @@ pub extern "C" fn bre_start_mqtt(
     });
 
     let core_queue_tx_for_handler = core_queue_tx.clone();
-    let handler: MessageHandler = std::sync::Arc::new(move |message: Message| {
-        if core_queue_tx_for_handler.send(message).is_err() {
+    let handler: MessageHandler = std::sync::Arc::new(move |delivery: IncomingDelivery| {
+        if core_queue_tx_for_handler.send(delivery).is_err() {
             log::warn!("dropping incoming message because core queue is closed");
         }
     });
