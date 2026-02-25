@@ -606,8 +606,8 @@ pub extern "C" fn bre_start_mqtt(
 
     let core_queue_tx_for_handler = core_queue_tx.clone();
     let handler: MessageHandler = std::sync::Arc::new(move |delivery: IncomingDelivery| {
-        if core_queue_tx_for_handler.send(delivery).is_err() {
-            log::warn!("dropping incoming message because core queue is closed");
+        if core_queue_tx_for_handler.try_send(delivery).is_err() {
+            log::warn!("dropping incoming message because core queue is full or closed");
         }
     });
 

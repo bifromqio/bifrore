@@ -77,8 +77,6 @@ pub struct MqttAdapterHandle {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     #[cfg(feature = "mqtt")]
     runtime_thread: Option<JoinHandle<()>>,
-    #[cfg(feature = "mqtt")]
-    eval_worker: Option<JoinHandle<()>>,
 }
 
 #[cfg(feature = "mqtt")]
@@ -97,9 +95,6 @@ impl MqttAdapterHandle {
             }
             if let Some(runtime_thread) = self.runtime_thread.take() {
                 let _ = runtime_thread.join();
-            }
-            if let Some(eval_worker) = self.eval_worker.take() {
-                let _ = eval_worker.join();
             }
             Ok(())
         }
@@ -122,7 +117,6 @@ pub fn start_mqtt(
 
     let client_count = config.client_count.max(1);
     let io_threads = config.io_threads.max(1) as usize;
-    let queue_capacity = config.queue_capacity.max(1) as usize;
 
     let multi_nci_devices = select_multi_nci_devices(config.multi_nci, client_count);
     log::info!(
@@ -132,30 +126,14 @@ pub fn start_mqtt(
         topics.len(),
         client_count,
         io_threads,
-        queue_capacity,
+        config.queue_capacity.max(1),
         config.multi_nci,
         multi_nci_devices.as_ref().map(|v| v.len()).unwrap_or(0)
     );
 
-    let (queue_tx, queue_rx) = flume::bounded::<IncomingDelivery>(queue_capacity);
-    if config.eval_threads > 1 {
-        log::warn!(
-            "eval_threads={} requested but adapter uses single consumer (MPSC) for ordering simplicity",
-            config.eval_threads
-        );
-    }
-    let eval_worker = {
-        let eval_handler = handler.clone();
-        std::thread::spawn(move || {
-            while let Ok(task) = queue_rx.recv() {
-                eval_handler(task);
-            }
-        })
-    };
-
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-    let queue_tx_runtime = queue_tx.clone();
+    let handler_runtime = handler.clone();
     let runtime_thread = std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -208,12 +186,12 @@ pub fn start_mqtt(
 
                 log::info!("MQTT subscriptions established for client_id={client_id}");
                 subscribed_clients += 1;
-                let tx = queue_tx_runtime.clone();
+                let handler = handler_runtime.clone();
                 let shutdown_rx = shutdown_tx.subscribe();
                 tasks.push(tokio::spawn(run_event_loop(
                     client.clone(),
                     event_loop,
-                    tx,
+                    handler,
                     shutdown_rx,
                 )));
             }
@@ -236,19 +214,15 @@ pub fn start_mqtt(
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
             log::error!("MQTT startup failed: {err}");
-            drop(queue_tx);
             let _ = stop_tx.send(());
             let _ = runtime_thread.join();
-            let _ = eval_worker.join();
             return Err(MqttError::StartFailed(err));
         }
         Err(_) => {
             let err = "timeout waiting MQTT startup readiness".to_string();
             log::error!("{err}");
-            drop(queue_tx);
             let _ = stop_tx.send(());
             let _ = runtime_thread.join();
-            let _ = eval_worker.join();
             return Err(MqttError::StartFailed(err));
         }
     }
@@ -256,7 +230,6 @@ pub fn start_mqtt(
     Ok(MqttAdapterHandle {
         stop: Some(stop_tx),
         runtime_thread: Some(runtime_thread),
-        eval_worker: Some(eval_worker),
     })
 }
 
@@ -360,11 +333,9 @@ async fn subscribe_topics(
 async fn run_event_loop(
     client: rumqttc::v5::AsyncClient,
     mut event_loop: rumqttc::v5::EventLoop,
-    queue_tx: flume::Sender<IncomingDelivery>,
+    handler: MessageHandler,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
-    use std::time::Duration;
-
     loop {
         tokio::select! {
             changed = shutdown_rx.changed() => {
@@ -401,17 +372,7 @@ async fn run_event_loop(
                                 publish,
                             }),
                         };
-                        let send_result = tokio::time::timeout(
-                            Duration::from_millis(100),
-                            queue_tx.send_async(task),
-                        ).await;
-                        match send_result {
-                            Ok(Ok(())) => {}
-                            Ok(Err(_)) => break,
-                            Err(_) => {
-                                log::warn!("dropping message because adapter->core queue is full");
-                            }
-                        }
+                        handler(task);
                     }
                     Ok(_) => {}
                     Err(err) => {
