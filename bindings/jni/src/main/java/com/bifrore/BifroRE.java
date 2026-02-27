@@ -49,6 +49,7 @@ public final class BifroRE implements AutoCloseable {
     private final String nodeId;
     private final int clientCount;
     private final boolean multiNci;
+    private final String clientIdsPath;
     private volatile boolean mqttStarted;
     private volatile boolean pollRunning;
     private volatile Thread pollThread;
@@ -56,7 +57,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile Executor nextExecutor;
 
     public BifroRE(String host, int port, String ruleJsonPath) {
-        this(host, port, ruleJsonPath, "bifrore-embed", null, 1, false, PAYLOAD_JSON);
+        this(host, port, ruleJsonPath, "bifrore-embed", null, 1, false, PAYLOAD_JSON, "./client_ids");
     }
 
     public BifroRE(
@@ -68,7 +69,7 @@ public final class BifroRE implements AutoCloseable {
         int clientCount,
         boolean multiNci
     ) {
-        this(host, port, ruleJsonPath, clientPrefix, nodeId, clientCount, multiNci, PAYLOAD_JSON);
+        this(host, port, ruleJsonPath, clientPrefix, nodeId, clientCount, multiNci, PAYLOAD_JSON, "./client_ids");
     }
 
     public BifroRE(
@@ -81,13 +82,33 @@ public final class BifroRE implements AutoCloseable {
         boolean multiNci,
         int payloadFormat
     ) {
+        this(host, port, ruleJsonPath, clientPrefix, nodeId, clientCount, multiNci, payloadFormat, "./client_ids");
+    }
+
+    public BifroRE(
+        String host,
+        int port,
+        String ruleJsonPath,
+        String clientPrefix,
+        String nodeId,
+        int clientCount,
+        boolean multiNci,
+        int payloadFormat,
+        String clientIdsPath
+    ) {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.clientPrefix = Objects.requireNonNull(clientPrefix, "clientPrefix");
         this.nodeId = nodeId;
         this.clientCount = clientCount;
         this.multiNci = multiNci;
-        this.handle = nativeCreateWithConfigAndPayloadFormat(ruleJsonPath, payloadFormat);
+        this.clientIdsPath =
+            (clientIdsPath == null || clientIdsPath.isBlank()) ? "./client_ids" : clientIdsPath;
+        this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+            ruleJsonPath,
+            payloadFormat,
+            this.clientIdsPath
+        );
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
         }
@@ -242,6 +263,11 @@ public final class BifroRE implements AutoCloseable {
 
     private static native long nativeCreateWithConfig(String path);
     private static native long nativeCreateWithConfigAndPayloadFormat(String path, int payloadFormat);
+    private static native long nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+        String path,
+        int payloadFormat,
+        String clientIdsPath
+    );
     private static native void nativeDestroy(long handle);
     private static native int nativeStartMqtt(
         long handle,

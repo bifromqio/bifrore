@@ -6,6 +6,8 @@ use bifrore_embed_core::payload::PayloadFormat;
 use bifrore_embed_core::runtime::RuleEngine;
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
+use std::fs;
+use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once, OnceLock, RwLock};
@@ -13,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_POLL_BATCH_SIZE: usize = 256;
+const DEFAULT_CLIENT_IDS_PATH: &str = "./client_ids";
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +160,52 @@ fn generate_default_node_id() -> String {
     format!("node_{}_{}", pid, millis)
 }
 
+fn normalize_client_count(client_count: u16) -> usize {
+    client_count.max(1) as usize
+}
+
+fn load_client_ids(path: &str) -> Option<Vec<String>> {
+    let content = fs::read_to_string(path).ok()?;
+    let values = content
+        .lines()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    if values.is_empty() { None } else { Some(values) }
+}
+
+fn persist_client_ids(path: &str, client_ids: &[String]) -> Result<(), String> {
+    if client_ids.is_empty() {
+        return Ok(());
+    }
+    let path_ref = Path::new(path);
+    if let Some(parent) = path_ref.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+    }
+    fs::write(path_ref, format!("{}\n", client_ids.join("\n"))).map_err(|err| err.to_string())
+}
+
+fn resolve_client_ids(
+    path: &str,
+    node_id: &str,
+    client_prefix: &str,
+    client_count: u16,
+) -> Vec<String> {
+    let target_count = normalize_client_count(client_count);
+    let mut values = load_client_ids(path).unwrap_or_default();
+    if values.len() < target_count {
+        for index in values.len()..target_count {
+            values.push(format!("{}_{}_{}", node_id, client_prefix, index));
+        }
+    } else if values.len() > target_count {
+        values.truncate(target_count);
+    }
+    values
+}
+
 fn create_notify_pipe() -> Option<(c_int, c_int)> {
     let mut fds = [0; 2];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
@@ -222,6 +271,8 @@ pub struct BifroRE {
     notify_read_fd: c_int,
     notify_write_fd: c_int,
     notify_pending: AtomicBool,
+    client_ids_path: String,
+    active_client_ids: Vec<String>,
 }
 
 pub type BifroEvalCallback = extern "C" fn(
@@ -306,13 +357,30 @@ fn free_eval_result_inner(result_ref: &mut BifroEvalResult) {
 
 #[no_mangle]
 pub extern "C" fn bre_create_with_config(config_path: *const c_char) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format(config_path, BifroREPayloadFormat::Json as c_int)
+    bre_create_with_config_and_payload_format_and_client_ids_path(
+        config_path,
+        BifroREPayloadFormat::Json as c_int,
+        ptr::null(),
+    )
 }
 
 #[no_mangle]
 pub extern "C" fn bre_create_with_config_and_payload_format(
     config_path: *const c_char,
     payload_format: c_int,
+) -> *mut BifroRE {
+    bre_create_with_config_and_payload_format_and_client_ids_path(
+        config_path,
+        payload_format,
+        ptr::null(),
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
+    config_path: *const c_char,
+    payload_format: c_int,
+    client_ids_path: *const c_char,
 ) -> *mut BifroRE {
     ensure_logger_initialized();
     if config_path.is_null() {
@@ -325,6 +393,20 @@ pub extern "C" fn bre_create_with_config_and_payload_format(
     let config_path = unsafe { CStr::from_ptr(config_path) };
     let Ok(config_path) = config_path.to_str() else {
         return ptr::null_mut();
+    };
+    let client_ids_path = if client_ids_path.is_null() {
+        DEFAULT_CLIENT_IDS_PATH.to_string()
+    } else {
+        let parsed = unsafe { CStr::from_ptr(client_ids_path) }
+            .to_str()
+            .ok()
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        if parsed.is_empty() {
+            DEFAULT_CLIENT_IDS_PATH.to_string()
+        } else {
+            parsed
+        }
     };
 
     let mut rule_engine = RuleEngine::with_payload_format(payload_format);
@@ -343,6 +425,8 @@ pub extern "C" fn bre_create_with_config_and_payload_format(
         notify_read_fd,
         notify_write_fd,
         notify_pending: AtomicBool::new(false),
+        client_ids_path,
+        active_client_ids: Vec::new(),
     };
     log::info!(
         "BifroRE created with config path={} payload_format={:?}",
@@ -362,6 +446,13 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
         if let Some(adapter) = boxed.adapter.take() {
             let _ = adapter.stop();
             log::info!("BifroRE destroy requested MQTT stop");
+        }
+        if let Err(err) = persist_client_ids(&boxed.client_ids_path, &boxed.active_client_ids) {
+            log::warn!(
+                "failed to persist client ids at destroy path={} error={}",
+                boxed.client_ids_path,
+                err
+            );
         }
         stop_core_worker(&mut boxed);
         close_notify_pipe(boxed.notify_read_fd);
@@ -538,6 +629,12 @@ pub extern "C" fn bre_start_mqtt(
             parsed
         }
     };
+    let client_ids = resolve_client_ids(
+        &engine_ref.client_ids_path,
+        &node_id,
+        &client_prefix,
+        client_count,
+    );
 
     let config = MqttConfig {
         host,
@@ -545,6 +642,7 @@ pub extern "C" fn bre_start_mqtt(
         client_prefix,
         node_id,
         client_count,
+        client_ids: client_ids.clone(),
         io_threads: 2,
         eval_threads: 1,
         queue_capacity: 4096,
@@ -558,6 +656,14 @@ pub extern "C" fn bre_start_mqtt(
         keep_alive_secs,
         multi_nci,
     };
+    engine_ref.active_client_ids = client_ids;
+    if let Err(err) = persist_client_ids(&engine_ref.client_ids_path, &engine_ref.active_client_ids) {
+        log::warn!(
+            "failed to persist client ids at start path={} error={}",
+            engine_ref.client_ids_path,
+            err
+        );
+    }
     log::info!(
         "Starting MQTT from FFI host={} port={} client_prefix={} node_id={} clients={}",
         config.host,
@@ -643,6 +749,13 @@ pub extern "C" fn bre_stop_mqtt(engine: *mut BifroRE) -> c_int {
         log::info!("stopping MQTT adapter from FFI");
         match adapter.stop() {
             Ok(_) => {
+                if let Err(err) = persist_client_ids(&engine.client_ids_path, &engine.active_client_ids) {
+                    log::warn!(
+                        "failed to persist client ids at stop path={} error={}",
+                        engine.client_ids_path,
+                        err
+                    );
+                }
                 stop_core_worker(engine);
                 0
             }

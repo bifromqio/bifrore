@@ -45,12 +45,14 @@ class BifroRE:
         keep_alive_secs=30,
         multi_nci=False,
         payload_format=PAYLOAD_JSON,
+        client_ids_path="./client_ids",
     ):
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
-        self.handle = self.lib.bre_create_with_config_and_payload_format(
+        self.handle = self.lib.bre_create_with_config_and_payload_format_and_client_ids_path(
             rule_path.encode("utf-8"),
             payload_format,
+            client_ids_path.encode("utf-8") if client_ids_path else None,
         )
         if not self.handle:
             raise RuntimeError("Failed to create engine with rule file")
@@ -83,6 +85,12 @@ class BifroRE:
         self.lib.bre_create_with_config.restype = c_void_p
         self.lib.bre_create_with_config_and_payload_format.argtypes = [c_char_p, c_int]
         self.lib.bre_create_with_config_and_payload_format.restype = c_void_p
+        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path.argtypes = [
+            c_char_p,
+            c_int,
+            c_char_p,
+        ]
+        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path.restype = c_void_p
         self.lib.bre_destroy.argtypes = [c_void_p]
         self.lib.bre_start_mqtt.argtypes = [
             c_void_p,

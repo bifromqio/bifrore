@@ -14,6 +14,7 @@ pub struct MqttConfig {
     pub client_prefix: String,
     pub node_id: String,
     pub client_count: u16,
+    pub client_ids: Vec<String>,
     pub io_threads: u16,
     pub eval_threads: u16,
     pub queue_capacity: u16,
@@ -38,6 +39,9 @@ impl MqttConfig {
     }
 
     pub fn client_id_for(&self, index: u16) -> String {
+        if let Some(value) = self.client_ids.get(index as usize) {
+            return value.clone();
+        }
         format!("{}_{}_{}", self.node_id, self.client_prefix, index)
     }
 }

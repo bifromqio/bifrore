@@ -13,6 +13,10 @@ struct BifroEvalResult {
 // FFI functions from Rust cdylib
 extern void *bre_create_with_config(const char *path);
 extern void *bre_create_with_config_and_payload_format(const char *path, int payload_format);
+extern void *bre_create_with_config_and_payload_format_and_client_ids_path(
+    const char *path,
+    int payload_format,
+    const char *client_ids_path);
 extern void bre_destroy(void *engine);
 extern int bre_start_mqtt(
     void *engine,
@@ -110,9 +114,16 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jclass cls,
     jstring path,
     jint payload_format);
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+    JNIEnv *env,
+    jclass cls,
+    jstring path,
+    jint payload_format,
+    jstring client_ids_path);
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfig(JNIEnv *env, jclass cls, jstring path) {
-    return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(env, cls, path, 1);
+    return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+        env, cls, path, 1, NULL);
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(
@@ -120,13 +131,33 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jclass cls,
     jstring path,
     jint payload_format) {
+    return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+        env, cls, path, payload_format, NULL);
+}
+
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+    JNIEnv *env,
+    jclass cls,
+    jstring path,
+    jint payload_format,
+    jstring client_ids_path) {
     (void)cls;
     if (path == NULL) {
         return 0;
     }
     const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
-    void *engine = bre_create_with_config_and_payload_format(path_str, (int)payload_format);
+    const char *client_ids_path_str = NULL;
+    if (client_ids_path != NULL) {
+        client_ids_path_str = (*env)->GetStringUTFChars(env, client_ids_path, NULL);
+    }
+    void *engine = bre_create_with_config_and_payload_format_and_client_ids_path(
+        path_str,
+        (int)payload_format,
+        client_ids_path_str);
     (*env)->ReleaseStringUTFChars(env, path, path_str);
+    if (client_ids_path_str != NULL) {
+        (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);
+    }
     return (jlong)engine;
 }
 
