@@ -36,7 +36,6 @@ extern int bre_start_mqtt(
     jboolean multi_nci,
     void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
     void *user_data);
-extern int bre_stop_mqtt(void *engine);
 extern int bre_poll_eval_results_batch(
     void *engine,
     uint32_t timeout_millis,
@@ -247,15 +246,6 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     }
 
     return rc;
-}
-
-JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStopMqtt(JNIEnv *env, jclass cls, jlong handle) {
-    (void)env;
-    (void)cls;
-    if (handle == 0) {
-        return -1;
-    }
-    return bre_stop_mqtt((void *)handle);
 }
 
 JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(

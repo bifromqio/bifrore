@@ -447,13 +447,6 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
             let _ = adapter.stop();
             log::info!("BifroRE destroy requested MQTT stop");
         }
-        if let Err(err) = persist_client_ids(&boxed.client_ids_path, &boxed.active_client_ids) {
-            log::warn!(
-                "failed to persist client ids at destroy path={} error={}",
-                boxed.client_ids_path,
-                err
-            );
-        }
         stop_core_worker(&mut boxed);
         close_notify_pipe(boxed.notify_read_fd);
         close_notify_pipe(boxed.notify_write_fd);
@@ -749,13 +742,6 @@ pub extern "C" fn bre_stop_mqtt(engine: *mut BifroRE) -> c_int {
         log::info!("stopping MQTT adapter from FFI");
         match adapter.stop() {
             Ok(_) => {
-                if let Err(err) = persist_client_ids(&engine.client_ids_path, &engine.active_client_ids) {
-                    log::warn!(
-                        "failed to persist client ids at stop path={} error={}",
-                        engine.client_ids_path,
-                        err
-                    );
-                }
                 stop_core_worker(engine);
                 0
             }

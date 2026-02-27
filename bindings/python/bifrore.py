@@ -112,8 +112,6 @@ class BifroRE:
             c_void_p,
         ]
         self.lib.bre_start_mqtt.restype = c_int
-        self.lib.bre_stop_mqtt.argtypes = [c_void_p]
-        self.lib.bre_stop_mqtt.restype = c_int
         self.lib.bre_get_notify_fd.argtypes = [c_void_p]
         self.lib.bre_get_notify_fd.restype = c_int
         self.lib.bre_poll_eval_results_batch.argtypes = [
@@ -243,9 +241,6 @@ class BifroRE:
             None,
         )
 
-    def _stop_mqtt(self):
-        return self.lib.bre_stop_mqtt(self.handle)
-
     def _attach_notify_reader(self):
         if self._reader_attached:
             return
@@ -323,9 +318,7 @@ class BifroRE:
             self._loop.call_soon(self._drain_eval_results)
 
     async def stop(self):
-        if self.handle and self._mqtt_started:
-            self._stop_mqtt()
-            self._mqtt_started = False
+        self._mqtt_started = False
         self._detach_notify_reader()
         if self._queue is not None:
             await self._queue.put(None)
@@ -353,9 +346,7 @@ class BifroRE:
 
     def close(self):
         self.lib.bre_set_log_callback(None, None, 3)
-        if self.handle and self._mqtt_started:
-            self._stop_mqtt()
-            self._mqtt_started = False
+        self._mqtt_started = False
         self._detach_notify_reader()
         if self.handle:
             self.lib.bre_destroy(self.handle)

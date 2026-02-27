@@ -153,12 +153,8 @@ public final class BifroRE implements AutoCloseable {
 
     public synchronized int stop() {
         stopPoller();
-        if (!mqttStarted || handle == 0) {
-            return 0;
-        }
-        int rc = nativeStopMqtt(handle);
         mqttStarted = false;
-        return rc;
+        return 0;
     }
 
     public void onNext(Consumer<EvalResult> handler) {
@@ -287,7 +283,6 @@ public final class BifroRE implements AutoCloseable {
         boolean multiNci,
         long cbHandle
     );
-    private static native int nativeStopMqtt(long handle);
     private static native EvalResult[] nativePollResultsBatch(long handle, int timeoutMillis);
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
