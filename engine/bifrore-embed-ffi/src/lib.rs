@@ -732,27 +732,6 @@ pub extern "C" fn bre_start_mqtt(
     0
 }
 
-#[no_mangle]
-pub extern "C" fn bre_stop_mqtt(engine: *mut BifroRE) -> c_int {
-    if engine.is_null() {
-        return -1;
-    }
-    let engine = unsafe { &mut *engine };
-    if let Some(adapter) = engine.adapter.take() {
-        log::info!("stopping MQTT adapter from FFI");
-        match adapter.stop() {
-            Ok(_) => {
-                stop_core_worker(engine);
-                0
-            }
-            Err(_) => -2,
-        }
-    } else {
-        stop_core_worker(engine);
-        0
-    }
-}
-
 fn stop_core_worker(engine: &mut BifroRE) {
     engine.core_queue_tx.take();
     engine.eval_result_tx.take();
