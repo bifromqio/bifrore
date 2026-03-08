@@ -38,10 +38,7 @@ impl MqttConfig {
     }
 
     pub fn client_id_for(&self, index: u16) -> String {
-        if let Some(value) = self.client_ids.get(index as usize) {
-            return value.clone();
-        }
-        format!("{}_{}", self.node_id, index)
+        self.client_ids.get(index as usize).unwrap().clone()
     }
 }
 
@@ -119,6 +116,13 @@ pub fn start_mqtt(
     use std::time::Duration;
 
     let client_count = config.client_count.max(1);
+    if config.client_ids.len() != client_count as usize {
+        return Err(MqttError::StartFailed(format!(
+            "invalid client_ids length: expected {}, got {}",
+            client_count,
+            config.client_ids.len()
+        )));
+    }
     let io_threads = config.io_threads.max(1) as usize;
 
     let multi_nci_devices = select_multi_nci_devices(config.multi_nci, client_count);

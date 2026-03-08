@@ -693,8 +693,10 @@ pub extern "C" fn bre_start_mqtt(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .or_else(|| username.as_deref().map(str::trim).filter(|value| !value.is_empty()))
-        .unwrap_or(node_id.as_str())
-        .to_string();
+        .map(str::to_string);
+    let Some(resolved_user_id) = resolved_user_id else {
+        return -1;
+    };
     let client_ids = resolve_client_ids(
         &engine_ref.client_ids_path,
         &resolved_user_id,
