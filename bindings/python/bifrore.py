@@ -32,11 +32,11 @@ class BifroRE:
         rule_path,
         host="127.0.0.1",
         port=1883,
-        client_prefix="bifrore-embed",
         node_id=None,
         client_count=1,
         group_name="bifrore-group",
         username=None,
+        user_id=None,
         password=None,
         clean_start=True,
         session_expiry_interval=3600,
@@ -66,11 +66,11 @@ class BifroRE:
         self._mqtt_config = {
             "host": host,
             "port": port,
-            "client_prefix": client_prefix,
             "node_id": node_id,
             "client_count": client_count,
             "group_name": group_name,
             "username": username,
+            "user_id": user_id,
             "password": password,
             "clean_start": clean_start,
             "session_expiry_interval": session_expiry_interval,
@@ -97,8 +97,8 @@ class BifroRE:
             c_char_p,
             c_uint16,
             c_char_p,
-            c_char_p,
             c_uint16,
+            c_char_p,
             c_char_p,
             c_char_p,
             c_bool,
@@ -221,14 +221,18 @@ class BifroRE:
 
     def _start_mqtt(self):
         cfg = self._mqtt_config
+        username = cfg["username"]
+        user_id = cfg["user_id"] if cfg["user_id"] is not None else username
+        if user_id is not None:
+            user_id = str(user_id)
         return self.lib.bre_start_mqtt(
             self.handle,
             cfg["host"].encode("utf-8"),
             cfg["port"],
-            cfg["client_prefix"].encode("utf-8"),
             cfg["node_id"].encode("utf-8") if cfg["node_id"] else None,
             cfg["client_count"],
-            cfg["username"].encode("utf-8") if cfg["username"] else None,
+            username.encode("utf-8") if username else None,
+            user_id.encode("utf-8") if user_id else None,
             cfg["password"].encode("utf-8") if cfg["password"] else None,
             cfg["clean_start"],
             cfg["session_expiry_interval"],

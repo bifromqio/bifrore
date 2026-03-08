@@ -16,6 +16,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_POLL_BATCH_SIZE: usize = 256;
 const DEFAULT_CLIENT_IDS_PATH: &str = "./client_ids";
+const TARGET_INBOX_BUCKET: u8 = 0xFF;
+const CLIENT_ID_SUFFIX_ALPHABET: &[u8] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +167,65 @@ fn normalize_client_count(client_count: u16) -> usize {
     client_count.max(1) as usize
 }
 
+fn java_string_hash_code(value: &str) -> i32 {
+    let mut hash = 0i32;
+    for unit in value.encode_utf16() {
+        hash = hash.wrapping_mul(31).wrapping_add(unit as i32);
+    }
+    hash
+}
+
+fn java_hash_append_char(hash: i32, ch: u8) -> i32 {
+    hash.wrapping_mul(31).wrapping_add(ch as i32)
+}
+
+fn inbox_bucket(user_id: &str, client_id: &str) -> u8 {
+    let inbox_id = format!("{user_id}/{client_id}");
+    let hash = java_string_hash_code(&inbox_id) as u32;
+    ((hash ^ (hash >> 16)) & 0xFF) as u8
+}
+
+fn suffix_tail_options() -> &'static [(i32, [u8; 2])] {
+    static OPTIONS: OnceLock<Vec<(i32, [u8; 2])>> = OnceLock::new();
+    OPTIONS.get_or_init(|| {
+        let mut options = Vec::with_capacity(CLIENT_ID_SUFFIX_ALPHABET.len().pow(2));
+        for &first in CLIENT_ID_SUFFIX_ALPHABET {
+            for &second in CLIENT_ID_SUFFIX_ALPHABET {
+                let hash = java_hash_append_char(java_hash_append_char(0, first), second);
+                options.push((hash, [first, second]));
+            }
+        }
+        options
+    })
+}
+
+fn generate_bucketed_client_id(user_id: &str, node_id: &str, index: usize) -> String {
+    let base = format!("{}_{}_", node_id, index);
+    let prefix_hash = java_string_hash_code(&format!("{user_id}/{base}"));
+    let tail_options = suffix_tail_options();
+    let factor_31_squared = 31i32.wrapping_mul(31);
+    for &head in CLIENT_ID_SUFFIX_ALPHABET {
+        let hash_with_head = java_hash_append_char(prefix_hash, head);
+        let base_hash = hash_with_head.wrapping_mul(factor_31_squared);
+        for &(tail_hash, tail) in tail_options {
+            let final_hash = base_hash.wrapping_add(tail_hash);
+            let bucket = {
+                let hash = final_hash as u32;
+                ((hash ^ (hash >> 16)) & 0xFF) as u8
+            };
+            if bucket == TARGET_INBOX_BUCKET {
+                let mut client_id = String::with_capacity(base.len() + 3);
+                client_id.push_str(&base);
+                client_id.push(head as char);
+                client_id.push(tail[0] as char);
+                client_id.push(tail[1] as char);
+                return client_id;
+            }
+        }
+    }
+    unreachable!("suffix search must find a client id")
+}
+
 fn load_client_ids(path: &str) -> Option<Vec<String>> {
     let content = fs::read_to_string(path).ok()?;
     let values = content
@@ -190,20 +252,22 @@ fn persist_client_ids(path: &str, client_ids: &[String]) -> Result<(), String> {
 
 fn resolve_client_ids(
     path: &str,
+    user_id: &str,
     node_id: &str,
-    client_prefix: &str,
     client_count: u16,
 ) -> Vec<String> {
     let target_count = normalize_client_count(client_count);
-    let mut values = load_client_ids(path).unwrap_or_default();
-    if values.len() < target_count {
-        for index in values.len()..target_count {
-            values.push(format!("{}_{}_{}", node_id, client_prefix, index));
-        }
-    } else if values.len() > target_count {
-        values.truncate(target_count);
+    let values = load_client_ids(path).unwrap_or_default();
+    let mut resolved = Vec::with_capacity(target_count);
+    for index in 0..target_count {
+        let existing = values.get(index).cloned();
+        let client_id = match existing {
+            Some(value) if inbox_bucket(user_id, &value) == TARGET_INBOX_BUCKET => value,
+            _ => generate_bucketed_client_id(user_id, node_id, index),
+        };
+        resolved.push(client_id);
     }
-    values
+    resolved
 }
 
 fn create_notify_pipe() -> Option<(c_int, c_int)> {
@@ -543,10 +607,10 @@ pub extern "C" fn bre_start_mqtt(
     engine: *mut BifroRE,
     host: *const c_char,
     port: u16,
-    client_prefix: *const c_char,
     node_id: *const c_char,
     client_count: u16,
     username: *const c_char,
+    user_id: *const c_char,
     password: *const c_char,
     clean_start: bool,
     session_expiry_interval: u32,
@@ -560,7 +624,6 @@ pub extern "C" fn bre_start_mqtt(
 ) -> c_int {
     if engine.is_null()
         || host.is_null()
-        || client_prefix.is_null()
         || group_name.is_null()
         || ordered_prefix.is_null()
     {
@@ -572,14 +635,9 @@ pub extern "C" fn bre_start_mqtt(
     }
 
     let host = unsafe { CStr::from_ptr(host) };
-    let client_prefix = unsafe { CStr::from_ptr(client_prefix) };
     let group_name = unsafe { CStr::from_ptr(group_name) };
     let ordered_prefix = unsafe { CStr::from_ptr(ordered_prefix) };
     let host = match host.to_str() {
-        Ok(val) => val.to_string(),
-        Err(_) => return -3,
-    };
-    let client_prefix = match client_prefix.to_str() {
         Ok(val) => val.to_string(),
         Err(_) => return -3,
     };
@@ -596,6 +654,14 @@ pub extern "C" fn bre_start_mqtt(
         None
     } else {
         unsafe { CStr::from_ptr(username) }
+            .to_str()
+            .ok()
+            .map(|v| v.to_string())
+    };
+    let explicit_user_id = if user_id.is_null() {
+        None
+    } else {
+        unsafe { CStr::from_ptr(user_id) }
             .to_str()
             .ok()
             .map(|v| v.to_string())
@@ -622,17 +688,23 @@ pub extern "C" fn bre_start_mqtt(
             parsed
         }
     };
+    let resolved_user_id = explicit_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| username.as_deref().map(str::trim).filter(|value| !value.is_empty()))
+        .unwrap_or(node_id.as_str())
+        .to_string();
     let client_ids = resolve_client_ids(
         &engine_ref.client_ids_path,
+        &resolved_user_id,
         &node_id,
-        &client_prefix,
         client_count,
     );
 
     let config = MqttConfig {
         host,
         port,
-        client_prefix,
         node_id,
         client_count,
         client_ids: client_ids.clone(),
@@ -658,10 +730,9 @@ pub extern "C" fn bre_start_mqtt(
         );
     }
     log::info!(
-        "Starting MQTT from FFI host={} port={} client_prefix={} node_id={} clients={}",
+        "Starting MQTT from FFI host={} port={} node_id={} clients={}",
         config.host,
         config.port,
-        config.client_prefix,
         config.node_id,
         if config.client_count == 0 { 1 } else { config.client_count }
     );
@@ -827,5 +898,30 @@ pub extern "C" fn bre_free_eval_results_batch(results: *mut BifroEvalResult, len
         for result in &mut records {
             free_eval_result_inner(result);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_client_id_hits_target_bucket() {
+        let user_id = "user-a";
+        for index in 0..10 {
+            let client_id = generate_bucketed_client_id(user_id, "node-1", index);
+            println!("{}", client_id);
+            assert_eq!(inbox_bucket(user_id, &client_id), TARGET_INBOX_BUCKET);
+        }
+    }
+
+    #[test]
+    fn resolve_client_ids_repairs_non_matching_entries() {
+        let path = "/tmp/bifrore-test-client-ids";
+        let _ = fs::write(path, "bad-client-id\n");
+        let ids = resolve_client_ids(path, "user-a", "node-1", 1);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(inbox_bucket("user-a", &ids[0]), TARGET_INBOX_BUCKET);
+        let _ = fs::remove_file(path);
     }
 }
