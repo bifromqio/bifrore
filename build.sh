@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [jni|python|all|bench|bench-diff]"
+  echo "Usage: ./build.sh [jni|python|provision-cli|all|bench|bench-diff]"
   exit 1
 }
 
@@ -73,6 +73,12 @@ build_jni() {
 
 build_python() {
   echo "Python wrapper is ready at bindings/python/bifrore.py"
+}
+
+build_provision_cli() {
+  echo "Building client-id provision CLI..."
+  (cd "$RUST_DIR" && cargo build --release -p bifrore-embed-ffi --bin bifrore-clientid-provision)
+  cp "$RUST_DIR/target/release/bifrore-clientid-provision" "$BUILD_DIR/"
 }
 
 run_bench() {
@@ -183,10 +189,14 @@ case "$TARGET" in
     build_rust
     build_python
     ;;
+  provision-cli)
+    build_provision_cli
+    ;;
   all)
     build_rust
     build_jni
     build_python
+    build_provision_cli
     ;;
   bench)
     run_bench
