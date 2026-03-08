@@ -46,7 +46,6 @@ public final class BifroRE implements AutoCloseable {
     private final String host;
     private final int port;
     private final String nodeId;
-    private final String userId;
     private final int clientCount;
     private final boolean multiNci;
     private final String clientIdsPath;
@@ -57,7 +56,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile Executor nextExecutor;
 
     public BifroRE(String host, int port, String ruleJsonPath) {
-        this(host, port, ruleJsonPath, null, null, 1, false, PAYLOAD_JSON, "./client_ids");
+        this(host, port, ruleJsonPath, null, 1, false, PAYLOAD_JSON, "./client_ids");
     }
 
     public BifroRE(
@@ -68,7 +67,7 @@ public final class BifroRE implements AutoCloseable {
         int clientCount,
         boolean multiNci
     ) {
-        this(host, port, ruleJsonPath, nodeId, null, clientCount, multiNci, PAYLOAD_JSON, "./client_ids");
+        this(host, port, ruleJsonPath, nodeId, clientCount, multiNci, PAYLOAD_JSON, "./client_ids");
     }
 
     public BifroRE(
@@ -76,24 +75,11 @@ public final class BifroRE implements AutoCloseable {
         int port,
         String ruleJsonPath,
         String nodeId,
-        String userId,
-        int clientCount,
-        boolean multiNci
-    ) {
-        this(host, port, ruleJsonPath, nodeId, userId, clientCount, multiNci, PAYLOAD_JSON, "./client_ids");
-    }
-
-    public BifroRE(
-        String host,
-        int port,
-        String ruleJsonPath,
-        String nodeId,
-        String userId,
         int clientCount,
         boolean multiNci,
         int payloadFormat
     ) {
-        this(host, port, ruleJsonPath, nodeId, userId, clientCount, multiNci, payloadFormat, "./client_ids");
+        this(host, port, ruleJsonPath, nodeId, clientCount, multiNci, payloadFormat, "./client_ids");
     }
 
     public BifroRE(
@@ -101,7 +87,6 @@ public final class BifroRE implements AutoCloseable {
         int port,
         String ruleJsonPath,
         String nodeId,
-        String userId,
         int clientCount,
         boolean multiNci,
         int payloadFormat,
@@ -110,7 +95,6 @@ public final class BifroRE implements AutoCloseable {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.nodeId = nodeId;
-        this.userId = userId;
         this.clientCount = clientCount;
         this.multiNci = multiNci;
         this.clientIdsPath =
@@ -144,7 +128,6 @@ public final class BifroRE implements AutoCloseable {
             nodeId,
             clientCount,
             null,
-            userId,
             null,
             true,
             3600,
@@ -283,7 +266,6 @@ public final class BifroRE implements AutoCloseable {
         String nodeId,
         int clientCount,
         String username,
-        String userId,
         String password,
         boolean cleanStart,
         int sessionExpiryInterval,

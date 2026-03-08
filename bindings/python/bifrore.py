@@ -36,7 +36,6 @@ class BifroRE:
         client_count=1,
         group_name="bifrore-group",
         username=None,
-        user_id=None,
         password=None,
         clean_start=True,
         session_expiry_interval=3600,
@@ -70,7 +69,6 @@ class BifroRE:
             "client_count": client_count,
             "group_name": group_name,
             "username": username,
-            "user_id": user_id,
             "password": password,
             "clean_start": clean_start,
             "session_expiry_interval": session_expiry_interval,
@@ -98,7 +96,6 @@ class BifroRE:
             c_uint16,
             c_char_p,
             c_uint16,
-            c_char_p,
             c_char_p,
             c_char_p,
             c_bool,
@@ -222,9 +219,6 @@ class BifroRE:
     def _start_mqtt(self):
         cfg = self._mqtt_config
         username = cfg["username"]
-        user_id = cfg["user_id"] if cfg["user_id"] is not None else username
-        if user_id is not None:
-            user_id = str(user_id)
         return self.lib.bre_start_mqtt(
             self.handle,
             cfg["host"].encode("utf-8"),
@@ -232,7 +226,6 @@ class BifroRE:
             cfg["node_id"].encode("utf-8") if cfg["node_id"] else None,
             cfg["client_count"],
             username.encode("utf-8") if username else None,
-            user_id.encode("utf-8") if user_id else None,
             cfg["password"].encode("utf-8") if cfg["password"] else None,
             cfg["clean_start"],
             cfg["session_expiry_interval"],

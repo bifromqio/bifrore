@@ -25,7 +25,6 @@ extern int bre_start_mqtt(
     const char *node_id,
     uint16_t client_count,
     const char *username,
-    const char *user_id,
     const char *password,
     jboolean clean_start,
     uint32_t session_expiry_interval,
@@ -177,7 +176,6 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     jstring node_id,
     jint client_count,
     jstring username,
-    jstring user_id,
     jstring password,
     jboolean clean_start,
     jint session_expiry_interval,
@@ -202,13 +200,9 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     }
 
     const char *username_str = NULL;
-    const char *user_id_str = NULL;
     const char *password_str = NULL;
     if (username != NULL) {
         username_str = (*env)->GetStringUTFChars(env, username, NULL);
-    }
-    if (user_id != NULL) {
-        user_id_str = (*env)->GetStringUTFChars(env, user_id, NULL);
     }
     if (password != NULL) {
         password_str = (*env)->GetStringUTFChars(env, password, NULL);
@@ -221,7 +215,6 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
         node_id_str,
         (uint16_t)client_count,
         username_str,
-        user_id_str,
         password_str,
         clean_start,
         (uint32_t)session_expiry_interval,
@@ -242,9 +235,6 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
 
     if (username_str != NULL) {
         (*env)->ReleaseStringUTFChars(env, username, username_str);
-    }
-    if (user_id_str != NULL) {
-        (*env)->ReleaseStringUTFChars(env, user_id, user_id_str);
     }
     if (password_str != NULL) {
         (*env)->ReleaseStringUTFChars(env, password, password_str);
