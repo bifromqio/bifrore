@@ -611,17 +611,22 @@ pub extern "C" fn bre_start_mqtt(
             parsed
         }
     };
-    let client_ids = resolve_client_ids(
-        &engine_ref.client_ids_path,
-        &node_id,
-        client_count,
-    );
+    let requested_client_count = client_count.max(1);
+    let client_ids = resolve_client_ids(&engine_ref.client_ids_path, &node_id, requested_client_count);
+    let effective_client_count = client_ids.len().max(1) as u16;
+    if effective_client_count != requested_client_count {
+        log::warn!(
+            "client id file count overrides requested client_count: requested={} actual={}",
+            requested_client_count,
+            effective_client_count
+        );
+    }
 
     let config = MqttConfig {
         host,
         port,
         node_id,
-        client_count,
+        client_count: effective_client_count,
         client_ids: client_ids.clone(),
         io_threads: 2,
         eval_threads: 1,
@@ -649,7 +654,7 @@ pub extern "C" fn bre_start_mqtt(
         config.host,
         config.port,
         config.node_id,
-        if config.client_count == 0 { 1 } else { config.client_count }
+        config.client_count
     );
 
     let engine_addr = engine as usize;

@@ -81,6 +81,7 @@ Build the artifacts:
 ```bash
 ./build.sh jni     # Rust cdylib + JNI bridge
 ./build.sh python  # Rust cdylib only (Python wrapper is pure ctypes)
+./build.sh provision-cli # client-id provisioning CLI
 ./build.sh all     # both
 ./build.sh bench   # run runtime benchmarks
 ./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
@@ -102,6 +103,65 @@ Note: `simd-json` is workload and platform dependent; it is not guaranteed to be
 Artifacts are placed under `build/`:
 - `libbifrore_embed.(so|dylib)`
 - `libbifrore_jni.(so|dylib)` (JNI)
+- `bifrore-clientid-provision` (client-id provisioning CLI)
+
+## Client ID Provisioning
+
+MQTT persistent sessions are stateful on the broker side. In BifroRE, the client-id file is the
+source of truth for those sessions.
+
+Runtime behavior:
+- If the client-id file exists, BifroRE loads and uses those IDs as-is.
+- If the file does not exist, BifroRE generates plain defaults: `nodeId_index`.
+- If the client-id file count does not match the requested `client_count`, BifroRE aligns to the
+  file count instead of the requested count.
+
+This is intentional: persistent MQTT sessions are mapped to client IDs, so session continuity is
+more important than treating `client_count` as a stateless scaling knob.
+
+If you need broker-specific client-id placement, provision the file before starting BifroRE. The
+runtime itself stays decoupled from broker bucket logic and remains broker-neutral.
+
+Build the provisioning CLI:
+
+```bash
+./build.sh provision-cli
+```
+
+Run it:
+
+```bash
+./build/bifrore-clientid-provision <user_id> <node_id> <client_count> <output_path>
+```
+
+The provisioning CLI implements the current reverse-hash strategy as a co-design for BifroMQ,
+whose bucket is:
+
+```java
+private static byte bucket(String inboxId) {
+    int hash = inboxId.hashCode();
+    return (byte) ((hash ^ (hash >>> 16)) & 0xFF);
+}
+```
+
+with:
+
+```text
+inboxId = userId + "/" + clientId
+```
+
+The generated client IDs are written to the target file and can then be consumed by BifroRE at
+startup.
+
+This CLI is not a generic requirement for all MQTT brokers. Other brokers may not care about
+client-id patterns at all, or may require a different pattern. BifroRE runtime behavior remains
+clear and neutral:
+- load client IDs from file if present
+- otherwise generate plain `nodeId_index` defaults
+- treat the client-id file as authoritative for persistent-session continuity
+
+If your broker needs a different provisioning policy, generate the client-id file with your own
+tooling and let BifroRE consume it unchanged.
 
 ## JNI Usage (Java)
 
