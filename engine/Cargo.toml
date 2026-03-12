@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "bifrore-clientid-management",
   "bifrore-embed-core",
   "bifrore-embed-ffi",
 ]

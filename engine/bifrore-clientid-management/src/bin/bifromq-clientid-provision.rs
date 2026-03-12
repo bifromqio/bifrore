@@ -1,4 +1,4 @@
-use bifrore_embed::provision::{generate_bucketed_client_ids, persist_client_ids};
+use bifrore_clientid_management::{generate_bucketed_client_ids, persist_client_ids};
 
 fn usage() -> ! {
     eprintln!("Usage: bifrore-clientid-provision <user_id> <node_id> <client_count> <output_path>");

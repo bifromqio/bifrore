@@ -82,7 +82,7 @@ Build the artifacts:
 ./build.sh jni     # Rust cdylib + JNI bridge
 ./build.sh python  # Rust cdylib only (Python wrapper is pure ctypes)
 ./build.sh provision-cli # client-id provisioning CLI
-./build.sh all     # both
+./build.sh all     # jni + python + provision-cli
 ./build.sh bench   # run runtime benchmarks
 ./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
 ```
@@ -121,6 +121,10 @@ more important than treating `client_count` as a stateless scaling knob.
 
 If you need broker-specific client-id placement, provision the file before starting BifroRE. The
 runtime itself stays decoupled from broker bucket logic and remains broker-neutral.
+
+The provisioning logic lives in the separate `engine/bifrore-clientid-management` module rather
+than the BifroRE runtime modules. This keeps broker-specific control-plane logic out of
+`bifrore-embed-core` and `bifrore-embed-ffi`.
 
 Build the provisioning CLI:
 

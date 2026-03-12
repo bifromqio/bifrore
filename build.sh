@@ -77,7 +77,7 @@ build_python() {
 
 build_provision_cli() {
   echo "Building client-id provision CLI..."
-  (cd "$RUST_DIR" && cargo build --release -p bifrore-embed-ffi --bin bifrore-clientid-provision)
+  (cd "$RUST_DIR" && cargo build --release -p bifrore-clientid-management --bin bifromq-clientid-provision)
   cp "$RUST_DIR/target/release/bifrore-clientid-provision" "$BUILD_DIR/"
 }
 

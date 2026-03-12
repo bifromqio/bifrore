@@ -63,7 +63,11 @@ pub fn generate_bucketed_client_id(user_id: &str, node_id: &str, index: usize) -
     unreachable!("suffix search must find a client id")
 }
 
-pub fn generate_bucketed_client_ids(user_id: &str, node_id: &str, client_count: usize) -> Vec<String> {
+pub fn generate_bucketed_client_ids(
+    user_id: &str,
+    node_id: &str,
+    client_count: usize,
+) -> Vec<String> {
     (0..client_count)
         .map(|index| generate_bucketed_client_id(user_id, node_id, index))
         .collect()

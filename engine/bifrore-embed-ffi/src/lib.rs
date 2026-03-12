@@ -4,7 +4,6 @@ use bifrore_embed_core::mqtt::{
 };
 use bifrore_embed_core::payload::PayloadFormat;
 use bifrore_embed_core::runtime::RuleEngine;
-pub mod provision;
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
 use std::fs;
