@@ -28,8 +28,8 @@ class BifroRE:
 
     def __init__(
         self,
-        lib_path,
-        rule_path,
+        lib_path_or_rule_path,
+        rule_path=None,
         host="127.0.0.1",
         port=1883,
         node_id=None,
@@ -46,6 +46,7 @@ class BifroRE:
         payload_format=PAYLOAD_JSON,
         client_ids_path="./client_ids",
     ):
+        lib_path, rule_path = self._resolve_paths(lib_path_or_rule_path, rule_path)
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
         self.handle = self.lib.bre_create_with_config_and_payload_format_and_client_ids_path(
@@ -77,6 +78,24 @@ class BifroRE:
             "keep_alive_secs": keep_alive_secs,
             "multi_nci": multi_nci,
         }
+
+    @staticmethod
+    def _resolve_paths(lib_path_or_rule_path, rule_path):
+        if rule_path is None:
+            rule_path = lib_path_or_rule_path
+            lib_path = BifroRE._default_lib_path()
+        else:
+            lib_path = lib_path_or_rule_path
+        return lib_path, rule_path
+
+    @staticmethod
+    def _default_lib_path():
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        ext = ".dylib" if os.uname().sysname == "Darwin" else ".so"
+        candidate = os.path.join(module_dir, f"libbifrore_embed{ext}")
+        if not os.path.exists(candidate):
+            raise RuntimeError(f"Bundled native library not found: {candidate}")
+        return candidate
 
     def _setup_signatures(self):
         self.lib.bre_create_with_config.argtypes = [c_char_p]

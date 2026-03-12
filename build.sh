@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [jni|python|provision-cli|all|bench|bench-diff]"
+  echo "Usage: ./build.sh [java|jni|python|provision-cli|all|bench|bench-diff]"
   exit 1
 }
 
@@ -37,6 +37,46 @@ case "$OS_NAME" in
 esac
 
 mkdir -p "$BUILD_DIR"
+
+platform_tag() {
+  case "$OS_NAME" in
+    Darwin)
+      case "$(uname -m)" in
+        arm64|aarch64) echo "macosx_11_0_arm64" ;;
+        *) echo "unsupported" ;;
+      esac
+      ;;
+    Linux)
+      case "$(uname -m)" in
+        x86_64|amd64) echo "manylinux2014_x86_64" ;;
+        *) echo "unsupported" ;;
+      esac
+      ;;
+    *)
+      echo "unsupported"
+      ;;
+  esac
+}
+
+native_platform_dir() {
+  case "$OS_NAME" in
+    Darwin)
+      case "$(uname -m)" in
+        arm64|aarch64) echo "darwin-aarch64" ;;
+        *) echo "unsupported" ;;
+      esac
+      ;;
+    Linux)
+      case "$(uname -m)" in
+        x86_64|amd64) echo "linux-x86_64" ;;
+        *) echo "unsupported" ;;
+      esac
+      ;;
+    *)
+      echo "unsupported"
+      ;;
+  esac
+}
 
 build_rust() {
   echo "Building Rust cdylib..."
@@ -71,8 +111,71 @@ build_jni() {
     "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni.c"
 }
 
+build_java_jar() {
+  echo "Packaging Java jar..."
+  local native_dir platform classes_dir resources_dir jar_name
+  platform="$(native_platform_dir)"
+  if [[ "$platform" == "unsupported" ]]; then
+    echo "Unsupported platform for Java packaging: $OS_NAME/$(uname -m)"
+    exit 4
+  fi
+  native_dir="$BUILD_DIR/java-stage/natives/$platform"
+  classes_dir="$BUILD_DIR/java-stage/classes"
+  resources_dir="$BUILD_DIR/java-stage/resources/natives"
+  jar_name="bifrore-java-$platform.jar"
+  rm -rf "$BUILD_DIR/java-stage"
+  mkdir -p "$native_dir" "$classes_dir" "$resources_dir"
+
+  cp "$BUILD_DIR/libbifrore_embed.$RUST_LIB_EXT" "$native_dir/"
+  cp "$BUILD_DIR/libbifrore_jni.$JNI_LIB_EXT" "$native_dir/"
+
+  find "$ROOT_DIR/bindings/jni/src/main/java" -name '*.java' -print0 | \
+    xargs -0 javac -d "$classes_dir"
+
+  cp -R "$native_dir" "$resources_dir/"
+
+  (cd "$BUILD_DIR/java-stage" && jar --create --file "$BUILD_DIR/$jar_name" -C "$classes_dir" . -C "$resources_dir" .)
+}
+
 build_python() {
-  echo "Python wrapper is ready at bindings/python/bifrore.py"
+  echo "Building Python wheel..."
+  local platform wheel_stage package_dir native_dir dist_dir
+  platform="$(platform_tag)"
+  if [[ "$platform" == "unsupported" ]]; then
+    echo "Unsupported platform for Python wheel: $OS_NAME/$(uname -m)"
+    exit 5
+  fi
+  wheel_stage="$BUILD_DIR/python-wheel-stage"
+  package_dir="$wheel_stage/bifrore"
+  native_dir="$package_dir"
+  dist_dir="$BUILD_DIR"
+  rm -rf "$wheel_stage"
+  mkdir -p "$package_dir"
+
+  cp "$ROOT_DIR/bindings/python/bifrore.py" "$package_dir/__init__.py"
+  cp "$BUILD_DIR/libbifrore_embed.$RUST_LIB_EXT" "$native_dir/"
+
+  cat > "$wheel_stage/setup.py" <<'EOF'
+from setuptools import Distribution, setup
+
+
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):
+        return True
+
+
+setup(
+    name="bifrore",
+    version="0.1.0",
+    description="BifroRE Python bindings",
+    packages=["bifrore"],
+    package_data={"bifrore": ["libbifrore_embed.*"]},
+    include_package_data=True,
+    distclass=BinaryDistribution,
+)
+EOF
+
+  (cd "$wheel_stage" && python3 setup.py bdist_wheel --plat-name "$platform" --dist-dir "$dist_dir")
 }
 
 build_provision_cli() {
@@ -185,6 +288,11 @@ case "$TARGET" in
     build_rust
     build_jni
     ;;
+  java)
+    build_rust
+    build_jni
+    build_java_jar
+    ;;
   python)
     build_rust
     build_python
@@ -195,6 +303,7 @@ case "$TARGET" in
   all)
     build_rust
     build_jni
+    build_java_jar
     build_python
     build_provision_cli
     ;;

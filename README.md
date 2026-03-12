@@ -79,10 +79,11 @@ Requirements:
 Build the artifacts:
 
 ```bash
-./build.sh jni     # Rust cdylib + JNI bridge
-./build.sh python  # Rust cdylib only (Python wrapper is pure ctypes)
+./build.sh jni     # raw Rust cdylib + JNI bridge
+./build.sh java    # platform jar with bundled native libraries
+./build.sh python  # platform wheel with bundled native library
 ./build.sh provision-cli # client-id provisioning CLI
-./build.sh all     # jni + python + provision-cli
+./build.sh all     # java + python + provision-cli (+ raw native libs)
 ./build.sh bench   # run runtime benchmarks
 ./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
 ```
@@ -103,6 +104,8 @@ Note: `simd-json` is workload and platform dependent; it is not guaranteed to be
 Artifacts are placed under `build/`:
 - `libbifrore_embed.(so|dylib)`
 - `libbifrore_jni.(so|dylib)` (JNI)
+- `bifrore-java-<platform>.jar`
+- `bifrore-0.1.0-*.whl`
 - `bifrore-clientid-provision` (client-id provisioning CLI)
 
 ## Client ID Provisioning

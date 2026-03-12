@@ -8,7 +8,7 @@ import java.util.function.Consumer;
 
 public final class BifroRE implements AutoCloseable {
     static {
-        System.loadLibrary("bifrore_jni");
+        NativeLibraryLoader.load();
     }
 
     public interface LogHandler {
