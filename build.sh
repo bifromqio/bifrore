@@ -113,7 +113,7 @@ build_jni() {
 
 build_java_jar() {
   echo "Packaging Java jar..."
-  local native_dir platform classes_dir resources_dir jar_name
+  local native_dir platform classes_dir resources_root resources_dir jar_name
   platform="$(native_platform_dir)"
   if [[ "$platform" == "unsupported" ]]; then
     echo "Unsupported platform for Java packaging: $OS_NAME/$(uname -m)"
@@ -121,8 +121,10 @@ build_java_jar() {
   fi
   native_dir="$BUILD_DIR/java-stage/natives/$platform"
   classes_dir="$BUILD_DIR/java-stage/classes"
-  resources_dir="$BUILD_DIR/java-stage/resources/natives"
-  jar_name="bifrore-java-$platform.jar"
+  resources_root="$BUILD_DIR/java-stage/resources"
+  resources_dir="$resources_root/natives"
+  jar_name="bifrore-java.jar"
+  rm -f "$BUILD_DIR"/bifrore-java*.jar
   rm -rf "$BUILD_DIR/java-stage"
   mkdir -p "$native_dir" "$classes_dir" "$resources_dir"
 
@@ -130,11 +132,11 @@ build_java_jar() {
   cp "$BUILD_DIR/libbifrore_jni.$JNI_LIB_EXT" "$native_dir/"
 
   find "$ROOT_DIR/bindings/jni/src/main/java" -name '*.java' -print0 | \
-    xargs -0 javac -d "$classes_dir"
+    xargs -0 javac --release 17 -d "$classes_dir"
 
   cp -R "$native_dir" "$resources_dir/"
 
-  (cd "$BUILD_DIR/java-stage" && jar --create --file "$BUILD_DIR/$jar_name" -C "$classes_dir" . -C "$resources_dir" .)
+  (cd "$BUILD_DIR/java-stage" && jar --create --file "$BUILD_DIR/$jar_name" -C "$classes_dir" . -C "$resources_root" .)
 }
 
 build_python() {
@@ -149,6 +151,7 @@ build_python() {
   package_dir="$wheel_stage/bifrore"
   native_dir="$package_dir"
   dist_dir="$BUILD_DIR"
+  rm -f "$BUILD_DIR"/bifrore-*.whl
   rm -rf "$wheel_stage"
   mkdir -p "$package_dir"
 
@@ -180,7 +183,7 @@ EOF
 
 build_provision_cli() {
   echo "Building client-id provision CLI..."
-  (cd "$RUST_DIR" && cargo build --release -p bifrore-clientid-management --bin bifromq-clientid-provision)
+  (cd "$RUST_DIR" && cargo build --release -p bifrore-clientid-management --bin bifrore-clientid-provision)
   cp "$RUST_DIR/target/release/bifrore-clientid-provision" "$BUILD_DIR/"
 }
 

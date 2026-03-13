@@ -104,9 +104,13 @@ Note: `simd-json` is workload and platform dependent; it is not guaranteed to be
 Artifacts are placed under `build/`:
 - `libbifrore_embed.(so|dylib)`
 - `libbifrore_jni.(so|dylib)` (JNI)
-- `bifrore-java-<platform>.jar`
+- `bifrore-java.jar`
 - `bifrore-0.1.0-*.whl`
 - `bifrore-clientid-provision` (client-id provisioning CLI)
+
+The jar name is stable because your local macOS build and CI Linux build are separate outputs. The
+wheel keeps the standard platform tag because Python wheel filenames are platform-specific by
+design.
 
 ## Client ID Provisioning
 
@@ -170,27 +174,10 @@ clear and neutral:
 If your broker needs a different provisioning policy, generate the client-id file with your own
 tooling and let BifroRE consume it unchanged.
 
-## JNI Usage (Java)
+## Examples
 
-```java
-BifroRE re = new BifroRE("127.0.0.1", 1883);
-re.onMessage((ruleId, payload, destinationsJson) -> {
-    // handle evaluated payload + destinations
-});
-re.loadRules("/path/to/rule.json");
-re.start();
-```
-
-## Python Usage
-
-```python
-from bindings.python.bifrore import BifroRE
-
-engine = BifroRE("./build/libbifrore_embed.dylib")
-engine.on_message(lambda rule_id, payload, destinations: print(rule_id, destinations))
-engine.load_rules("./rule.json")
-engine.start_mqtt("127.0.0.1", 1883, "client-1", "bifrore-group")
-```
+- Java example and Maven integration: `examples/java/README.md:1`
+- Python example and wheel install flow: `examples/python/README.md:1`
 
 ## Typed Protobuf Decoder (Rust Embed)
 

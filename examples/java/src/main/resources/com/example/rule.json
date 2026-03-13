@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {
+      "expression": "select * from data",
+      "destinations": ["log"]
+    }
+  ]
+}
