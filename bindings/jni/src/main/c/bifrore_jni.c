@@ -45,6 +45,12 @@ extern int bre_set_log_callback(
     void (*callback)(void *, int, const char *, const char *, uint64_t, const char *, const char *, const char *, uint32_t),
     void *user_data,
     int min_level);
+extern int bre_metrics_snapshot(
+    void *engine,
+    uint64_t *eval_count,
+    uint64_t *eval_error_count,
+    uint64_t *eval_total_nanos,
+    uint64_t *eval_max_nanos);
 
 struct LogCallbackCtx {
     JavaVM *jvm;
@@ -344,6 +350,46 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(
     ctx->handler = (*env)->NewGlobalRef(env, handler);
     ctx->on_log = on_log;
     return (jlong)ctx;
+}
+
+JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshot(
+    JNIEnv *env,
+    jclass cls,
+    jlong handle) {
+    (void)cls;
+    if (handle == 0) {
+        return NULL;
+    }
+
+    uint64_t eval_count = 0;
+    uint64_t eval_error_count = 0;
+    uint64_t eval_total_nanos = 0;
+    uint64_t eval_max_nanos = 0;
+    if (bre_metrics_snapshot(
+            (void *)handle,
+            &eval_count,
+            &eval_error_count,
+            &eval_total_nanos,
+            &eval_max_nanos) != 0) {
+        return NULL;
+    }
+
+    jclass snapshot_cls = (*env)->FindClass(env, "com/bifrore/BifroRE$MetricsSnapshot");
+    if (snapshot_cls == NULL) {
+        return NULL;
+    }
+    jmethodID ctor = (*env)->GetMethodID(env, snapshot_cls, "<init>", "(JJJJ)V");
+    if (ctor == NULL) {
+        return NULL;
+    }
+    return (*env)->NewObject(
+        env,
+        snapshot_cls,
+        ctor,
+        (jlong)eval_count,
+        (jlong)eval_error_count,
+        (jlong)eval_total_nanos,
+        (jlong)eval_max_nanos);
 }
 
 JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeFreeLogHandler(JNIEnv *env, jclass cls, jlong cb_handle) {

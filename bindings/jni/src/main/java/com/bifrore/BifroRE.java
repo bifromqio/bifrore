@@ -39,6 +39,20 @@ public final class BifroRE implements AutoCloseable {
         }
     }
 
+    public static final class MetricsSnapshot {
+        public final long evalCount;
+        public final long evalErrorCount;
+        public final long evalTotalNanos;
+        public final long evalMaxNanos;
+
+        MetricsSnapshot(long evalCount, long evalErrorCount, long evalTotalNanos, long evalMaxNanos) {
+            this.evalCount = evalCount;
+            this.evalErrorCount = evalErrorCount;
+            this.evalTotalNanos = evalTotalNanos;
+            this.evalMaxNanos = evalMaxNanos;
+        }
+    }
+
     private long handle;
     private long logCallbackHandle;
     private final ExecutorService defaultMessageExecutor;
@@ -54,6 +68,19 @@ public final class BifroRE implements AutoCloseable {
     private volatile Thread pollThread;
     private volatile Consumer<EvalResult> nextHandler;
     private volatile Executor nextExecutor;
+
+    public BifroRE(BifroREOptions options) {
+        this(
+            options.host,
+            options.port,
+            Objects.requireNonNull(options.ruleJsonPath, "ruleJsonPath"),
+            options.nodeId,
+            options.clientCount,
+            options.multiNci,
+            options.payloadFormat,
+            options.clientIdsPath
+        );
+    }
 
     public BifroRE(String host, int port, String ruleJsonPath) {
         this(host, port, ruleJsonPath, null, 1, false, PAYLOAD_JSON, "./client_ids");
@@ -195,6 +222,13 @@ public final class BifroRE implements AutoCloseable {
         return nativeSetLogCallback(logCallbackHandle, minLevel);
     }
 
+    public MetricsSnapshot metrics() {
+        if (handle == 0) {
+            return new MetricsSnapshot(0, 0, 0, 0);
+        }
+        return nativeMetricsSnapshot(handle);
+    }
+
     private synchronized void ensurePollerRunning() {
         if (pollRunning || !mqttStarted || handle == 0) {
             return;
@@ -280,4 +314,5 @@ public final class BifroRE implements AutoCloseable {
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);
+    private static native MetricsSnapshot nativeMetricsSnapshot(long handle);
 }

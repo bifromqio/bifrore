@@ -1,0 +1,52 @@
+package com.bifrore;
+
+public final class BifroREOptions {
+    public String host = "127.0.0.1";
+    public int port = 1883;
+    public String ruleJsonPath;
+    public String nodeId;
+    public int clientCount = 1;
+    public boolean multiNci = false;
+    public int payloadFormat = BifroRE.PAYLOAD_JSON;
+    public String clientIdsPath = "./client_ids";
+
+    public BifroREOptions ruleJsonPath(String ruleJsonPath) {
+        this.ruleJsonPath = ruleJsonPath;
+        return this;
+    }
+
+    public BifroREOptions host(String host) {
+        this.host = host;
+        return this;
+    }
+
+    public BifroREOptions port(int port) {
+        this.port = port;
+        return this;
+    }
+
+    public BifroREOptions nodeId(String nodeId) {
+        this.nodeId = nodeId;
+        return this;
+    }
+
+    public BifroREOptions clientCount(int clientCount) {
+        this.clientCount = clientCount;
+        return this;
+    }
+
+    public BifroREOptions multiNci(boolean multiNci) {
+        this.multiNci = multiNci;
+        return this;
+    }
+
+    public BifroREOptions payloadFormat(int payloadFormat) {
+        this.payloadFormat = payloadFormat;
+        return this;
+    }
+
+    public BifroREOptions clientIdsPath(String clientIdsPath) {
+        this.clientIdsPath = clientIdsPath;
+        return this;
+    }
+}

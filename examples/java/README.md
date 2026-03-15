@@ -32,3 +32,17 @@ See `examples/java/pom.xml`.
 ## 4. Use the API
 
 See `examples/java/src/main/java/com/example/App.java`.
+
+The example exposes Prometheus metrics on:
+
+```text
+http://127.0.0.1:9464/metrics
+```
+
+The Java bindings provide:
+
+- `BifroREOptions` for engine configuration
+- `BifroREMetricsView` for lazy scrape-triggered metric reads
+
+The example binds `BifroREMetricsView` to Micrometer gauges. Metrics are pulled lazily on scrape.
+No dedicated metrics polling thread is used.

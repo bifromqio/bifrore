@@ -1,10 +1,18 @@
 package com.example;
 
 import com.bifrore.BifroRE;
+import com.bifrore.BifroREMetricsView;
+import com.bifrore.BifroREOptions;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.HttpServer;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,14 +22,26 @@ public final class App {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        BifroRE engine = new BifroRE("127.0.0.1", 1883, extractRuleResource());
+        BifroRE engine = new BifroRE(
+            new BifroREOptions()
+                .host("127.0.0.1")
+                .port(1883)
+                .ruleJsonPath(extractRuleResource())
+        );
+        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        HttpServer metricsServer = startMetricsServer(registry);
+        bindMetrics(engine, registry);
         engine.onNext(result -> {
             System.out.println("payload=" + prettyPayload(result.payload));
             System.out.println("destinations=" + result.destinationsJson);
         });
         engine.start();
 
-        Runtime.getRuntime().addShutdownHook(new Thread(engine::close));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            metricsServer.stop(0);
+            registry.close();
+            engine.close();
+        }));
         Thread.currentThread().join();
     }
 
@@ -44,5 +64,29 @@ public final class App {
             tempFile.toFile().deleteOnExit();
             return tempFile.toAbsolutePath().toString();
         }
+    }
+
+    private static void bindMetrics(BifroRE engine, PrometheusMeterRegistry registry) {
+        BifroREMetricsView metrics = new BifroREMetricsView(engine);
+        Gauge.builder("bifrore_eval_count", metrics, BifroREMetricsView::evalCount).register(registry);
+        Gauge.builder("bifrore_eval_error_count", metrics, BifroREMetricsView::evalErrorCount).register(registry);
+        Gauge.builder("bifrore_eval_total_nanos", metrics, BifroREMetricsView::evalTotalNanos).register(registry);
+        Gauge.builder("bifrore_eval_max_nanos", metrics, BifroREMetricsView::evalMaxNanos).register(registry);
+        Gauge.builder("bifrore_eval_avg_nanos", metrics, BifroREMetricsView::evalAvgNanos).register(registry);
+    }
+
+    private static HttpServer startMetricsServer(PrometheusMeterRegistry registry) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("0.0.0.0", 9464), 0);
+        server.createContext("/metrics", exchange -> {
+            byte[] body = registry.scrape().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(body);
+            }
+        });
+        server.start();
+        System.out.println("Prometheus metrics exposed on http://127.0.0.1:9464/metrics");
+        return server;
     }
 }
