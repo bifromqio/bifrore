@@ -43,6 +43,7 @@ The Java bindings provide:
 
 - `BifroREOptions` for engine configuration
 - `BifroREMetricsView` for lazy scrape-triggered metric reads
+- `disconnect()` to stop MQTT intake before final `close()`
 
 The example binds `BifroREMetricsView` to Micrometer gauges. Metrics are pulled lazily on scrape.
 No dedicated metrics polling thread is used.

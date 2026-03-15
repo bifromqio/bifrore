@@ -65,6 +65,7 @@ public final class BifroRE implements AutoCloseable {
     private final String clientIdsPath;
     private volatile boolean mqttStarted;
     private volatile boolean pollRunning;
+    private volatile boolean disconnecting;
     private volatile Thread pollThread;
     private volatile Consumer<EvalResult> nextHandler;
     private volatile Executor nextExecutor;
@@ -139,6 +140,7 @@ public final class BifroRE implements AutoCloseable {
         this.defaultLogExecutor = Executors.newSingleThreadExecutor();
         this.mqttStarted = false;
         this.pollRunning = false;
+        this.disconnecting = false;
         this.pollThread = null;
         this.nextHandler = null;
         this.nextExecutor = defaultMessageExecutor;
@@ -173,9 +175,19 @@ public final class BifroRE implements AutoCloseable {
     }
 
     public synchronized int stop() {
-        stopPoller();
+        return disconnect();
+    }
+
+    public synchronized int disconnect() {
+        if (handle == 0) {
+            return -1;
+        }
+        if (!mqttStarted && !disconnecting) {
+            return 0;
+        }
+        disconnecting = true;
         mqttStarted = false;
-        return 0;
+        return nativeDisconnect(handle);
     }
 
     public void onNext(Consumer<EvalResult> handler) {
@@ -230,14 +242,17 @@ public final class BifroRE implements AutoCloseable {
     }
 
     private synchronized void ensurePollerRunning() {
-        if (pollRunning || !mqttStarted || handle == 0) {
+        if (pollRunning || handle == 0 || (!mqttStarted && !disconnecting)) {
             return;
         }
         pollRunning = true;
         pollThread = new Thread(() -> {
-            while (pollRunning && handle != 0 && mqttStarted) {
+            while (pollRunning && handle != 0) {
                 EvalResult[] results = nativePollResultsBatch(handle, -1);
-                if (results == null || results.length == 0) {
+                if (results == null) {
+                    break;
+                }
+                if (results.length == 0) {
                     continue;
                 }
                 Consumer<EvalResult> handler = nextHandler;
@@ -250,19 +265,24 @@ public final class BifroRE implements AutoCloseable {
                     }
                 }
             }
+            pollRunning = false;
         }, "bifrore-msg-poller");
         pollThread.setDaemon(true);
         pollThread.start();
     }
 
-    private synchronized void stopPoller() {
-        pollRunning = false;
+    private synchronized void stopPoller(boolean interrupt) {
+        if (interrupt) {
+            pollRunning = false;
+        }
         Thread thread = pollThread;
         pollThread = null;
         if (thread != null) {
-            thread.interrupt();
+            if (interrupt) {
+                thread.interrupt();
+            }
             try {
-                thread.join(1000);
+                thread.join(5000);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
@@ -271,7 +291,13 @@ public final class BifroRE implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        stop();
+        if (handle == 0) {
+            return;
+        }
+        disconnect();
+        stopPoller(false);
+        pollRunning = false;
+        disconnecting = false;
         if (logCallbackHandle != 0) {
             nativeSetLogCallback(0, 3);
             nativeFreeLogHandler(logCallbackHandle);
@@ -293,6 +319,7 @@ public final class BifroRE implements AutoCloseable {
         String clientIdsPath
     );
     private static native void nativeDestroy(long handle);
+    private static native int nativeDisconnect(long handle);
     private static native int nativeStartMqtt(
         long handle,
         String host,

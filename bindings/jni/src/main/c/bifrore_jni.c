@@ -18,6 +18,7 @@ extern void *bre_create_with_config_and_payload_format_and_client_ids_path(
     int payload_format,
     const char *client_ids_path);
 extern void bre_destroy(void *engine);
+extern int bre_disconnect(void *engine);
 extern int bre_start_mqtt(
     void *engine,
     const char *host,
@@ -171,6 +172,15 @@ JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeDestroy(JNIEnv *env, jclas
     if (handle != 0) {
         bre_destroy((void *)handle);
     }
+}
+
+JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeDisconnect(JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
+    (void)cls;
+    if (handle == 0) {
+        return -1;
+    }
+    return bre_disconnect((void *)handle);
 }
 
 JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(

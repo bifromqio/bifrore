@@ -438,11 +438,8 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
     }
     unsafe {
         let mut boxed = Box::from_raw(engine);
-        if let Some(adapter) = boxed.adapter.take() {
-            let _ = adapter.stop();
-            log::info!("BifroRE destroy requested MQTT stop");
-        }
-        stop_core_worker(&mut boxed);
+        disconnect_engine(&mut boxed);
+        stop_core_worker(&mut boxed, true);
         close_notify_pipe(boxed.notify_read_fd);
         close_notify_pipe(boxed.notify_write_fd);
         boxed.notify_read_fd = -1;
@@ -450,6 +447,16 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
         log::info!("BifroRE destroyed");
         drop(boxed);
     }
+}
+
+#[no_mangle]
+pub extern "C" fn bre_disconnect(engine: *mut BifroRE) -> c_int {
+    if engine.is_null() {
+        return -1;
+    }
+    let engine = unsafe { &mut *engine };
+    disconnect_engine(engine);
+    0
 }
 
 #[no_mangle]
@@ -722,13 +729,23 @@ pub extern "C" fn bre_start_mqtt(
     0
 }
 
-fn stop_core_worker(engine: &mut BifroRE) {
+fn disconnect_engine(engine: &mut BifroRE) {
+    if let Some(adapter) = engine.adapter.take() {
+        let _ = adapter.stop();
+        log::info!("BifroRE disconnect requested MQTT stop");
+    }
+    stop_core_worker(engine, false);
+}
+
+fn stop_core_worker(engine: &mut BifroRE, drop_receiver: bool) {
     engine.core_queue_tx.take();
     engine.eval_result_tx.take();
     if let Some(worker) = engine.core_worker.take() {
         let _ = worker.join();
     }
-    engine.eval_result_rx.take();
+    if drop_receiver {
+        engine.eval_result_rx.take();
+    }
 }
 
 #[no_mangle]
