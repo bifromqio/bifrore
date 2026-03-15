@@ -44,6 +44,9 @@ flowchart LR
 - Old: SQL rules parsed by Trino + MVEL. New: SQL subset parser in Rust with MQTT-native extensions.
 - Old: downstream delivery handled by built-in plugins. New: host application handles destinations.
 
+The original Java standalone implementation is preserved in the
+[`java-standalone`](https://github.com/bifromqio/bifrore/tree/java-standalone) branch.
+
 ## Rule DSL (SQL + MQTT extensions)
 
 Examples:
