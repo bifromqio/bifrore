@@ -1,12 +1,24 @@
 package com.bifrore;
 
 import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionHandler;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 public final class BifroRE implements AutoCloseable {
+    private static final Logger LOGGER = Logger.getLogger(BifroRE.class.getName());
+    private static final long POLLER_JOIN_TIMEOUT_MILLIS = 5000L;
+    private static final long EXECUTOR_SHUTDOWN_TIMEOUT_MILLIS = 5000L;
+    private static final long DROP_WARN_EVERY = 100L;
+
     static {
         NativeLibraryLoader.load();
     }
@@ -55,7 +67,7 @@ public final class BifroRE implements AutoCloseable {
 
     private long handle;
     private long logCallbackHandle;
-    private final ExecutorService defaultMessageExecutor;
+    private final ThreadPoolExecutor defaultMessageExecutor;
     private final ExecutorService defaultLogExecutor;
     private final String host;
     private final int port;
@@ -63,6 +75,12 @@ public final class BifroRE implements AutoCloseable {
     private final int clientCount;
     private final boolean multiNci;
     private final String clientIdsPath;
+    private final int callbackQueueCapacity;
+    private final AtomicLong callbackSubmittedCount;
+    private final AtomicLong callbackCompletedCount;
+    private final AtomicLong callbackDroppedCount;
+    private final AtomicLong pollerTimeoutPendingCount;
+    private final AtomicLong shutdownDroppedCount;
     private volatile boolean mqttStarted;
     private volatile boolean pollRunning;
     private volatile boolean disconnecting;
@@ -79,38 +97,13 @@ public final class BifroRE implements AutoCloseable {
             options.clientCount,
             options.multiNci,
             options.payloadFormat,
-            options.clientIdsPath
+            options.clientIdsPath,
+            options.callbackQueueCapacity,
+            options.pollBatchLimit
         );
     }
 
-    public BifroRE(String host, int port, String ruleJsonPath) {
-        this(host, port, ruleJsonPath, null, 1, false, PAYLOAD_JSON, "./client_ids");
-    }
-
-    public BifroRE(
-        String host,
-        int port,
-        String ruleJsonPath,
-        String nodeId,
-        int clientCount,
-        boolean multiNci
-    ) {
-        this(host, port, ruleJsonPath, nodeId, clientCount, multiNci, PAYLOAD_JSON, "./client_ids");
-    }
-
-    public BifroRE(
-        String host,
-        int port,
-        String ruleJsonPath,
-        String nodeId,
-        int clientCount,
-        boolean multiNci,
-        int payloadFormat
-    ) {
-        this(host, port, ruleJsonPath, nodeId, clientCount, multiNci, payloadFormat, "./client_ids");
-    }
-
-    public BifroRE(
+    private BifroRE(
         String host,
         int port,
         String ruleJsonPath,
@@ -118,13 +111,16 @@ public final class BifroRE implements AutoCloseable {
         int clientCount,
         boolean multiNci,
         int payloadFormat,
-        String clientIdsPath
+        String clientIdsPath,
+        int callbackQueueCapacity,
+        int pollBatchLimit
     ) {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.nodeId = nodeId;
         this.clientCount = clientCount;
         this.multiNci = multiNci;
+        this.callbackQueueCapacity = Math.max(1, callbackQueueCapacity);
         this.clientIdsPath =
             (clientIdsPath == null || clientIdsPath.isBlank()) ? "./client_ids" : clientIdsPath;
         this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
@@ -135,9 +131,19 @@ public final class BifroRE implements AutoCloseable {
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
         }
+        if (nativeSetPollBatchLimit(this.handle, Math.max(1, pollBatchLimit)) != 0) {
+            nativeDestroy(this.handle);
+            this.handle = 0;
+            throw new IllegalStateException("Failed to configure poll batch limit");
+        }
         this.logCallbackHandle = 0;
-        this.defaultMessageExecutor = Executors.newSingleThreadExecutor();
-        this.defaultLogExecutor = Executors.newSingleThreadExecutor();
+        this.callbackSubmittedCount = new AtomicLong();
+        this.callbackCompletedCount = new AtomicLong();
+        this.callbackDroppedCount = new AtomicLong();
+        this.pollerTimeoutPendingCount = new AtomicLong();
+        this.shutdownDroppedCount = new AtomicLong();
+        this.defaultMessageExecutor = createDefaultMessageExecutor(this.callbackQueueCapacity);
+        this.defaultLogExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
         this.mqttStarted = false;
         this.pollRunning = false;
         this.disconnecting = false;
@@ -241,6 +247,26 @@ public final class BifroRE implements AutoCloseable {
         return nativeMetricsSnapshot(handle);
     }
 
+    public long callbackDroppedCount() {
+        return callbackDroppedCount.get();
+    }
+
+    public long callbackPendingCount() {
+        return pendingCallbackCount();
+    }
+
+    public long callbackQueueDepth() {
+        return defaultMessageExecutor.getQueue().size();
+    }
+
+    public long shutdownDroppedCount() {
+        return shutdownDroppedCount.get();
+    }
+
+    public long pollerTimeoutPendingCount() {
+        return pollerTimeoutPendingCount.get();
+    }
+
     private synchronized void ensurePollerRunning() {
         if (pollRunning || handle == 0 || (!mqttStarted && !disconnecting)) {
             return;
@@ -260,7 +286,19 @@ public final class BifroRE implements AutoCloseable {
                 if (handler != null && executor != null) {
                     for (EvalResult result : results) {
                         if (result != null) {
-                            executor.execute(() -> handler.accept(result));
+                            Runnable task = () -> {
+                                try {
+                                    handler.accept(result);
+                                } finally {
+                                    callbackCompletedCount.incrementAndGet();
+                                }
+                            };
+                            try {
+                                executor.execute(task);
+                                callbackSubmittedCount.incrementAndGet();
+                            } catch (RejectedExecutionException ignored) {
+                                // rejection is already logged and counted by the default executor handler
+                            }
                         }
                     }
                 }
@@ -282,11 +320,33 @@ public final class BifroRE implements AutoCloseable {
                 thread.interrupt();
             }
             try {
-                thread.join(5000);
-            } catch (InterruptedException ignored) {
+                thread.join(POLLER_JOIN_TIMEOUT_MILLIS);
+                if (thread.isAlive()) {
+                    long pendingCallbacks = pendingCallbackCount();
+                    pollerTimeoutPendingCount.addAndGet(pendingCallbacks);
+                    LOGGER.warning(
+                        "BifroRE poller did not stop within " + POLLER_JOIN_TIMEOUT_MILLIS
+                            + " ms; close may drop undelivered results pendingCallbacks="
+                            + pendingCallbacks
+                    );
+                    pollRunning = false;
+                    thread.interrupt();
+                    thread.join(1000);
+                }
+            } catch (InterruptedException interrupted) {
+                LOGGER.warning(
+                    "Interrupted while waiting for BifroRE poller shutdown; pendingCallbacks="
+                        + pendingCallbackCount()
+                        + " error="
+                        + interrupted
+                );
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    private long pendingCallbackCount() {
+        return Math.max(0L, callbackSubmittedCount.get() - callbackCompletedCount.get());
     }
 
     @Override
@@ -308,7 +368,54 @@ public final class BifroRE implements AutoCloseable {
             handle = 0;
         }
         defaultMessageExecutor.shutdown();
+        try {
+            if (!defaultMessageExecutor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                long dropped = defaultMessageExecutor.shutdownNow().size();
+                shutdownDroppedCount.addAndGet(dropped);
+                LOGGER.warning(
+                    "BifroRE callback executor did not stop within " + EXECUTOR_SHUTDOWN_TIMEOUT_MILLIS
+                        + " ms; dropped queued callbacks=" + dropped
+                );
+            }
+        } catch (InterruptedException interrupted) {
+            LOGGER.warning(
+                "Interrupted while waiting for BifroRE callback executor shutdown; pendingCallbacks="
+                    + pendingCallbackCount()
+                    + " error="
+                    + interrupted
+            );
+            Thread.currentThread().interrupt();
+        }
         defaultLogExecutor.shutdown();
+    }
+
+    private ThreadPoolExecutor createDefaultMessageExecutor(int queueCapacity) {
+        RejectedExecutionHandler handler = (task, executor) -> {
+            long dropped = callbackDroppedCount.incrementAndGet();
+            if (dropped <= 10 || dropped % DROP_WARN_EVERY == 0) {
+                LOGGER.warning(
+                    "BifroRE callback queue is full; dropping newest callback task droppedCount="
+                        + dropped
+                        + " queueDepth="
+                        + executor.getQueue().size()
+                );
+            }
+            throw new RejectedExecutionException("BifroRE callback queue is full");
+        };
+        ThreadFactory threadFactory = runnable -> {
+            Thread thread = new Thread(runnable, "bifrore-callback");
+            thread.setDaemon(true);
+            return thread;
+        };
+        return new ThreadPoolExecutor(
+            1,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(queueCapacity),
+            threadFactory,
+            handler
+        );
     }
 
     private static native long nativeCreateWithConfig(String path);
@@ -342,4 +449,5 @@ public final class BifroRE implements AutoCloseable {
     private static native void nativeFreeLogHandler(long cbHandle);
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);
     private static native MetricsSnapshot nativeMetricsSnapshot(long handle);
+    private static native int nativeSetPollBatchLimit(long handle, int limit);
 }

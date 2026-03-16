@@ -47,3 +47,8 @@ The Java bindings provide:
 
 The example binds `BifroREMetricsView` to Micrometer gauges. Metrics are pulled lazily on scrape.
 No dedicated metrics polling thread is used.
+
+Backpressure-related knobs in `BifroREOptions`:
+
+- `callbackQueueCapacity(...)` for the default Java callback executor queue
+- `pollBatchLimit(...)` for the Rust-to-Java batch drain cap

@@ -266,6 +266,7 @@ pub struct BifroRE {
     notify_read_fd: c_int,
     notify_write_fd: c_int,
     notify_pending: AtomicBool,
+    poll_batch_limit: usize,
     client_ids_path: String,
     active_client_ids: Vec<String>,
 }
@@ -420,6 +421,7 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
         notify_read_fd,
         notify_write_fd,
         notify_pending: AtomicBool::new(false),
+        poll_batch_limit: DEFAULT_POLL_BATCH_SIZE,
         client_ids_path,
         active_client_ids: Vec::new(),
     };
@@ -537,6 +539,23 @@ pub extern "C" fn bre_set_eval_parallel_threshold(
     } else {
         guard.set_eval_parallel_threshold(Some(threshold as usize));
     }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn bre_set_poll_batch_limit(
+    engine: *mut BifroRE,
+    limit: u32,
+) -> c_int {
+    if engine.is_null() {
+        return -1;
+    }
+    let engine = unsafe { &mut *engine };
+    engine.poll_batch_limit = if limit == 0 {
+        DEFAULT_POLL_BATCH_SIZE
+    } else {
+        limit as usize
+    };
     0
 }
 
@@ -762,7 +781,7 @@ pub extern "C" fn bre_poll_eval_results_batch(
     let Some(receiver) = engine.eval_result_rx.as_ref() else {
         return -2;
     };
-    let max_results = DEFAULT_POLL_BATCH_SIZE;
+    let max_results = engine.poll_batch_limit.max(1);
 
     let first_record = if timeout_millis == 0 {
         match receiver.try_recv() {
@@ -789,10 +808,10 @@ pub extern "C" fn bre_poll_eval_results_batch(
         }
     };
 
-    let mut results = Vec::with_capacity(max_results as usize);
+    let mut results = Vec::with_capacity(max_results);
     results.push(to_ffi_eval_result(first_record));
 
-    while results.len() < max_results as usize {
+    while results.len() < max_results {
         match receiver.try_recv() {
             Ok(record) => results.push(to_ffi_eval_result(record)),
             Err(flume::TryRecvError::Empty) => break,

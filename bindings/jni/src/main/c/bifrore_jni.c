@@ -52,6 +52,7 @@ extern int bre_metrics_snapshot(
     uint64_t *eval_error_count,
     uint64_t *eval_total_nanos,
     uint64_t *eval_max_nanos);
+extern int bre_set_poll_batch_limit(void *engine, uint32_t limit);
 
 struct LogCallbackCtx {
     JavaVM *jvm;
@@ -400,6 +401,19 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshot(
         (jlong)eval_error_count,
         (jlong)eval_total_nanos,
         (jlong)eval_max_nanos);
+}
+
+JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetPollBatchLimit(
+    JNIEnv *env,
+    jclass cls,
+    jlong handle,
+    jint limit) {
+    (void)env;
+    (void)cls;
+    if (handle == 0) {
+        return -1;
+    }
+    return bre_set_poll_batch_limit((void *)handle, (uint32_t)limit);
 }
 
 JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeFreeLogHandler(JNIEnv *env, jclass cls, jlong cb_handle) {
