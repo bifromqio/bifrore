@@ -57,7 +57,7 @@ public final class BifroREMetricsView {
     }
 
     public double pollerTimeoutPendingCount() {
-        return engine.pollerTimeoutPendingCount();
+        return current().pollerTimeoutPendingCount;
     }
 
     private ViewSnapshot current() {

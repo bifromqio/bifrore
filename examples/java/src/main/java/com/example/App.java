@@ -34,8 +34,11 @@ public final class App {
         HttpServer metricsServer = startMetricsServer(registry);
         bindMetrics(engine, registry);
         engine.onNext(result -> {
+            System.out.println("ruleIndex=" + result.ruleIndex);
+            if (result.metadata != null) {
+                System.out.println("destinations=" + result.metadata.destinationsJson);
+            }
             System.out.println("payload=" + prettyPayload(result.payload));
-            System.out.println("destinations=" + result.destinationsJson);
         });
         engine.start();
 

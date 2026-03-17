@@ -40,13 +40,23 @@ public final class BifroRE implements AutoCloseable {
     public static final int PAYLOAD_PROTOBUF = 2;
 
     public static final class EvalResult {
-        public final String ruleId;
+        public final int ruleIndex;
         public final byte[] payload;
+        public final RuleMetadata metadata;
+
+        EvalResult(int ruleIndex, byte[] payload, RuleMetadata metadata) {
+            this.ruleIndex = ruleIndex;
+            this.payload = payload;
+            this.metadata = metadata;
+        }
+    }
+
+    public static final class RuleMetadata {
+        public final int ruleIndex;
         public final String destinationsJson;
 
-        EvalResult(String ruleId, byte[] payload, String destinationsJson) {
-            this.ruleId = ruleId;
-            this.payload = payload;
+        RuleMetadata(int ruleIndex, String destinationsJson) {
+            this.ruleIndex = ruleIndex;
             this.destinationsJson = destinationsJson;
         }
     }
@@ -76,6 +86,7 @@ public final class BifroRE implements AutoCloseable {
     private final boolean multiNci;
     private final String clientIdsPath;
     private final int callbackQueueCapacity;
+    private final RuleMetadata[] ruleMetadataTable;
     private final AtomicLong callbackSubmittedCount;
     private final AtomicLong callbackCompletedCount;
     private final AtomicLong callbackDroppedCount;
@@ -136,6 +147,13 @@ public final class BifroRE implements AutoCloseable {
             this.handle = 0;
             throw new IllegalStateException("Failed to configure poll batch limit");
         }
+        RuleMetadata[] metadataTable = nativeGetRuleMetadataTable(this.handle);
+        if (metadataTable == null) {
+            nativeDestroy(this.handle);
+            this.handle = 0;
+            throw new IllegalStateException("Failed to load rule metadata table");
+        }
+        this.ruleMetadataTable = metadataTable;
         this.logCallbackHandle = 0;
         this.callbackSubmittedCount = new AtomicLong();
         this.callbackCompletedCount = new AtomicLong();
@@ -267,6 +285,10 @@ public final class BifroRE implements AutoCloseable {
         return pollerTimeoutPendingCount.get();
     }
 
+    public RuleMetadata[] ruleMetadataTable() {
+        return ruleMetadataTable.clone();
+    }
+
     private synchronized void ensurePollerRunning() {
         if (pollRunning || handle == 0 || (!mqttStarted && !disconnecting)) {
             return;
@@ -286,9 +308,11 @@ public final class BifroRE implements AutoCloseable {
                 if (handler != null && executor != null) {
                     for (EvalResult result : results) {
                         if (result != null) {
+                            RuleMetadata metadata = metadataFor(result.ruleIndex);
+                            EvalResult enriched = new EvalResult(result.ruleIndex, result.payload, metadata);
                             Runnable task = () -> {
                                 try {
-                                    handler.accept(result);
+                                    handler.accept(enriched);
                                 } finally {
                                     callbackCompletedCount.incrementAndGet();
                                 }
@@ -347,6 +371,13 @@ public final class BifroRE implements AutoCloseable {
 
     private long pendingCallbackCount() {
         return Math.max(0L, callbackSubmittedCount.get() - callbackCompletedCount.get());
+    }
+
+    private RuleMetadata metadataFor(int ruleIndex) {
+        if (ruleIndex < 0 || ruleIndex >= ruleMetadataTable.length) {
+            return null;
+        }
+        return ruleMetadataTable[ruleIndex];
     }
 
     @Override
@@ -450,4 +481,5 @@ public final class BifroRE implements AutoCloseable {
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);
     private static native MetricsSnapshot nativeMetricsSnapshot(long handle);
     private static native int nativeSetPollBatchLimit(long handle, int limit);
+    private static native RuleMetadata[] nativeGetRuleMetadataTable(long handle);
 }

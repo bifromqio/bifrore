@@ -180,6 +180,19 @@ impl RuleEngine {
             .collect()
     }
 
+    pub fn rule_metadata(&self) -> Vec<RuleMetadata> {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter_map(|(rule_index, rule)| {
+                rule.as_ref().map(|rule| RuleMetadata {
+                    rule_index,
+                    destinations: rule.destinations.clone(),
+                })
+            })
+            .collect()
+    }
+
     pub fn load_rules_from_json<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, RuleError> {
         let content = fs::read_to_string(path).map_err(|e| RuleError::SqlParse(e.to_string()))?;
         let parsed: RuleFile =
@@ -210,8 +223,13 @@ impl RuleEngine {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleEvaluation {
-    pub rule_id: String,
+    pub rule_index: usize,
     pub message: Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleMetadata {
+    pub rule_index: usize,
     pub destinations: Vec<String>,
 }
 
@@ -239,9 +257,8 @@ fn evaluate_single_rule(
     let duration_nanos = start.elapsed().as_nanos() as u64;
     let success = evaluated.is_some();
     let evaluation = evaluated.map(|evaluated_message| RuleEvaluation {
+        rule_index,
         message: evaluated_message,
-        destinations: rule.destinations.clone(),
-        rule_id: rule.id.clone(),
     });
     Some(EvalAttempt {
         duration_nanos,

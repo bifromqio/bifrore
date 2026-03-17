@@ -4,9 +4,13 @@
 #include <string.h>
 
 struct BifroEvalResult {
-    char *rule_id;
+    uint16_t rule_index;
     unsigned char *payload;
     size_t payload_len;
+};
+
+struct BifroRuleMetadata {
+    uint16_t rule_index;
     char *destinations_json;
 };
 
@@ -42,6 +46,11 @@ extern int bre_poll_eval_results_batch(
     struct BifroEvalResult **out_results,
     size_t *out_len);
 extern void bre_free_eval_results_batch(struct BifroEvalResult *results, size_t len);
+extern int bre_get_rule_metadata_table(
+    void *engine,
+    struct BifroRuleMetadata **out_metadata,
+    size_t *out_len);
+extern void bre_free_rule_metadata_table(struct BifroRuleMetadata *metadata, size_t len);
 extern int bre_set_log_callback(
     void (*callback)(void *, int, const char *, const char *, uint64_t, const char *, const char *, const char *, uint32_t),
     void *user_data,
@@ -286,7 +295,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
         bre_free_eval_results_batch(results, result_len);
         return NULL;
     }
-    jmethodID ctor = (*env)->GetMethodID(env, result_cls, "<init>", "(Ljava/lang/String;[BLjava/lang/String;)V");
+    jmethodID ctor = (*env)->GetMethodID(env, result_cls, "<init>", "(I[BLcom/bifrore/BifroRE$RuleMetadata;)V");
     if (ctor == NULL) {
         bre_free_eval_results_batch(results, result_len);
         return NULL;
@@ -299,25 +308,17 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
 
     for (size_t i = 0; i < result_len; i++) {
         struct BifroEvalResult *result = &results[i];
-        jstring rule_id = (*env)->NewStringUTF(env, result->rule_id ? result->rule_id : "");
         jbyteArray payload = (*env)->NewByteArray(env, (jsize)result->payload_len);
         if (payload != NULL && result->payload != NULL && result->payload_len > 0) {
             (*env)->SetByteArrayRegion(env, payload, 0, (jsize)result->payload_len, (const jbyte *)result->payload);
         }
-        jstring destinations = (*env)->NewStringUTF(env, result->destinations_json ? result->destinations_json : "[]");
-        jobject obj = (*env)->NewObject(env, result_cls, ctor, rule_id, payload, destinations);
+        jobject obj = (*env)->NewObject(env, result_cls, ctor, (jint)result->rule_index, payload, NULL);
         if (obj != NULL) {
             (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
             (*env)->DeleteLocalRef(env, obj);
         }
-        if (rule_id) {
-            (*env)->DeleteLocalRef(env, rule_id);
-        }
         if (payload) {
             (*env)->DeleteLocalRef(env, payload);
-        }
-        if (destinations) {
-            (*env)->DeleteLocalRef(env, destinations);
         }
     }
 
@@ -414,6 +415,52 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetPollBatchLimit(
         return -1;
     }
     return bre_set_poll_batch_limit((void *)handle, (uint32_t)limit);
+}
+
+JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTable(
+    JNIEnv *env,
+    jclass cls,
+    jlong handle) {
+    (void)cls;
+    if (handle == 0) {
+        return NULL;
+    }
+
+    struct BifroRuleMetadata *metadata = NULL;
+    size_t metadata_len = 0;
+    if (bre_get_rule_metadata_table((void *)handle, &metadata, &metadata_len) != 0) {
+        return NULL;
+    }
+
+    jclass metadata_cls = (*env)->FindClass(env, "com/bifrore/BifroRE$RuleMetadata");
+    if (metadata_cls == NULL) {
+        bre_free_rule_metadata_table(metadata, metadata_len);
+        return NULL;
+    }
+    jmethodID ctor = (*env)->GetMethodID(env, metadata_cls, "<init>", "(ILjava/lang/String;)V");
+    if (ctor == NULL) {
+        bre_free_rule_metadata_table(metadata, metadata_len);
+        return NULL;
+    }
+    jobjectArray array = (*env)->NewObjectArray(env, (jsize)metadata_len, metadata_cls, NULL);
+    if (array == NULL) {
+        bre_free_rule_metadata_table(metadata, metadata_len);
+        return NULL;
+    }
+    for (size_t i = 0; i < metadata_len; i++) {
+        struct BifroRuleMetadata *record = &metadata[i];
+        jstring destinations = (*env)->NewStringUTF(env, record->destinations_json ? record->destinations_json : "[]");
+        jobject obj = (*env)->NewObject(env, metadata_cls, ctor, (jint)record->rule_index, destinations);
+        if (obj != NULL) {
+            (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
+            (*env)->DeleteLocalRef(env, obj);
+        }
+        if (destinations) {
+            (*env)->DeleteLocalRef(env, destinations);
+        }
+    }
+    bre_free_rule_metadata_table(metadata, metadata_len);
+    return array;
 }
 
 JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeFreeLogHandler(JNIEnv *env, jclass cls, jlong cb_handle) {

@@ -3,7 +3,7 @@ use bifrore_embed_core::mqtt::{
     start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
 };
 use bifrore_embed_core::payload::PayloadFormat;
-use bifrore_embed_core::runtime::RuleEngine;
+use bifrore_embed_core::runtime::{RuleEngine, RuleMetadata};
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -273,45 +273,41 @@ pub struct BifroRE {
 
 pub type BifroEvalCallback = extern "C" fn(
     user_data: *mut c_void,
-    rule_id: *const c_char,
+    rule_index: u16,
     payload: *const u8,
     payload_len: size_t,
-    destinations_json: *const c_char,
 );
 
 #[derive(Debug)]
 struct EvalResultRecord {
-    rule_id: String,
+    rule_index: u16,
     payload: Vec<u8>,
-    destinations_json: String,
 }
 
 #[repr(C)]
 pub struct BifroEvalResult {
-    pub rule_id: *mut c_char,
+    pub rule_index: u16,
     pub payload: *mut u8,
     pub payload_len: size_t,
+}
+
+#[repr(C)]
+pub struct BifroRuleMetadata {
+    pub rule_index: u16,
     pub destinations_json: *mut c_char,
 }
 
 impl Default for BifroEvalResult {
     fn default() -> Self {
         Self {
-            rule_id: ptr::null_mut(),
+            rule_index: 0,
             payload: ptr::null_mut(),
             payload_len: 0,
-            destinations_json: ptr::null_mut(),
         }
     }
 }
 
 fn to_ffi_eval_result(record: EvalResultRecord) -> BifroEvalResult {
-    let rule_id = CString::new(record.rule_id.replace('\0', "\\0"))
-        .unwrap_or_else(|_| CString::new("").unwrap())
-        .into_raw();
-    let destinations_json = CString::new(record.destinations_json.replace('\0', "\\0"))
-        .unwrap_or_else(|_| CString::new("[]").unwrap())
-        .into_raw();
     let payload_len = record.payload.len();
     let payload = if payload_len == 0 {
         ptr::null_mut()
@@ -322,23 +318,14 @@ fn to_ffi_eval_result(record: EvalResultRecord) -> BifroEvalResult {
         payload_ptr
     };
     BifroEvalResult {
-        rule_id,
+        rule_index: record.rule_index,
         payload,
         payload_len,
-        destinations_json,
     }
 }
 
 fn free_eval_result_inner(result_ref: &mut BifroEvalResult) {
     unsafe {
-        if !result_ref.rule_id.is_null() {
-            let _ = CString::from_raw(result_ref.rule_id);
-            result_ref.rule_id = ptr::null_mut();
-        }
-        if !result_ref.destinations_json.is_null() {
-            let _ = CString::from_raw(result_ref.destinations_json);
-            result_ref.destinations_json = ptr::null_mut();
-        }
         if !result_ref.payload.is_null() && result_ref.payload_len > 0 {
             let _ = Vec::from_raw_parts(
                 result_ref.payload,
@@ -347,6 +334,29 @@ fn free_eval_result_inner(result_ref: &mut BifroEvalResult) {
             );
             result_ref.payload = ptr::null_mut();
             result_ref.payload_len = 0;
+        }
+    }
+}
+
+fn to_ffi_rule_metadata(metadata: RuleMetadata) -> BifroRuleMetadata {
+    let destinations_json = CString::new(
+        serde_json::to_string(&metadata.destinations)
+            .unwrap_or_else(|_| "[]".to_string())
+            .replace('\0', "\\0"),
+    )
+    .unwrap_or_else(|_| CString::new("[]").unwrap())
+    .into_raw();
+    BifroRuleMetadata {
+        rule_index: metadata.rule_index as u16,
+        destinations_json,
+    }
+}
+
+fn free_rule_metadata_inner(metadata_ref: &mut BifroRuleMetadata) {
+    unsafe {
+        if !metadata_ref.destinations_json.is_null() {
+            let _ = CString::from_raw(metadata_ref.destinations_json);
+            metadata_ref.destinations_json = ptr::null_mut();
         }
     }
 }
@@ -520,6 +530,32 @@ pub extern "C" fn bre_metrics_snapshot(
         if !eval_max_nanos.is_null() {
             ptr::write(eval_max_nanos, snapshot.eval_max_nanos);
         }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn bre_get_rule_metadata_table(
+    engine: *const BifroRE,
+    out_metadata: *mut *mut BifroRuleMetadata,
+    out_len: *mut size_t,
+) -> c_int {
+    if engine.is_null() || out_metadata.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let guard = unsafe { &*engine }.inner.lock().unwrap();
+    let metadata = guard
+        .rule_metadata()
+        .into_iter()
+        .map(to_ffi_rule_metadata)
+        .collect::<Vec<_>>();
+    let mut boxed = metadata.into_boxed_slice();
+    let len = boxed.len();
+    let ptr = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
+    unsafe {
+        *out_metadata = ptr;
+        *out_len = len;
     }
     0
 }
@@ -700,12 +736,9 @@ pub extern "C" fn bre_start_mqtt(
             delivery.ack();
             let mut enqueued_any = false;
             for result in results {
-                let destinations_json = serde_json::to_string(&result.destinations)
-                    .unwrap_or_else(|_| "[]".to_string());
                 let eval_result = EvalResultRecord {
-                    rule_id: result.rule_id,
+                    rule_index: result.rule_index as u16,
                     payload: result.message.payload,
-                    destinations_json,
                 };
                 if eval_result_tx_for_worker.send(eval_result).is_err() {
                     log::warn!("dropping eval result because poll queue is closed");
@@ -852,6 +885,22 @@ pub extern "C" fn bre_free_eval_results_batch(results: *mut BifroEvalResult, len
         let mut records = Vec::from_raw_parts(results, len, len);
         for result in &mut records {
             free_eval_result_inner(result);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn bre_free_rule_metadata_table(
+    metadata: *mut BifroRuleMetadata,
+    len: size_t,
+) {
+    if metadata.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        let mut records = Vec::from_raw_parts(metadata, len, len);
+        for record in &mut records {
+            free_rule_metadata_inner(record);
         }
     }
 }
