@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,6 +69,103 @@ struct LogCallbackCtx {
     jobject handler;
     jmethodID on_log;
 };
+
+struct JniClassCache {
+    jclass eval_result_cls;
+    jmethodID eval_result_ctor;
+    jclass rule_metadata_cls;
+    jmethodID rule_metadata_ctor;
+    jclass metrics_snapshot_cls;
+    jmethodID metrics_snapshot_ctor;
+};
+
+static struct JniClassCache JNI_CACHE = {0};
+static JavaVM *JNI_CACHE_JVM = NULL;
+static pthread_once_t JNI_CACHE_ONCE = PTHREAD_ONCE_INIT;
+static int JNI_CACHE_INIT_OK = 0;
+
+static void init_jni_cache_once(void) {
+    if (JNI_CACHE_JVM == NULL) {
+        return;
+    }
+
+    JNIEnv *env = NULL;
+    if ((*JNI_CACHE_JVM)->AttachCurrentThread(JNI_CACHE_JVM, (void **)&env, NULL) != 0) {
+        return;
+    }
+
+    jclass local = (*env)->FindClass(env, "com/bifrore/BifroRE$EvalResult");
+    if (local == NULL) {
+        return;
+    }
+    JNI_CACHE.eval_result_cls = (*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    if (JNI_CACHE.eval_result_cls == NULL) {
+        return;
+    }
+    JNI_CACHE.eval_result_ctor = (*env)->GetMethodID(
+        env,
+        JNI_CACHE.eval_result_cls,
+        "<init>",
+        "(I[BLcom/bifrore/BifroRE$RuleMetadata;)V"
+    );
+    if (JNI_CACHE.eval_result_ctor == NULL) {
+        return;
+    }
+
+    local = (*env)->FindClass(env, "com/bifrore/BifroRE$RuleMetadata");
+    if (local == NULL) {
+        return;
+    }
+    JNI_CACHE.rule_metadata_cls = (*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    if (JNI_CACHE.rule_metadata_cls == NULL) {
+        return;
+    }
+    JNI_CACHE.rule_metadata_ctor = (*env)->GetMethodID(
+        env,
+        JNI_CACHE.rule_metadata_cls,
+        "<init>",
+        "(ILjava/lang/String;)V"
+    );
+    if (JNI_CACHE.rule_metadata_ctor == NULL) {
+        return;
+    }
+
+    local = (*env)->FindClass(env, "com/bifrore/BifroRE$MetricsSnapshot");
+    if (local == NULL) {
+        return;
+    }
+    JNI_CACHE.metrics_snapshot_cls = (*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    if (JNI_CACHE.metrics_snapshot_cls == NULL) {
+        return;
+    }
+    JNI_CACHE.metrics_snapshot_ctor = (*env)->GetMethodID(
+        env,
+        JNI_CACHE.metrics_snapshot_cls,
+        "<init>",
+        "(JJJJ)V"
+    );
+    if (JNI_CACHE.metrics_snapshot_ctor == NULL) {
+        return;
+    }
+
+    JNI_CACHE_INIT_OK = 1;
+}
+
+static int ensure_jni_cache(JNIEnv *env) {
+    if (JNI_CACHE_INIT_OK) {
+        return 1;
+    }
+    if (JNI_CACHE_JVM == NULL) {
+        if ((*env)->GetJavaVM(env, &JNI_CACHE_JVM) != 0) {
+            return 0;
+        }
+    }
+    pthread_once(&JNI_CACHE_ONCE, init_jni_cache_once);
+    return JNI_CACHE_INIT_OK;
+}
 
 static void call_java_log_handler(
     void *user_data,
@@ -289,18 +387,11 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
     if (rc <= 0 || results == NULL || result_len == 0) {
         return NULL;
     }
-
-    jclass result_cls = (*env)->FindClass(env, "com/bifrore/BifroRE$EvalResult");
-    if (result_cls == NULL) {
+    if (!ensure_jni_cache(env)) {
         bre_free_eval_results_batch(results, result_len);
         return NULL;
     }
-    jmethodID ctor = (*env)->GetMethodID(env, result_cls, "<init>", "(I[BLcom/bifrore/BifroRE$RuleMetadata;)V");
-    if (ctor == NULL) {
-        bre_free_eval_results_batch(results, result_len);
-        return NULL;
-    }
-    jobjectArray array = (*env)->NewObjectArray(env, (jsize)result_len, result_cls, NULL);
+    jobjectArray array = (*env)->NewObjectArray(env, (jsize)result_len, JNI_CACHE.eval_result_cls, NULL);
     if (array == NULL) {
         bre_free_eval_results_batch(results, result_len);
         return NULL;
@@ -312,7 +403,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
         if (payload != NULL && result->payload != NULL && result->payload_len > 0) {
             (*env)->SetByteArrayRegion(env, payload, 0, (jsize)result->payload_len, (const jbyte *)result->payload);
         }
-        jobject obj = (*env)->NewObject(env, result_cls, ctor, (jint)result->rule_index, payload, NULL);
+        jobject obj = (*env)->NewObject(env, JNI_CACHE.eval_result_cls, JNI_CACHE.eval_result_ctor, (jint)result->rule_index, payload, NULL);
         if (obj != NULL) {
             (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
             (*env)->DeleteLocalRef(env, obj);
@@ -385,19 +476,13 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshot(
             &eval_max_nanos) != 0) {
         return NULL;
     }
-
-    jclass snapshot_cls = (*env)->FindClass(env, "com/bifrore/BifroRE$MetricsSnapshot");
-    if (snapshot_cls == NULL) {
-        return NULL;
-    }
-    jmethodID ctor = (*env)->GetMethodID(env, snapshot_cls, "<init>", "(JJJJ)V");
-    if (ctor == NULL) {
+    if (!ensure_jni_cache(env)) {
         return NULL;
     }
     return (*env)->NewObject(
         env,
-        snapshot_cls,
-        ctor,
+        JNI_CACHE.metrics_snapshot_cls,
+        JNI_CACHE.metrics_snapshot_ctor,
         (jlong)eval_count,
         (jlong)eval_error_count,
         (jlong)eval_total_nanos,
@@ -431,18 +516,11 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTab
     if (bre_get_rule_metadata_table((void *)handle, &metadata, &metadata_len) != 0) {
         return NULL;
     }
-
-    jclass metadata_cls = (*env)->FindClass(env, "com/bifrore/BifroRE$RuleMetadata");
-    if (metadata_cls == NULL) {
+    if (!ensure_jni_cache(env)) {
         bre_free_rule_metadata_table(metadata, metadata_len);
         return NULL;
     }
-    jmethodID ctor = (*env)->GetMethodID(env, metadata_cls, "<init>", "(ILjava/lang/String;)V");
-    if (ctor == NULL) {
-        bre_free_rule_metadata_table(metadata, metadata_len);
-        return NULL;
-    }
-    jobjectArray array = (*env)->NewObjectArray(env, (jsize)metadata_len, metadata_cls, NULL);
+    jobjectArray array = (*env)->NewObjectArray(env, (jsize)metadata_len, JNI_CACHE.rule_metadata_cls, NULL);
     if (array == NULL) {
         bre_free_rule_metadata_table(metadata, metadata_len);
         return NULL;
@@ -450,7 +528,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTab
     for (size_t i = 0; i < metadata_len; i++) {
         struct BifroRuleMetadata *record = &metadata[i];
         jstring destinations = (*env)->NewStringUTF(env, record->destinations_json ? record->destinations_json : "[]");
-        jobject obj = (*env)->NewObject(env, metadata_cls, ctor, (jint)record->rule_index, destinations);
+        jobject obj = (*env)->NewObject(env, JNI_CACHE.rule_metadata_cls, JNI_CACHE.rule_metadata_ctor, (jint)record->rule_index, destinations);
         if (obj != NULL) {
             (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
             (*env)->DeleteLocalRef(env, obj);
