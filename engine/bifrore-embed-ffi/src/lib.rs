@@ -285,15 +285,8 @@ struct EvalResultRecord {
 }
 
 #[repr(C)]
-pub struct BifroEvalResult {
-    pub rule_index: u16,
-    pub payload: *mut u8,
-    pub payload_len: size_t,
-}
-
-#[repr(C)]
 pub struct BifroPackedEvalResults {
-    pub rule_indices: *mut u16,
+    pub rule_indices: *mut u32,
     pub payload_offsets: *mut u32,
     pub payload_lengths: *mut u32,
     pub payload_data: *mut u8,
@@ -305,47 +298,6 @@ pub struct BifroPackedEvalResults {
 pub struct BifroRuleMetadata {
     pub rule_index: u16,
     pub destinations_json: *mut c_char,
-}
-
-impl Default for BifroEvalResult {
-    fn default() -> Self {
-        Self {
-            rule_index: 0,
-            payload: ptr::null_mut(),
-            payload_len: 0,
-        }
-    }
-}
-
-fn to_ffi_eval_result(record: EvalResultRecord) -> BifroEvalResult {
-    let payload_len = record.payload.len();
-    let payload = if payload_len == 0 {
-        ptr::null_mut()
-    } else {
-        let mut payload = record.payload.into_boxed_slice();
-        let payload_ptr = payload.as_mut_ptr();
-        std::mem::forget(payload);
-        payload_ptr
-    };
-    BifroEvalResult {
-        rule_index: record.rule_index,
-        payload,
-        payload_len,
-    }
-}
-
-fn free_eval_result_inner(result_ref: &mut BifroEvalResult) {
-    unsafe {
-        if !result_ref.payload.is_null() && result_ref.payload_len > 0 {
-            let _ = Vec::from_raw_parts(
-                result_ref.payload,
-                result_ref.payload_len,
-                result_ref.payload_len,
-            );
-            result_ref.payload = ptr::null_mut();
-            result_ref.payload_len = 0;
-        }
-    }
 }
 
 fn free_packed_eval_results_inner(results: &mut BifroPackedEvalResults) {
@@ -838,73 +790,6 @@ fn stop_core_worker(engine: &mut BifroRE, drop_receiver: bool) {
 }
 
 #[no_mangle]
-pub extern "C" fn bre_poll_eval_results_batch(
-    engine: *mut BifroRE,
-    timeout_millis: u32,
-    out_results: *mut *mut BifroEvalResult,
-    out_len: *mut size_t,
-) -> c_int {
-    if engine.is_null() || out_results.is_null() || out_len.is_null() {
-        return -1;
-    }
-    let engine = unsafe { &mut *engine };
-    let Some(receiver) = engine.eval_result_rx.as_ref() else {
-        return -2;
-    };
-    let max_results = engine.poll_batch_limit.max(1);
-
-    let first_record = if timeout_millis == 0 {
-        match receiver.try_recv() {
-            Ok(value) => value,
-            Err(flume::TryRecvError::Empty) => {
-                engine.notify_pending.store(false, Ordering::Release);
-                if !receiver.is_empty() {
-                    maybe_notify_eval_ready(engine.notify_write_fd, &engine.notify_pending);
-                }
-                return 0;
-            }
-            Err(flume::TryRecvError::Disconnected) => return -3,
-        }
-    } else if timeout_millis == u32::MAX {
-        match receiver.recv() {
-            Ok(value) => value,
-            Err(_) => return -3,
-        }
-    } else {
-        match receiver.recv_timeout(Duration::from_millis(timeout_millis as u64)) {
-            Ok(value) => value,
-            Err(flume::RecvTimeoutError::Timeout) => return 0,
-            Err(flume::RecvTimeoutError::Disconnected) => return -3,
-        }
-    };
-
-    let mut results = Vec::with_capacity(max_results);
-    results.push(to_ffi_eval_result(first_record));
-
-    while results.len() < max_results {
-        match receiver.try_recv() {
-            Ok(record) => results.push(to_ffi_eval_result(record)),
-            Err(flume::TryRecvError::Empty) => break,
-            Err(flume::TryRecvError::Disconnected) => break,
-        }
-    }
-
-    if receiver.is_empty() {
-        engine.notify_pending.store(false, Ordering::Release);
-    }
-
-    let mut boxed = results.into_boxed_slice();
-    let len = boxed.len();
-    let ptr = boxed.as_mut_ptr();
-    std::mem::forget(boxed);
-    unsafe {
-        *out_results = ptr;
-        *out_len = len;
-    }
-    1
-}
-
-#[no_mangle]
 pub extern "C" fn bre_poll_eval_results_packed(
     engine: *mut BifroRE,
     timeout_millis: u32,
@@ -982,7 +867,7 @@ pub extern "C" fn bre_poll_eval_results_packed(
     for record in records {
         let offset = payload_data.len() as u32;
         let payload_len = record.payload.len() as u32;
-        rule_indices.push(record.rule_index);
+        rule_indices.push(record.rule_index as u32);
         payload_offsets.push(offset);
         payload_lengths.push(payload_len);
         payload_data.extend_from_slice(&record.payload);
@@ -1010,28 +895,6 @@ pub extern "C" fn bre_poll_eval_results_packed(
     std::mem::forget(payload_lengths);
     std::mem::forget(payload_data);
     1
-}
-
-#[no_mangle]
-pub extern "C" fn bre_free_eval_result(result: *mut BifroEvalResult) {
-    if result.is_null() {
-        return;
-    }
-    let result_ref = unsafe { &mut *result };
-    free_eval_result_inner(result_ref);
-}
-
-#[no_mangle]
-pub extern "C" fn bre_free_eval_results_batch(results: *mut BifroEvalResult, len: size_t) {
-    if results.is_null() || len == 0 {
-        return;
-    }
-    unsafe {
-        let mut records = Vec::from_raw_parts(results, len, len);
-        for result in &mut records {
-            free_eval_result_inner(result);
-        }
-    }
 }
 
 #[no_mangle]

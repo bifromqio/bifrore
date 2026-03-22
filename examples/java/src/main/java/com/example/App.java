@@ -33,12 +33,12 @@ public final class App {
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         HttpServer metricsServer = startMetricsServer(registry);
         bindMetrics(engine, registry);
-        engine.onNext(result -> {
-            System.out.println("ruleIndex=" + result.ruleIndex);
-            if (result.metadata != null) {
-                System.out.println("destinations=" + result.metadata.destinationsJson);
+        engine.onNext((ruleIndex, payload, metadata) -> {
+            System.out.println("ruleIndex=" + ruleIndex);
+            if (metadata != null) {
+                System.out.println("destinations=" + metadata.destinationsJson);
             }
-            System.out.println("payload=" + prettyPayload(result.payload));
+            System.out.println("payload=" + prettyPayload(payload));
         });
         engine.start();
 

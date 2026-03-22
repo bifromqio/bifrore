@@ -2,25 +2,25 @@ import asyncio
 import ctypes
 import json
 import os
-from dataclasses import dataclass
 from ctypes import c_bool, c_char_p, c_int, c_size_t, c_uint16, c_uint32, c_void_p
 
 
-class _EvalResult(ctypes.Structure):
+class _PackedEvalResults(ctypes.Structure):
     _fields_ = [
-        ("rule_id", c_char_p),
-        ("payload", ctypes.POINTER(ctypes.c_ubyte)),
-        ("payload_len", c_size_t),
-        ("destinations_json", c_char_p),
+        ("rule_indices", ctypes.POINTER(c_uint32)),
+        ("payload_offsets", ctypes.POINTER(c_uint32)),
+        ("payload_lengths", ctypes.POINTER(c_uint32)),
+        ("payload_data", ctypes.POINTER(ctypes.c_ubyte)),
+        ("len", c_size_t),
+        ("payload_data_len", c_size_t),
     ]
 
 
-@dataclass
-class EvalMessage:
-    rule_id: str
-    payload: bytes
-    destinations: list
-
+class _RuleMetadata(ctypes.Structure):
+    _fields_ = [
+        ("rule_index", c_uint16),
+        ("destinations_json", c_char_p),
+    ]
 
 class BifroRE:
     PAYLOAD_JSON = 1
@@ -78,6 +78,7 @@ class BifroRE:
             "keep_alive_secs": keep_alive_secs,
             "multi_nci": multi_nci,
         }
+        self._rule_metadata = self._load_rule_metadata()
 
     @staticmethod
     def _resolve_paths(lib_path_or_rule_path, rule_path):
@@ -130,17 +131,22 @@ class BifroRE:
         self.lib.bre_start_mqtt.restype = c_int
         self.lib.bre_get_notify_fd.argtypes = [c_void_p]
         self.lib.bre_get_notify_fd.restype = c_int
-        self.lib.bre_poll_eval_results_batch.argtypes = [
+        self.lib.bre_poll_eval_results_packed.argtypes = [
             c_void_p,
             c_uint32,
-            ctypes.POINTER(ctypes.POINTER(_EvalResult)),
+            ctypes.POINTER(_PackedEvalResults),
+        ]
+        self.lib.bre_poll_eval_results_packed.restype = c_int
+        self.lib.bre_free_packed_eval_results.argtypes = [ctypes.POINTER(_PackedEvalResults)]
+        self.lib.bre_free_packed_eval_results.restype = None
+        self.lib.bre_get_rule_metadata_table.argtypes = [
+            c_void_p,
+            ctypes.POINTER(ctypes.POINTER(_RuleMetadata)),
             ctypes.POINTER(c_size_t),
         ]
-        self.lib.bre_poll_eval_results_batch.restype = c_int
-        self.lib.bre_free_eval_result.argtypes = [ctypes.POINTER(_EvalResult)]
-        self.lib.bre_free_eval_result.restype = None
-        self.lib.bre_free_eval_results_batch.argtypes = [ctypes.POINTER(_EvalResult), c_size_t]
-        self.lib.bre_free_eval_results_batch.restype = None
+        self.lib.bre_get_rule_metadata_table.restype = c_int
+        self.lib.bre_free_rule_metadata_table.argtypes = [ctypes.POINTER(_RuleMetadata), c_size_t]
+        self.lib.bre_free_rule_metadata_table.restype = None
         self.lib.bre_metrics_snapshot.argtypes = [
             c_void_p,
             ctypes.POINTER(ctypes.c_uint64),
@@ -151,6 +157,34 @@ class BifroRE:
         self.lib.bre_metrics_snapshot.restype = c_int
         self.lib.bre_set_log_callback.argtypes = [c_void_p, c_void_p, c_int]
         self.lib.bre_set_log_callback.restype = c_int
+
+    def _load_rule_metadata(self):
+        out_metadata = ctypes.POINTER(_RuleMetadata)()
+        out_len = c_size_t(0)
+        rc = self.lib.bre_get_rule_metadata_table(
+            self.handle,
+            ctypes.byref(out_metadata),
+            ctypes.byref(out_len),
+        )
+        if rc != 0:
+            raise RuntimeError("Failed to load rule metadata table")
+        metadata = {}
+        try:
+            for idx in range(out_len.value):
+                record = out_metadata[idx]
+                destinations_raw = (
+                    record.destinations_json.decode("utf-8")
+                    if record.destinations_json
+                    else "[]"
+                )
+                try:
+                    destinations = json.loads(destinations_raw)
+                except Exception:
+                    destinations = []
+                metadata[int(record.rule_index)] = destinations
+        finally:
+            self.lib.bre_free_rule_metadata_table(out_metadata, out_len.value)
+        return metadata
 
     async def __aenter__(self):
         await self._ensure_started()
@@ -296,41 +330,32 @@ class BifroRE:
     def _drain_eval_results(self):
         if not self.handle:
             return
-        out_results = ctypes.POINTER(_EvalResult)()
-        out_len = c_size_t(0)
-        rc = self.lib.bre_poll_eval_results_batch(
+        out_results = _PackedEvalResults()
+        rc = self.lib.bre_poll_eval_results_packed(
             self.handle,
             0,
             ctypes.byref(out_results),
-            ctypes.byref(out_len),
         )
-        if rc != 1 or out_len.value == 0:
+        if rc != 1 or out_results.len == 0:
             return
         try:
-            for idx in range(out_len.value):
-                result = out_results[idx]
-                rule_id = result.rule_id.decode("utf-8") if result.rule_id else ""
-                payload = (
-                    ctypes.string_at(result.payload, result.payload_len)
-                    if result.payload and result.payload_len > 0
-                    else b""
-                )
-                destinations_raw = (
-                    result.destinations_json.decode("utf-8")
-                    if result.destinations_json
-                    else "[]"
-                )
-                try:
-                    destinations = json.loads(destinations_raw)
-                except Exception:
-                    destinations = []
-                message = EvalMessage(rule_id=rule_id, payload=payload, destinations=destinations)
+            payload_blob = (
+                ctypes.string_at(out_results.payload_data, out_results.payload_data_len)
+                if out_results.payload_data and out_results.payload_data_len > 0
+                else b""
+            )
+            for idx in range(out_results.len):
+                rule_index = int(out_results.rule_indices[idx])
+                payload_offset = int(out_results.payload_offsets[idx])
+                payload_length = int(out_results.payload_lengths[idx])
+                payload = payload_blob[payload_offset : payload_offset + payload_length]
+                destinations = self._rule_metadata.get(rule_index, [])
                 if self._queue is not None:
-                    self._queue.put_nowait(message)
+                    self._queue.put_nowait((rule_index, payload, destinations))
         finally:
-            self.lib.bre_free_eval_results_batch(out_results, out_len.value)
+            self.lib.bre_free_packed_eval_results(ctypes.byref(out_results))
 
-        if out_len.value > 0 and self._loop is not None:
+        if out_results.len > 0 and self._loop is not None:
             self._loop.call_soon(self._drain_eval_results)
 
     async def stop(self):

@@ -4,14 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct BifroEvalResult {
-    uint16_t rule_index;
-    unsigned char *payload;
-    size_t payload_len;
-};
-
 struct BifroPackedEvalResults {
-    uint16_t *rule_indices;
+    uint32_t *rule_indices;
     uint32_t *payload_offsets;
     uint32_t *payload_lengths;
     unsigned char *payload_data;
@@ -50,12 +44,6 @@ extern int bre_start_mqtt(
     jboolean multi_nci,
     void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
     void *user_data);
-extern int bre_poll_eval_results_batch(
-    void *engine,
-    uint32_t timeout_millis,
-    struct BifroEvalResult **out_results,
-    size_t *out_len);
-extern void bre_free_eval_results_batch(struct BifroEvalResult *results, size_t len);
 extern int bre_poll_eval_results_packed(
     void *engine,
     uint32_t timeout_millis,
@@ -429,29 +417,9 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
         return NULL;
     }
 
-    jint *rule_index_buffer = (jint *)calloc(results.len, sizeof(jint));
-    jint *offset_buffer = (jint *)calloc(results.len, sizeof(jint));
-    jint *length_buffer = (jint *)calloc(results.len, sizeof(jint));
-    if (rule_index_buffer == NULL || offset_buffer == NULL || length_buffer == NULL) {
-        free(rule_index_buffer);
-        free(offset_buffer);
-        free(length_buffer);
-        (*env)->DeleteLocalRef(env, rule_indexes);
-        (*env)->DeleteLocalRef(env, payload_offsets);
-        (*env)->DeleteLocalRef(env, payload_lengths);
-        (*env)->DeleteLocalRef(env, payload_data);
-        bre_free_packed_eval_results(&results);
-        return NULL;
-    }
-
-    for (size_t i = 0; i < results.len; i++) {
-        rule_index_buffer[i] = (jint)results.rule_indices[i];
-        offset_buffer[i] = (jint)results.payload_offsets[i];
-        length_buffer[i] = (jint)results.payload_lengths[i];
-    }
-    (*env)->SetIntArrayRegion(env, rule_indexes, 0, (jsize)results.len, rule_index_buffer);
-    (*env)->SetIntArrayRegion(env, payload_offsets, 0, (jsize)results.len, offset_buffer);
-    (*env)->SetIntArrayRegion(env, payload_lengths, 0, (jsize)results.len, length_buffer);
+    (*env)->SetIntArrayRegion(env, rule_indexes, 0, (jsize)results.len, (const jint *)results.rule_indices);
+    (*env)->SetIntArrayRegion(env, payload_offsets, 0, (jsize)results.len, (const jint *)results.payload_offsets);
+    (*env)->SetIntArrayRegion(env, payload_lengths, 0, (jsize)results.len, (const jint *)results.payload_lengths);
     if (results.payload_data_len > 0) {
         (*env)->SetByteArrayRegion(
             env,
@@ -461,9 +429,6 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             (const jbyte *)results.payload_data
         );
     }
-    free(rule_index_buffer);
-    free(offset_buffer);
-    free(length_buffer);
 
     jobject batch = (*env)->NewObject(
         env,

@@ -10,8 +10,8 @@ async def main():
         port=1883,
         client_count=1,
     ) as stream:
-        async for message in stream:
-            print(f"rule_id={message.rule_id} destinations={message.destinations}")
+        async for rule_index, payload, destinations in stream:
+            print(f"rule_index={rule_index} destinations={destinations} payload={payload.decode('utf-8', errors='replace')}")
 
 
 if __name__ == "__main__":

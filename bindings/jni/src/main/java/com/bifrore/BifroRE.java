@@ -11,7 +11,6 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 public final class BifroRE implements AutoCloseable {
@@ -40,16 +39,8 @@ public final class BifroRE implements AutoCloseable {
     public static final int PAYLOAD_JSON = 1;
     public static final int PAYLOAD_PROTOBUF = 2;
 
-    public static final class EvalResult {
-        public final int ruleIndex;
-        public final byte[] payload;
-        public final RuleMetadata metadata;
-
-        EvalResult(int ruleIndex, byte[] payload, RuleMetadata metadata) {
-            this.ruleIndex = ruleIndex;
-            this.payload = payload;
-            this.metadata = metadata;
-        }
+    public interface MessageHandler {
+        void onMessage(int ruleIndex, byte[] payload, RuleMetadata metadata);
     }
 
     public static final class RuleMetadata {
@@ -111,7 +102,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile boolean pollRunning;
     private volatile boolean disconnecting;
     private volatile Thread pollThread;
-    private volatile Consumer<EvalResult> nextHandler;
+    private volatile MessageHandler nextHandler;
     private volatile Executor nextExecutor;
 
     public BifroRE(BifroREOptions options) {
@@ -229,11 +220,11 @@ public final class BifroRE implements AutoCloseable {
         return nativeDisconnect(handle);
     }
 
-    public void onNext(Consumer<EvalResult> handler) {
+    public void onNext(MessageHandler handler) {
         onNext(handler, null);
     }
 
-    public synchronized void onNext(Consumer<EvalResult> handler, Executor executor) {
+    public synchronized void onNext(MessageHandler handler, Executor executor) {
         this.nextHandler = handler;
         this.nextExecutor = executor != null ? executor : defaultMessageExecutor;
         if (handler != null && mqttStarted) {
@@ -318,7 +309,7 @@ public final class BifroRE implements AutoCloseable {
                 if (batch.ruleIndexes.length == 0) {
                     continue;
                 }
-                Consumer<EvalResult> handler = nextHandler;
+                MessageHandler handler = nextHandler;
                 Executor executor = nextExecutor;
                 if (handler != null && executor != null) {
                     for (int i = 0; i < batch.ruleIndexes.length; i++) {
@@ -331,10 +322,9 @@ public final class BifroRE implements AutoCloseable {
                             payloadOffset,
                             payloadOffset + payloadLength
                         );
-                        EvalResult result = new EvalResult(ruleIndex, payload, metadata);
                         Runnable task = () -> {
                             try {
-                                handler.accept(result);
+                                handler.onMessage(ruleIndex, payload, metadata);
                             } finally {
                                 callbackCompletedCount.incrementAndGet();
                             }
