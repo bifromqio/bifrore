@@ -1,6 +1,5 @@
 package com.bifrore;
 
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executor;
@@ -40,7 +39,7 @@ public final class BifroRE implements AutoCloseable {
     public static final int PAYLOAD_PROTOBUF = 2;
 
     public interface MessageHandler {
-        void onMessage(int ruleIndex, byte[] payload, RuleMetadata metadata);
+        void onMessage(int ruleIndex, byte[] payloadBlob, int offset, int length, RuleMetadata metadata);
     }
 
     public static final class RuleMetadata {
@@ -317,14 +316,15 @@ public final class BifroRE implements AutoCloseable {
                         int payloadOffset = batch.payloadOffsets[i];
                         int payloadLength = batch.payloadLengths[i];
                         RuleMetadata metadata = metadataFor(ruleIndex);
-                        byte[] payload = Arrays.copyOfRange(
-                            batch.payloadData,
-                            payloadOffset,
-                            payloadOffset + payloadLength
-                        );
                         Runnable task = () -> {
                             try {
-                                handler.onMessage(ruleIndex, payload, metadata);
+                                handler.onMessage(
+                                    ruleIndex,
+                                    batch.payloadData,
+                                    payloadOffset,
+                                    payloadLength,
+                                    metadata
+                                );
                             } finally {
                                 callbackCompletedCount.incrementAndGet();
                             }

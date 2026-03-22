@@ -33,12 +33,12 @@ public final class App {
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         HttpServer metricsServer = startMetricsServer(registry);
         bindMetrics(engine, registry);
-        engine.onNext((ruleIndex, payload, metadata) -> {
+        engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
             System.out.println("ruleIndex=" + ruleIndex);
             if (metadata != null) {
                 System.out.println("destinations=" + metadata.destinationsJson);
             }
-            System.out.println("payload=" + prettyPayload(payload));
+            System.out.println("payload=" + prettyPayload(payloadBlob, offset, length));
         });
         engine.start();
 
@@ -50,12 +50,12 @@ public final class App {
         Thread.currentThread().join();
     }
 
-    private static String prettyPayload(byte[] payload) {
+    private static String prettyPayload(byte[] payloadBlob, int offset, int length) {
         try {
-            JsonNode node = MAPPER.readTree(payload);
+            JsonNode node = MAPPER.readTree(payloadBlob, offset, length);
             return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(node);
         } catch (Exception ignored) {
-            return new String(payload, StandardCharsets.UTF_8);
+            return new String(payloadBlob, offset, length, StandardCharsets.UTF_8);
         }
     }
 
