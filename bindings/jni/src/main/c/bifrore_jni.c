@@ -10,6 +10,15 @@ struct BifroEvalResult {
     size_t payload_len;
 };
 
+struct BifroPackedEvalResults {
+    uint16_t *rule_indices;
+    uint32_t *payload_offsets;
+    uint32_t *payload_lengths;
+    unsigned char *payload_data;
+    size_t len;
+    size_t payload_data_len;
+};
+
 struct BifroRuleMetadata {
     uint16_t rule_index;
     char *destinations_json;
@@ -47,6 +56,11 @@ extern int bre_poll_eval_results_batch(
     struct BifroEvalResult **out_results,
     size_t *out_len);
 extern void bre_free_eval_results_batch(struct BifroEvalResult *results, size_t len);
+extern int bre_poll_eval_results_packed(
+    void *engine,
+    uint32_t timeout_millis,
+    struct BifroPackedEvalResults *out_results);
+extern void bre_free_packed_eval_results(struct BifroPackedEvalResults *results);
 extern int bre_get_rule_metadata_table(
     void *engine,
     struct BifroRuleMetadata **out_metadata,
@@ -71,8 +85,8 @@ struct LogCallbackCtx {
 };
 
 struct JniClassCache {
-    jclass eval_result_cls;
-    jmethodID eval_result_ctor;
+    jclass poll_batch_cls;
+    jmethodID poll_batch_ctor;
     jclass rule_metadata_cls;
     jmethodID rule_metadata_ctor;
     jclass metrics_snapshot_cls;
@@ -94,22 +108,22 @@ static void init_jni_cache_once(void) {
         return;
     }
 
-    jclass local = (*env)->FindClass(env, "com/bifrore/BifroRE$EvalResult");
+    jclass local = (*env)->FindClass(env, "com/bifrore/BifroRE$PollBatch");
     if (local == NULL) {
         return;
     }
-    JNI_CACHE.eval_result_cls = (*env)->NewGlobalRef(env, local);
+    JNI_CACHE.poll_batch_cls = (*env)->NewGlobalRef(env, local);
     (*env)->DeleteLocalRef(env, local);
-    if (JNI_CACHE.eval_result_cls == NULL) {
+    if (JNI_CACHE.poll_batch_cls == NULL) {
         return;
     }
-    JNI_CACHE.eval_result_ctor = (*env)->GetMethodID(
+    JNI_CACHE.poll_batch_ctor = (*env)->GetMethodID(
         env,
-        JNI_CACHE.eval_result_cls,
+        JNI_CACHE.poll_batch_cls,
         "<init>",
-        "(I[BLcom/bifrore/BifroRE$RuleMetadata;)V"
+        "([I[I[I[B)V"
     );
-    if (JNI_CACHE.eval_result_ctor == NULL) {
+    if (JNI_CACHE.poll_batch_ctor == NULL) {
         return;
     }
 
@@ -367,7 +381,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     return rc;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
+JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
     JNIEnv *env,
     jclass cls,
     jlong handle,
@@ -377,44 +391,95 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
         return NULL;
     }
 
-    struct BifroEvalResult *results = NULL;
-    size_t result_len = 0;
-    int rc = bre_poll_eval_results_batch(
+    struct BifroPackedEvalResults results = {0};
+    int rc = bre_poll_eval_results_packed(
         (void *)handle,
         (uint32_t)timeout_millis,
-        &results,
-        &result_len);
-    if (rc <= 0 || results == NULL || result_len == 0) {
+        &results);
+    if (rc <= 0 || results.len == 0) {
         return NULL;
     }
     if (!ensure_jni_cache(env)) {
-        bre_free_eval_results_batch(results, result_len);
+        bre_free_packed_eval_results(&results);
         return NULL;
     }
-    jobjectArray array = (*env)->NewObjectArray(env, (jsize)result_len, JNI_CACHE.eval_result_cls, NULL);
-    if (array == NULL) {
-        bre_free_eval_results_batch(results, result_len);
+    if (results.len > (size_t)INT32_MAX || results.payload_data_len > (size_t)INT32_MAX) {
+        bre_free_packed_eval_results(&results);
         return NULL;
     }
 
-    for (size_t i = 0; i < result_len; i++) {
-        struct BifroEvalResult *result = &results[i];
-        jbyteArray payload = (*env)->NewByteArray(env, (jsize)result->payload_len);
-        if (payload != NULL && result->payload != NULL && result->payload_len > 0) {
-            (*env)->SetByteArrayRegion(env, payload, 0, (jsize)result->payload_len, (const jbyte *)result->payload);
+    jintArray rule_indexes = (*env)->NewIntArray(env, (jsize)results.len);
+    jintArray payload_offsets = (*env)->NewIntArray(env, (jsize)results.len);
+    jintArray payload_lengths = (*env)->NewIntArray(env, (jsize)results.len);
+    jbyteArray payload_data = (*env)->NewByteArray(env, (jsize)results.payload_data_len);
+    if (rule_indexes == NULL || payload_offsets == NULL || payload_lengths == NULL || payload_data == NULL) {
+        if (rule_indexes != NULL) {
+            (*env)->DeleteLocalRef(env, rule_indexes);
         }
-        jobject obj = (*env)->NewObject(env, JNI_CACHE.eval_result_cls, JNI_CACHE.eval_result_ctor, (jint)result->rule_index, payload, NULL);
-        if (obj != NULL) {
-            (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
-            (*env)->DeleteLocalRef(env, obj);
+        if (payload_offsets != NULL) {
+            (*env)->DeleteLocalRef(env, payload_offsets);
         }
-        if (payload) {
-            (*env)->DeleteLocalRef(env, payload);
+        if (payload_lengths != NULL) {
+            (*env)->DeleteLocalRef(env, payload_lengths);
         }
+        if (payload_data != NULL) {
+            (*env)->DeleteLocalRef(env, payload_data);
+        }
+        bre_free_packed_eval_results(&results);
+        return NULL;
     }
 
-    bre_free_eval_results_batch(results, result_len);
-    return array;
+    jint *rule_index_buffer = (jint *)calloc(results.len, sizeof(jint));
+    jint *offset_buffer = (jint *)calloc(results.len, sizeof(jint));
+    jint *length_buffer = (jint *)calloc(results.len, sizeof(jint));
+    if (rule_index_buffer == NULL || offset_buffer == NULL || length_buffer == NULL) {
+        free(rule_index_buffer);
+        free(offset_buffer);
+        free(length_buffer);
+        (*env)->DeleteLocalRef(env, rule_indexes);
+        (*env)->DeleteLocalRef(env, payload_offsets);
+        (*env)->DeleteLocalRef(env, payload_lengths);
+        (*env)->DeleteLocalRef(env, payload_data);
+        bre_free_packed_eval_results(&results);
+        return NULL;
+    }
+
+    for (size_t i = 0; i < results.len; i++) {
+        rule_index_buffer[i] = (jint)results.rule_indices[i];
+        offset_buffer[i] = (jint)results.payload_offsets[i];
+        length_buffer[i] = (jint)results.payload_lengths[i];
+    }
+    (*env)->SetIntArrayRegion(env, rule_indexes, 0, (jsize)results.len, rule_index_buffer);
+    (*env)->SetIntArrayRegion(env, payload_offsets, 0, (jsize)results.len, offset_buffer);
+    (*env)->SetIntArrayRegion(env, payload_lengths, 0, (jsize)results.len, length_buffer);
+    if (results.payload_data_len > 0) {
+        (*env)->SetByteArrayRegion(
+            env,
+            payload_data,
+            0,
+            (jsize)results.payload_data_len,
+            (const jbyte *)results.payload_data
+        );
+    }
+    free(rule_index_buffer);
+    free(offset_buffer);
+    free(length_buffer);
+
+    jobject batch = (*env)->NewObject(
+        env,
+        JNI_CACHE.poll_batch_cls,
+        JNI_CACHE.poll_batch_ctor,
+        rule_indexes,
+        payload_offsets,
+        payload_lengths,
+        payload_data
+    );
+    (*env)->DeleteLocalRef(env, rule_indexes);
+    (*env)->DeleteLocalRef(env, payload_offsets);
+    (*env)->DeleteLocalRef(env, payload_lengths);
+    (*env)->DeleteLocalRef(env, payload_data);
+    bre_free_packed_eval_results(&results);
+    return batch;
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(

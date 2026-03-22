@@ -292,6 +292,16 @@ pub struct BifroEvalResult {
 }
 
 #[repr(C)]
+pub struct BifroPackedEvalResults {
+    pub rule_indices: *mut u16,
+    pub payload_offsets: *mut u32,
+    pub payload_lengths: *mut u32,
+    pub payload_data: *mut u8,
+    pub len: size_t,
+    pub payload_data_len: size_t,
+}
+
+#[repr(C)]
 pub struct BifroRuleMetadata {
     pub rule_index: u16,
     pub destinations_json: *mut c_char,
@@ -335,6 +345,33 @@ fn free_eval_result_inner(result_ref: &mut BifroEvalResult) {
             result_ref.payload = ptr::null_mut();
             result_ref.payload_len = 0;
         }
+    }
+}
+
+fn free_packed_eval_results_inner(results: &mut BifroPackedEvalResults) {
+    unsafe {
+        if !results.rule_indices.is_null() && results.len > 0 {
+            let _ = Vec::from_raw_parts(results.rule_indices, results.len, results.len);
+            results.rule_indices = ptr::null_mut();
+        }
+        if !results.payload_offsets.is_null() && results.len > 0 {
+            let _ = Vec::from_raw_parts(results.payload_offsets, results.len, results.len);
+            results.payload_offsets = ptr::null_mut();
+        }
+        if !results.payload_lengths.is_null() && results.len > 0 {
+            let _ = Vec::from_raw_parts(results.payload_lengths, results.len, results.len);
+            results.payload_lengths = ptr::null_mut();
+        }
+        if !results.payload_data.is_null() && results.payload_data_len > 0 {
+            let _ = Vec::from_raw_parts(
+                results.payload_data,
+                results.payload_data_len,
+                results.payload_data_len,
+            );
+            results.payload_data = ptr::null_mut();
+        }
+        results.len = 0;
+        results.payload_data_len = 0;
     }
 }
 
@@ -868,6 +905,114 @@ pub extern "C" fn bre_poll_eval_results_batch(
 }
 
 #[no_mangle]
+pub extern "C" fn bre_poll_eval_results_packed(
+    engine: *mut BifroRE,
+    timeout_millis: u32,
+    out_results: *mut BifroPackedEvalResults,
+) -> c_int {
+    if engine.is_null() || out_results.is_null() {
+        return -1;
+    }
+    unsafe {
+        *out_results = BifroPackedEvalResults {
+            rule_indices: ptr::null_mut(),
+            payload_offsets: ptr::null_mut(),
+            payload_lengths: ptr::null_mut(),
+            payload_data: ptr::null_mut(),
+            len: 0,
+            payload_data_len: 0,
+        };
+    }
+
+    let engine = unsafe { &mut *engine };
+    let Some(receiver) = engine.eval_result_rx.as_ref() else {
+        return -2;
+    };
+    let max_results = engine.poll_batch_limit.max(1);
+
+    let first_record = if timeout_millis == 0 {
+        match receiver.try_recv() {
+            Ok(value) => value,
+            Err(flume::TryRecvError::Empty) => {
+                engine.notify_pending.store(false, Ordering::Release);
+                if !receiver.is_empty() {
+                    maybe_notify_eval_ready(engine.notify_write_fd, &engine.notify_pending);
+                }
+                return 0;
+            }
+            Err(flume::TryRecvError::Disconnected) => return -3,
+        }
+    } else if timeout_millis == u32::MAX {
+        match receiver.recv() {
+            Ok(value) => value,
+            Err(_) => return -3,
+        }
+    } else {
+        match receiver.recv_timeout(Duration::from_millis(timeout_millis as u64)) {
+            Ok(value) => value,
+            Err(flume::RecvTimeoutError::Timeout) => return 0,
+            Err(flume::RecvTimeoutError::Disconnected) => return -3,
+        }
+    };
+
+    let mut records = Vec::with_capacity(max_results);
+    let mut total_payload_len = first_record.payload.len();
+    records.push(first_record);
+
+    while records.len() < max_results {
+        match receiver.try_recv() {
+            Ok(record) => {
+                total_payload_len += record.payload.len();
+                records.push(record);
+            }
+            Err(flume::TryRecvError::Empty) => break,
+            Err(flume::TryRecvError::Disconnected) => break,
+        }
+    }
+
+    if receiver.is_empty() {
+        engine.notify_pending.store(false, Ordering::Release);
+    }
+
+    let mut rule_indices = Vec::with_capacity(records.len());
+    let mut payload_offsets = Vec::with_capacity(records.len());
+    let mut payload_lengths = Vec::with_capacity(records.len());
+    let mut payload_data = Vec::with_capacity(total_payload_len);
+
+    for record in records {
+        let offset = payload_data.len() as u32;
+        let payload_len = record.payload.len() as u32;
+        rule_indices.push(record.rule_index);
+        payload_offsets.push(offset);
+        payload_lengths.push(payload_len);
+        payload_data.extend_from_slice(&record.payload);
+    }
+
+    let len = rule_indices.len();
+    let mut rule_indices = rule_indices.into_boxed_slice();
+    let mut payload_offsets = payload_offsets.into_boxed_slice();
+    let mut payload_lengths = payload_lengths.into_boxed_slice();
+    let payload_data_len = payload_data.len();
+    let mut payload_data = payload_data.into_boxed_slice();
+
+    unsafe {
+        *out_results = BifroPackedEvalResults {
+            rule_indices: rule_indices.as_mut_ptr(),
+            payload_offsets: payload_offsets.as_mut_ptr(),
+            payload_lengths: payload_lengths.as_mut_ptr(),
+            payload_data: payload_data.as_mut_ptr(),
+            len,
+            payload_data_len,
+        };
+    }
+    std::mem::forget(rule_indices);
+    std::mem::forget(payload_offsets);
+    std::mem::forget(payload_lengths);
+    std::mem::forget(payload_data);
+    1
+}
+
+#[no_mangle]
 pub extern "C" fn bre_free_eval_result(result: *mut BifroEvalResult) {
     if result.is_null() {
         return;
@@ -887,6 +1032,15 @@ pub extern "C" fn bre_free_eval_results_batch(results: *mut BifroEvalResult, len
             free_eval_result_inner(result);
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn bre_free_packed_eval_results(results: *mut BifroPackedEvalResults) {
+    if results.is_null() {
+        return;
+    }
+    let results = unsafe { &mut *results };
+    free_packed_eval_results_inner(results);
 }
 
 #[no_mangle]

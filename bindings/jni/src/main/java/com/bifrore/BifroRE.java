@@ -1,5 +1,6 @@
 package com.bifrore;
 
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executor;
@@ -58,6 +59,20 @@ public final class BifroRE implements AutoCloseable {
         RuleMetadata(int ruleIndex, String destinationsJson) {
             this.ruleIndex = ruleIndex;
             this.destinationsJson = destinationsJson;
+        }
+    }
+
+    static final class PollBatch {
+        final int[] ruleIndexes;
+        final int[] payloadOffsets;
+        final int[] payloadLengths;
+        final byte[] payloadData;
+
+        PollBatch(int[] ruleIndexes, int[] payloadOffsets, int[] payloadLengths, byte[] payloadData) {
+            this.ruleIndexes = ruleIndexes;
+            this.payloadOffsets = payloadOffsets;
+            this.payloadLengths = payloadLengths;
+            this.payloadData = payloadData;
         }
     }
 
@@ -296,33 +311,39 @@ public final class BifroRE implements AutoCloseable {
         pollRunning = true;
         pollThread = new Thread(() -> {
             while (pollRunning && handle != 0) {
-                EvalResult[] results = nativePollResultsBatch(handle, -1);
-                if (results == null) {
+                PollBatch batch = nativePollResultsBatch(handle, -1);
+                if (batch == null) {
                     break;
                 }
-                if (results.length == 0) {
+                if (batch.ruleIndexes.length == 0) {
                     continue;
                 }
                 Consumer<EvalResult> handler = nextHandler;
                 Executor executor = nextExecutor;
                 if (handler != null && executor != null) {
-                    for (EvalResult result : results) {
-                        if (result != null) {
-                            RuleMetadata metadata = metadataFor(result.ruleIndex);
-                            EvalResult enriched = new EvalResult(result.ruleIndex, result.payload, metadata);
-                            Runnable task = () -> {
-                                try {
-                                    handler.accept(enriched);
-                                } finally {
-                                    callbackCompletedCount.incrementAndGet();
-                                }
-                            };
+                    for (int i = 0; i < batch.ruleIndexes.length; i++) {
+                        int ruleIndex = batch.ruleIndexes[i];
+                        int payloadOffset = batch.payloadOffsets[i];
+                        int payloadLength = batch.payloadLengths[i];
+                        RuleMetadata metadata = metadataFor(ruleIndex);
+                        byte[] payload = Arrays.copyOfRange(
+                            batch.payloadData,
+                            payloadOffset,
+                            payloadOffset + payloadLength
+                        );
+                        EvalResult result = new EvalResult(ruleIndex, payload, metadata);
+                        Runnable task = () -> {
                             try {
-                                executor.execute(task);
-                                callbackSubmittedCount.incrementAndGet();
-                            } catch (RejectedExecutionException ignored) {
-                                // rejection is already logged and counted by the default executor handler
+                                handler.accept(result);
+                            } finally {
+                                callbackCompletedCount.incrementAndGet();
                             }
+                        };
+                        try {
+                            executor.execute(task);
+                            callbackSubmittedCount.incrementAndGet();
+                        } catch (RejectedExecutionException ignored) {
+                            // rejection is already logged and counted by the default executor handler
                         }
                     }
                 }
@@ -475,7 +496,7 @@ public final class BifroRE implements AutoCloseable {
         boolean multiNci,
         long cbHandle
     );
-    private static native EvalResult[] nativePollResultsBatch(long handle, int timeoutMillis);
+    private static native PollBatch nativePollResultsBatch(long handle, int timeoutMillis);
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);
