@@ -15,7 +15,8 @@ struct BifroPackedEvalResults {
 
 struct BifroRuleMetadata {
     uint16_t rule_index;
-    char *destinations_json;
+    char **destinations;
+    size_t destinations_len;
 };
 
 // FFI functions from Rust cdylib
@@ -128,7 +129,7 @@ static void init_jni_cache_once(void) {
         env,
         JNI_CACHE.rule_metadata_cls,
         "<init>",
-        "(ILjava/lang/String;)V"
+        "(I[Ljava/lang/String;)V"
     );
     if (JNI_CACHE.rule_metadata_ctor == NULL) {
         return;
@@ -555,10 +556,40 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTab
         bre_free_rule_metadata_table(metadata, metadata_len);
         return NULL;
     }
+    jclass string_cls = (*env)->FindClass(env, "java/lang/String");
+    if (string_cls == NULL) {
+        bre_free_rule_metadata_table(metadata, metadata_len);
+        return NULL;
+    }
     for (size_t i = 0; i < metadata_len; i++) {
         struct BifroRuleMetadata *record = &metadata[i];
-        jstring destinations = (*env)->NewStringUTF(env, record->destinations_json ? record->destinations_json : "[]");
-        jobject obj = (*env)->NewObject(env, JNI_CACHE.rule_metadata_cls, JNI_CACHE.rule_metadata_ctor, (jint)record->rule_index, destinations);
+        jobjectArray destinations = (*env)->NewObjectArray(
+            env,
+            (jsize)record->destinations_len,
+            string_cls,
+            NULL
+        );
+        if (destinations != NULL) {
+            for (size_t j = 0; j < record->destinations_len; j++) {
+                jstring destination = (*env)->NewStringUTF(
+                    env,
+                    (record->destinations != NULL && record->destinations[j] != NULL)
+                        ? record->destinations[j]
+                        : ""
+                );
+                if (destination != NULL) {
+                    (*env)->SetObjectArrayElement(env, destinations, (jsize)j, destination);
+                    (*env)->DeleteLocalRef(env, destination);
+                }
+            }
+        }
+        jobject obj = (*env)->NewObject(
+            env,
+            JNI_CACHE.rule_metadata_cls,
+            JNI_CACHE.rule_metadata_ctor,
+            (jint)record->rule_index,
+            destinations
+        );
         if (obj != NULL) {
             (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
             (*env)->DeleteLocalRef(env, obj);
@@ -567,6 +598,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTab
             (*env)->DeleteLocalRef(env, destinations);
         }
     }
+    (*env)->DeleteLocalRef(env, string_cls);
     bre_free_rule_metadata_table(metadata, metadata_len);
     return array;
 }

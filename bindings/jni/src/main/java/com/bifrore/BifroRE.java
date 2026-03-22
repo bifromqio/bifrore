@@ -44,11 +44,11 @@ public final class BifroRE implements AutoCloseable {
 
     public static final class RuleMetadata {
         public final int ruleIndex;
-        public final String destinationsJson;
+        public final String[] destinations;
 
-        RuleMetadata(int ruleIndex, String destinationsJson) {
+        RuleMetadata(int ruleIndex, String[] destinations) {
             this.ruleIndex = ruleIndex;
-            this.destinationsJson = destinationsJson;
+            this.destinations = destinations;
         }
     }
 

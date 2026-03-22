@@ -297,7 +297,8 @@ pub struct BifroPackedEvalResults {
 #[repr(C)]
 pub struct BifroRuleMetadata {
     pub rule_index: u16,
-    pub destinations_json: *mut c_char,
+    pub destinations: *mut *mut c_char,
+    pub destinations_len: size_t,
 }
 
 fn free_packed_eval_results_inner(results: &mut BifroPackedEvalResults) {
@@ -328,24 +329,41 @@ fn free_packed_eval_results_inner(results: &mut BifroPackedEvalResults) {
 }
 
 fn to_ffi_rule_metadata(metadata: RuleMetadata) -> BifroRuleMetadata {
-    let destinations_json = CString::new(
-        serde_json::to_string(&metadata.destinations)
-            .unwrap_or_else(|_| "[]".to_string())
-            .replace('\0', "\\0"),
-    )
-    .unwrap_or_else(|_| CString::new("[]").unwrap())
-    .into_raw();
-    BifroRuleMetadata {
+    let destinations = metadata
+        .destinations
+        .into_iter()
+        .map(|destination| {
+            CString::new(destination.replace('\0', "\\0"))
+                .unwrap_or_else(|_| CString::new("").unwrap())
+                .into_raw()
+        })
+        .collect::<Vec<_>>();
+    let destinations_len = destinations.len();
+    let mut destinations = destinations.into_boxed_slice();
+    let result = BifroRuleMetadata {
         rule_index: metadata.rule_index as u16,
-        destinations_json,
-    }
+        destinations: destinations.as_mut_ptr(),
+        destinations_len,
+    };
+    std::mem::forget(destinations);
+    result
 }
 
 fn free_rule_metadata_inner(metadata_ref: &mut BifroRuleMetadata) {
     unsafe {
-        if !metadata_ref.destinations_json.is_null() {
-            let _ = CString::from_raw(metadata_ref.destinations_json);
-            metadata_ref.destinations_json = ptr::null_mut();
+        if !metadata_ref.destinations.is_null() && metadata_ref.destinations_len > 0 {
+            let destinations = Vec::from_raw_parts(
+                metadata_ref.destinations,
+                metadata_ref.destinations_len,
+                metadata_ref.destinations_len,
+            );
+            for destination in destinations {
+                if !destination.is_null() {
+                    let _ = CString::from_raw(destination);
+                }
+            }
+            metadata_ref.destinations = ptr::null_mut();
+            metadata_ref.destinations_len = 0;
         }
     }
 }

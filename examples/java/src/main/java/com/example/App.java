@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
 
 public final class App {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -36,7 +37,7 @@ public final class App {
         engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
             System.out.println("ruleIndex=" + ruleIndex);
             if (metadata != null) {
-                System.out.println("destinations=" + metadata.destinationsJson);
+                System.out.println("destinations=" + Arrays.toString(metadata.destinations));
             }
             System.out.println("payload=" + prettyPayload(payloadBlob, offset, length));
         });

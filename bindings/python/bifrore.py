@@ -19,7 +19,8 @@ class _PackedEvalResults(ctypes.Structure):
 class _RuleMetadata(ctypes.Structure):
     _fields_ = [
         ("rule_index", c_uint16),
-        ("destinations_json", c_char_p),
+        ("destinations", ctypes.POINTER(c_char_p)),
+        ("destinations_len", c_size_t),
     ]
 
 class BifroRE:
@@ -172,15 +173,11 @@ class BifroRE:
         try:
             for idx in range(out_len.value):
                 record = out_metadata[idx]
-                destinations_raw = (
-                    record.destinations_json.decode("utf-8")
-                    if record.destinations_json
-                    else "[]"
-                )
-                try:
-                    destinations = json.loads(destinations_raw)
-                except Exception:
-                    destinations = []
+                destinations = []
+                if record.destinations and record.destinations_len > 0:
+                    for item_idx in range(record.destinations_len):
+                        item = record.destinations[item_idx]
+                        destinations.append(item.decode("utf-8") if item else "")
                 metadata[int(record.rule_index)] = destinations
         finally:
             self.lib.bre_free_rule_metadata_table(out_metadata, out_len.value)
