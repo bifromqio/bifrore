@@ -11,6 +11,8 @@ public final class BifroREOptions {
     public String clientIdsPath = "./client_ids";
     public int callbackQueueCapacity = 1024;
     public int pollBatchLimit = 64;
+    public int directPollSlotCount = 4;
+    public int directPayloadBufferBytes = 1024 * 1024;
 
     public BifroREOptions ruleJsonPath(String ruleJsonPath) {
         this.ruleJsonPath = ruleJsonPath;
@@ -59,6 +61,16 @@ public final class BifroREOptions {
 
     public BifroREOptions pollBatchLimit(int pollBatchLimit) {
         this.pollBatchLimit = pollBatchLimit;
+        return this;
+    }
+
+    public BifroREOptions directPollSlotCount(int directPollSlotCount) {
+        this.directPollSlotCount = directPollSlotCount;
+        return this;
+    }
+
+    public BifroREOptions directPayloadBufferBytes(int directPayloadBufferBytes) {
+        this.directPayloadBufferBytes = directPayloadBufferBytes;
         return this;
     }
 }

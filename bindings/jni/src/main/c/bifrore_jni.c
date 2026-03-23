@@ -82,10 +82,119 @@ struct JniClassCache {
     jmethodID metrics_snapshot_ctor;
 };
 
+struct DirectPendingBatch {
+    void *engine;
+    struct BifroPackedEvalResults results;
+    size_t next_index;
+    struct DirectPendingBatch *next;
+};
+
 static struct JniClassCache JNI_CACHE = {0};
 static JavaVM *JNI_CACHE_JVM = NULL;
 static pthread_once_t JNI_CACHE_ONCE = PTHREAD_ONCE_INIT;
 static int JNI_CACHE_INIT_OK = 0;
+static pthread_mutex_t DIRECT_PENDING_LOCK = PTHREAD_MUTEX_INITIALIZER;
+static struct DirectPendingBatch *DIRECT_PENDING_HEAD = NULL;
+
+static struct DirectPendingBatch *find_pending_batch_locked(void *engine) {
+    struct DirectPendingBatch *current = DIRECT_PENDING_HEAD;
+    while (current != NULL) {
+        if (current->engine == engine) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
+static void clear_pending_batch_locked(void *engine) {
+    struct DirectPendingBatch *previous = NULL;
+    struct DirectPendingBatch *current = DIRECT_PENDING_HEAD;
+    while (current != NULL) {
+        if (current->engine == engine) {
+            if (previous == NULL) {
+                DIRECT_PENDING_HEAD = current->next;
+            } else {
+                previous->next = current->next;
+            }
+            bre_free_packed_eval_results(&current->results);
+            free(current);
+            return;
+        }
+        previous = current;
+        current = current->next;
+    }
+}
+
+static void clear_pending_batch(void *engine) {
+    pthread_mutex_lock(&DIRECT_PENDING_LOCK);
+    clear_pending_batch_locked(engine);
+    pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
+}
+
+static struct DirectPendingBatch *store_pending_batch_locked(
+    void *engine,
+    struct BifroPackedEvalResults *results) {
+    struct DirectPendingBatch *batch = (struct DirectPendingBatch *)calloc(1, sizeof(struct DirectPendingBatch));
+    if (batch == NULL) {
+        return NULL;
+    }
+    batch->engine = engine;
+    batch->results = *results;
+    batch->next_index = 0;
+    batch->next = DIRECT_PENDING_HEAD;
+    DIRECT_PENDING_HEAD = batch;
+    results->rule_indices = NULL;
+    results->payload_offsets = NULL;
+    results->payload_lengths = NULL;
+    results->payload_data = NULL;
+    results->len = 0;
+    results->payload_data_len = 0;
+    return batch;
+}
+
+static int copy_pending_batch_to_direct_buffers_locked(
+    struct DirectPendingBatch *batch,
+    uint32_t *header_ptr,
+    size_t header_capacity_ints,
+    unsigned char *payload_ptr,
+    size_t payload_capacity_bytes) {
+    size_t header_capacity_records = header_capacity_ints / 3;
+    if (batch->next_index >= batch->results.len) {
+        return 0;
+    }
+    if (header_capacity_records == 0) {
+        return -4;
+    }
+    size_t first_length = (size_t)batch->results.payload_lengths[batch->next_index];
+    if (first_length > payload_capacity_bytes) {
+        return -5;
+    }
+
+    size_t emitted = 0;
+    size_t payload_offset = 0;
+    while (batch->next_index < batch->results.len && emitted < header_capacity_records) {
+        size_t idx = batch->next_index;
+        size_t payload_length = (size_t)batch->results.payload_lengths[idx];
+        if (payload_offset + payload_length > payload_capacity_bytes) {
+            break;
+        }
+        header_ptr[emitted * 3] = batch->results.rule_indices[idx];
+        header_ptr[emitted * 3 + 1] = (uint32_t)payload_offset;
+        header_ptr[emitted * 3 + 2] = batch->results.payload_lengths[idx];
+        if (payload_length > 0) {
+            memcpy(
+                payload_ptr + payload_offset,
+                batch->results.payload_data + batch->results.payload_offsets[idx],
+                payload_length
+            );
+        }
+        payload_offset += payload_length;
+        emitted += 1;
+        batch->next_index += 1;
+    }
+    return (int)emitted;
+}
 
 static void init_jni_cache_once(void) {
     if (JNI_CACHE_JVM == NULL) {
@@ -281,6 +390,7 @@ JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeDestroy(JNIEnv *env, jclas
     (void)env;
     (void)cls;
     if (handle != 0) {
+        clear_pending_batch((void *)handle);
         bre_destroy((void *)handle);
     }
 }
@@ -446,6 +556,76 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
     (*env)->DeleteLocalRef(env, payload_data);
     bre_free_packed_eval_results(&results);
     return batch;
+}
+
+JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
+    JNIEnv *env,
+    jclass cls,
+    jlong handle,
+    jint timeout_millis,
+    jobject header_buffer,
+    jobject payload_buffer) {
+    (void)cls;
+    if (handle == 0 || header_buffer == NULL || payload_buffer == NULL) {
+        return -1;
+    }
+
+    uint32_t *header_ptr = (uint32_t *)(*env)->GetDirectBufferAddress(env, header_buffer);
+    unsigned char *payload_ptr = (unsigned char *)(*env)->GetDirectBufferAddress(env, payload_buffer);
+    jlong header_capacity_bytes = (*env)->GetDirectBufferCapacity(env, header_buffer);
+    jlong payload_capacity_bytes = (*env)->GetDirectBufferCapacity(env, payload_buffer);
+    if (header_ptr == NULL || payload_ptr == NULL || header_capacity_bytes <= 0 || payload_capacity_bytes <= 0) {
+        return -1;
+    }
+    size_t header_capacity_ints = (size_t)(header_capacity_bytes / (jlong)sizeof(uint32_t));
+    void *engine = (void *)handle;
+
+    pthread_mutex_lock(&DIRECT_PENDING_LOCK);
+    struct DirectPendingBatch *pending = find_pending_batch_locked(engine);
+    if (pending != NULL) {
+        int rc = copy_pending_batch_to_direct_buffers_locked(
+            pending,
+            header_ptr,
+            header_capacity_ints,
+            payload_ptr,
+            (size_t)payload_capacity_bytes
+        );
+        if (pending->next_index >= pending->results.len) {
+            clear_pending_batch_locked(engine);
+        }
+        pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
+        return rc;
+    }
+    pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
+
+    struct BifroPackedEvalResults fetched = {0};
+    int rc = bre_poll_eval_results_packed(engine, (uint32_t)timeout_millis, &fetched);
+    if (rc <= 0 || fetched.len == 0) {
+        if (fetched.len > 0) {
+            bre_free_packed_eval_results(&fetched);
+        }
+        return rc;
+    }
+
+    pthread_mutex_lock(&DIRECT_PENDING_LOCK);
+    pending = store_pending_batch_locked(engine, &fetched);
+    if (pending == NULL) {
+        pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
+        bre_free_packed_eval_results(&fetched);
+        return -1;
+    }
+    rc = copy_pending_batch_to_direct_buffers_locked(
+        pending,
+        header_ptr,
+        header_capacity_ints,
+        payload_ptr,
+        (size_t)payload_capacity_bytes
+    );
+    if (pending->next_index >= pending->results.len) {
+        clear_pending_batch_locked(engine);
+    }
+    pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
+    return rc;
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(
