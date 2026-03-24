@@ -20,6 +20,7 @@ public final class BifroRE implements AutoCloseable {
     private static final long POLLER_JOIN_TIMEOUT_MILLIS = 5000L;
     private static final long EXECUTOR_SHUTDOWN_TIMEOUT_MILLIS = 5000L;
     private static final long DROP_WARN_EVERY = 100L;
+    private static final long DIRECT_SLOT_WAIT_MILLIS = 100L;
 
     static {
         NativeLibraryLoader.load();
@@ -458,7 +459,7 @@ public final class BifroRE implements AutoCloseable {
         }
         PollSlot slot = acquireDirectSlot();
         if (slot == null) {
-            return false;
+            return true;
         }
         int count = nativePollResultsBatchDirect(handle, -1, slot.headerBuffer, slot.payloadBuffer);
         if (count == -3) {
@@ -525,7 +526,7 @@ public final class BifroRE implements AutoCloseable {
     private PollSlot acquireDirectSlot() {
         while (pollRunning && handle != 0) {
             try {
-                PollSlot slot = freeDirectSlots.poll(100, TimeUnit.MILLISECONDS);
+                PollSlot slot = freeDirectSlots.poll(DIRECT_SLOT_WAIT_MILLIS, TimeUnit.MILLISECONDS);
                 if (slot != null) {
                     return slot;
                 }
