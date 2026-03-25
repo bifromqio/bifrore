@@ -86,74 +86,48 @@ struct DirectPendingBatch {
     void *engine;
     struct BifroPackedEvalResults results;
     size_t next_index;
-    struct DirectPendingBatch *next;
 };
 
 static struct JniClassCache JNI_CACHE = {0};
 static JavaVM *JNI_CACHE_JVM = NULL;
 static pthread_once_t JNI_CACHE_ONCE = PTHREAD_ONCE_INIT;
 static int JNI_CACHE_INIT_OK = 0;
-static pthread_mutex_t DIRECT_PENDING_LOCK = PTHREAD_MUTEX_INITIALIZER;
-static struct DirectPendingBatch *DIRECT_PENDING_HEAD = NULL;
+static struct DirectPendingBatch DIRECT_PENDING = {0};
+static int DIRECT_PENDING_ACTIVE = 0;
 
-static struct DirectPendingBatch *find_pending_batch_locked(void *engine) {
-    struct DirectPendingBatch *current = DIRECT_PENDING_HEAD;
-    while (current != NULL) {
-        if (current->engine == engine) {
-            return current;
-        }
-        current = current->next;
+static struct DirectPendingBatch *find_pending_batch(void *engine) {
+    if (DIRECT_PENDING_ACTIVE && DIRECT_PENDING.engine == engine) {
+        return &DIRECT_PENDING;
     }
     return NULL;
 }
 
-static void clear_pending_batch_locked(void *engine) {
-    struct DirectPendingBatch *previous = NULL;
-    struct DirectPendingBatch *current = DIRECT_PENDING_HEAD;
-    while (current != NULL) {
-        if (current->engine == engine) {
-            if (previous == NULL) {
-                DIRECT_PENDING_HEAD = current->next;
-            } else {
-                previous->next = current->next;
-            }
-            bre_free_packed_eval_results(&current->results);
-            free(current);
-            return;
-        }
-        previous = current;
-        current = current->next;
+static void clear_pending_batch(void *engine) {
+    if (DIRECT_PENDING_ACTIVE && DIRECT_PENDING.engine == engine) {
+        bre_free_packed_eval_results(&DIRECT_PENDING.results);
+        memset(&DIRECT_PENDING, 0, sizeof(DIRECT_PENDING));
+        DIRECT_PENDING_ACTIVE = 0;
     }
 }
 
-static void clear_pending_batch(void *engine) {
-    pthread_mutex_lock(&DIRECT_PENDING_LOCK);
-    clear_pending_batch_locked(engine);
-    pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
-}
-
-static struct DirectPendingBatch *store_pending_batch_locked(
+static struct DirectPendingBatch *store_pending_batch(
     void *engine,
     struct BifroPackedEvalResults *results) {
-    struct DirectPendingBatch *batch = (struct DirectPendingBatch *)calloc(1, sizeof(struct DirectPendingBatch));
-    if (batch == NULL) {
-        return NULL;
-    }
-    batch->engine = engine;
-    batch->results = *results;
-    batch->next_index = 0;
-    batch->next = DIRECT_PENDING_HEAD;
-    DIRECT_PENDING_HEAD = batch;
+    clear_pending_batch(engine);
+    DIRECT_PENDING.engine = engine;
+    DIRECT_PENDING.results = *results;
+    DIRECT_PENDING.next_index = 0;
+    DIRECT_PENDING_ACTIVE = 1;
     results->rule_indices = NULL;
     results->payload_offsets = NULL;
     results->payload_lengths = NULL;
     results->payload_data = NULL;
     results->len = 0;
     results->payload_data_len = 0;
-    return batch;
+    return &DIRECT_PENDING;
 }
 
-static int copy_pending_batch_to_direct_buffers_locked(
+static int copy_pending_batch_to_direct_buffers(
     struct DirectPendingBatch *batch,
     uint32_t *header_ptr,
     size_t header_capacity_ints,
@@ -564,7 +538,9 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
     jlong handle,
     jint timeout_millis,
     jobject header_buffer,
-    jobject payload_buffer) {
+    jint header_capacity_ints,
+    jobject payload_buffer,
+    jint payload_capacity_bytes) {
     (void)cls;
     if (handle == 0 || header_buffer == NULL || payload_buffer == NULL) {
         return -1;
@@ -572,31 +548,25 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
 
     uint32_t *header_ptr = (uint32_t *)(*env)->GetDirectBufferAddress(env, header_buffer);
     unsigned char *payload_ptr = (unsigned char *)(*env)->GetDirectBufferAddress(env, payload_buffer);
-    jlong header_capacity_bytes = (*env)->GetDirectBufferCapacity(env, header_buffer);
-    jlong payload_capacity_bytes = (*env)->GetDirectBufferCapacity(env, payload_buffer);
-    if (header_ptr == NULL || payload_ptr == NULL || header_capacity_bytes <= 0 || payload_capacity_bytes <= 0) {
+    if (header_ptr == NULL || payload_ptr == NULL || header_capacity_ints <= 0 || payload_capacity_bytes <= 0) {
         return -1;
     }
-    size_t header_capacity_ints = (size_t)(header_capacity_bytes / (jlong)sizeof(uint32_t));
     void *engine = (void *)handle;
 
-    pthread_mutex_lock(&DIRECT_PENDING_LOCK);
-    struct DirectPendingBatch *pending = find_pending_batch_locked(engine);
+    struct DirectPendingBatch *pending = find_pending_batch(engine);
     if (pending != NULL) {
-        int rc = copy_pending_batch_to_direct_buffers_locked(
+        int rc = copy_pending_batch_to_direct_buffers(
             pending,
             header_ptr,
-            header_capacity_ints,
+            (size_t)header_capacity_ints,
             payload_ptr,
             (size_t)payload_capacity_bytes
         );
         if (pending->next_index >= pending->results.len) {
-            clear_pending_batch_locked(engine);
+            clear_pending_batch(engine);
         }
-        pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
         return rc;
     }
-    pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
 
     struct BifroPackedEvalResults fetched = {0};
     int rc = bre_poll_eval_results_packed(engine, (uint32_t)timeout_millis, &fetched);
@@ -607,24 +577,21 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         return rc;
     }
 
-    pthread_mutex_lock(&DIRECT_PENDING_LOCK);
-    pending = store_pending_batch_locked(engine, &fetched);
+    pending = store_pending_batch(engine, &fetched);
     if (pending == NULL) {
-        pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
         bre_free_packed_eval_results(&fetched);
         return -1;
     }
-    rc = copy_pending_batch_to_direct_buffers_locked(
+    rc = copy_pending_batch_to_direct_buffers(
         pending,
         header_ptr,
-        header_capacity_ints,
+        (size_t)header_capacity_ints,
         payload_ptr,
         (size_t)payload_capacity_bytes
     );
     if (pending->next_index >= pending->results.len) {
-        clear_pending_batch_locked(engine);
+        clear_pending_batch(engine);
     }
-    pthread_mutex_unlock(&DIRECT_PENDING_LOCK);
     return rc;
 }
 
