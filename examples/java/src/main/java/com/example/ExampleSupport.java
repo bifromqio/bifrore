@@ -2,7 +2,6 @@ package com.example;
 
 import com.bifrore.BifroRE;
 import com.bifrore.BifroREMetricsView;
-import com.bifrore.BifroREOptions;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
@@ -17,41 +16,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Arrays;
 
-public final class App {
+final class ExampleSupport {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public static void main(String[] args) throws Exception {
-        BifroRE engine = new BifroRE(
-            new BifroREOptions()
-                .host("127.0.0.1")
-                .port(1883)
-                .callbackQueueCapacity(1024)
-                .pollBatchLimit(64)
-                .ruleJsonPath(extractRuleResource())
-        );
-        PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-        HttpServer metricsServer = startMetricsServer(registry);
-        bindMetrics(engine, registry);
-        engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
-            System.out.println("ruleIndex=" + ruleIndex);
-            if (metadata != null) {
-                System.out.println("destinations=" + Arrays.toString(metadata.destinations));
-            }
-            System.out.println("payload=" + prettyPayload(payloadBlob, offset, length));
-        });
-        engine.start();
+    private ExampleSupport() {}
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            metricsServer.stop(0);
-            registry.close();
-            engine.close();
-        }));
-        Thread.currentThread().join();
-    }
-
-    private static String prettyPayload(byte[] payloadBlob, int offset, int length) {
+    static String prettyPayload(byte[] payloadBlob, int offset, int length) {
         try {
             JsonNode node = MAPPER.readTree(payloadBlob, offset, length);
             return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(node);
@@ -60,8 +31,8 @@ public final class App {
         }
     }
 
-    private static String extractRuleResource() throws Exception {
-        try (InputStream input = App.class.getResourceAsStream("/com/example/rule.json")) {
+    static String extractRuleResource() throws Exception {
+        try (InputStream input = ExampleSupport.class.getResourceAsStream("/com/example/rule.json")) {
             if (input == null) {
                 throw new IllegalStateException("missing resource: /com/example/rule.json");
             }
@@ -72,7 +43,7 @@ public final class App {
         }
     }
 
-    private static void bindMetrics(BifroRE engine, PrometheusMeterRegistry registry) {
+    static void bindMetrics(BifroRE engine, PrometheusMeterRegistry registry) {
         BifroREMetricsView metrics = new BifroREMetricsView(engine);
         Gauge.builder("bifrore_eval_count", metrics, BifroREMetricsView::evalCount).register(registry);
         Gauge.builder("bifrore_eval_error_count", metrics, BifroREMetricsView::evalErrorCount).register(registry);
@@ -86,7 +57,7 @@ public final class App {
         Gauge.builder("bifrore_shutdown_dropped_count", metrics, BifroREMetricsView::shutdownDroppedCount).register(registry);
     }
 
-    private static HttpServer startMetricsServer(PrometheusMeterRegistry registry) throws Exception {
+    static HttpServer startMetricsServer(PrometheusMeterRegistry registry) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("0.0.0.0", 9464), 0);
         server.createContext("/metrics", exchange -> {
             byte[] body = registry.scrape().getBytes(StandardCharsets.UTF_8);
@@ -99,5 +70,16 @@ public final class App {
         server.start();
         System.out.println("Prometheus metrics exposed on http://127.0.0.1:9464/metrics");
         return server;
+    }
+
+    static void installShutdown(BifroRE engine, PrometheusMeterRegistry registry, HttpServer metricsServer, Runnable extraClose) {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (extraClose != null) {
+                extraClose.run();
+            }
+            metricsServer.stop(0);
+            registry.close();
+            engine.close();
+        }));
     }
 }

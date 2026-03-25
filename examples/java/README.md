@@ -31,7 +31,10 @@ See `examples/java/pom.xml`.
 
 ## 4. Use the API
 
-See `examples/java/src/main/java/com/example/App.java`.
+Two example entrypoints are provided:
+
+- Heap-based JNI path: `examples/java/src/main/java/com/example/AppHeap.java`
+- Direct-buffer JNI path with async Kafka forwarding: `examples/java/src/main/java/com/example/AppDirectKafka.java`
 
 The example exposes Prometheus metrics on:
 
@@ -52,3 +55,28 @@ Backpressure-related knobs in `BifroREOptions`:
 
 - `callbackQueueCapacity(...)` for the default Java callback executor queue
 - `pollBatchLimit(...)` for the Rust-to-Java batch drain cap
+- `directPollSlotCount(...)` for the Java direct-buffer slot pool
+- `directPayloadBufferBytes(...)` for each direct payload buffer capacity
+
+## Heap vs direct example
+
+`AppHeap` uses the heap-oriented callback:
+
+- `onNext((ruleIndex, payloadBlob, offset, length, metadata) -> { ... })`
+
+The callback reads the payload slice directly from the shared heap batch blob.
+
+`AppDirectKafka` uses the direct-buffer async callback:
+
+- `onNextAsyncDirect((ruleIndex, payloadBuffer, offset, length, metadata) -> CompletionStage<?>)`
+
+Important contract for the direct callback:
+
+- the SDK-owned direct buffer is valid only until the returned `CompletionStage` completes
+- if user code forwards the message asynchronously, it must copy the slice into caller-owned heap memory first
+- the example copies the slice into `byte[] retainedPayload` before calling Kafka `send(...)`
+
+That direct example demonstrates both:
+
+- SDK responsibility: keep the direct-buffer slot alive until `CompletionStage` completion
+- user responsibility: copy the payload if downstream async code retains it beyond the callback body
