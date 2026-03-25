@@ -17,6 +17,7 @@ import java.util.logging.Logger;
 
 public final class BifroRE implements AutoCloseable {
     private static final Logger LOGGER = Logger.getLogger(BifroRE.class.getName());
+    private static final Object INSTANCE_LOCK = new Object();
     private static final long POLLER_JOIN_TIMEOUT_MILLIS = 5000L;
     private static final long EXECUTOR_SHUTDOWN_TIMEOUT_MILLIS = 5000L;
     private static final long DROP_WARN_EVERY = 100L;
@@ -82,13 +83,17 @@ public final class BifroRE implements AutoCloseable {
 
     static final class PollSlot {
         final ByteBuffer headerBuffer;
+        final int headerCapacityInts;
         final ByteBuffer payloadBuffer;
+        final int payloadCapacityBytes;
         volatile int messageCount;
 
         PollSlot(int headerIntsCapacity, int payloadBufferBytes) {
+            this.headerCapacityInts = headerIntsCapacity;
             this.headerBuffer = ByteBuffer
                 .allocateDirect(headerIntsCapacity * Integer.BYTES)
                 .order(ByteOrder.nativeOrder());
+            this.payloadCapacityBytes = payloadBufferBytes;
             this.payloadBuffer = ByteBuffer
                 .allocateDirect(payloadBufferBytes)
                 .order(ByteOrder.nativeOrder());
@@ -137,6 +142,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile MessageHandler nextHandler;
     private volatile AsyncDirectMessageHandler nextAsyncDirectHandler;
     private volatile Executor nextExecutor;
+    private volatile boolean singletonHeld;
 
     public BifroRE(BifroREOptions options) {
         this(
@@ -169,6 +175,10 @@ public final class BifroRE implements AutoCloseable {
         int directPollSlotCount,
         int directPayloadBufferBytes
     ) {
+        acquireSingleton();
+        this.singletonHeld = true;
+        boolean initialized = false;
+        try {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.nodeId = nodeId;
@@ -215,6 +225,13 @@ public final class BifroRE implements AutoCloseable {
         this.nextHandler = null;
         this.nextAsyncDirectHandler = null;
         this.nextExecutor = defaultMessageExecutor;
+        initialized = true;
+        } finally {
+            if (!initialized) {
+                releaseSingleton();
+                this.singletonHeld = false;
+            }
+        }
     }
 
     public synchronized int start() {
@@ -461,7 +478,14 @@ public final class BifroRE implements AutoCloseable {
         if (slot == null) {
             return true;
         }
-        int count = nativePollResultsBatchDirect(handle, -1, slot.headerBuffer, slot.payloadBuffer);
+        int count = nativePollResultsBatchDirect(
+            handle,
+            -1,
+            slot.headerBuffer,
+            slot.headerCapacityInts,
+            slot.payloadBuffer,
+            slot.payloadCapacityBytes
+        );
         if (count == -3) {
             releaseDirectSlot(slot);
             return false;
@@ -612,6 +636,29 @@ public final class BifroRE implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
         defaultLogExecutor.shutdown();
+        if (singletonHeld) {
+            releaseSingleton();
+            singletonHeld = false;
+        }
+    }
+
+    private static void acquireSingleton() {
+        synchronized (INSTANCE_LOCK) {
+            if (SingletonHolder.INSTANCE_EXISTS) {
+                throw new IllegalStateException("Only one BifroRE instance is allowed per JVM");
+            }
+            SingletonHolder.INSTANCE_EXISTS = true;
+        }
+    }
+
+    private static void releaseSingleton() {
+        synchronized (INSTANCE_LOCK) {
+            SingletonHolder.INSTANCE_EXISTS = false;
+        }
+    }
+
+    private static final class SingletonHolder {
+        private static boolean INSTANCE_EXISTS = false;
     }
 
     private ThreadPoolExecutor createDefaultMessageExecutor(int queueCapacity) {
@@ -674,7 +721,9 @@ public final class BifroRE implements AutoCloseable {
         long handle,
         int timeoutMillis,
         ByteBuffer headerBuffer,
-        ByteBuffer payloadBuffer
+        int headerCapacityInts,
+        ByteBuffer payloadBuffer,
+        int payloadCapacityBytes
     );
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
