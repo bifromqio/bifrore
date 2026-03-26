@@ -83,7 +83,6 @@ struct JniClassCache {
 };
 
 struct DirectPendingBatch {
-    void *engine;
     struct BifroPackedEvalResults results;
     size_t next_index;
 };
@@ -95,15 +94,15 @@ static int JNI_CACHE_INIT_OK = 0;
 static struct DirectPendingBatch DIRECT_PENDING = {0};
 static int DIRECT_PENDING_ACTIVE = 0;
 
-static struct DirectPendingBatch *find_pending_batch(void *engine) {
-    if (DIRECT_PENDING_ACTIVE && DIRECT_PENDING.engine == engine) {
+static struct DirectPendingBatch *find_pending_batch(void) {
+    if (DIRECT_PENDING_ACTIVE) {
         return &DIRECT_PENDING;
     }
     return NULL;
 }
 
-static void clear_pending_batch(void *engine) {
-    if (DIRECT_PENDING_ACTIVE && DIRECT_PENDING.engine == engine) {
+static void clear_pending_batch(void) {
+    if (DIRECT_PENDING_ACTIVE) {
         bre_free_packed_eval_results(&DIRECT_PENDING.results);
         memset(&DIRECT_PENDING, 0, sizeof(DIRECT_PENDING));
         DIRECT_PENDING_ACTIVE = 0;
@@ -111,10 +110,8 @@ static void clear_pending_batch(void *engine) {
 }
 
 static struct DirectPendingBatch *store_pending_batch(
-    void *engine,
     struct BifroPackedEvalResults *results) {
-    clear_pending_batch(engine);
-    DIRECT_PENDING.engine = engine;
+    clear_pending_batch();
     DIRECT_PENDING.results = *results;
     DIRECT_PENDING.next_index = 0;
     DIRECT_PENDING_ACTIVE = 1;
@@ -364,7 +361,7 @@ JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeDestroy(JNIEnv *env, jclas
     (void)env;
     (void)cls;
     if (handle != 0) {
-        clear_pending_batch((void *)handle);
+        clear_pending_batch();
         bre_destroy((void *)handle);
     }
 }
@@ -553,7 +550,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
     }
     void *engine = (void *)handle;
 
-    struct DirectPendingBatch *pending = find_pending_batch(engine);
+    struct DirectPendingBatch *pending = find_pending_batch();
     if (pending != NULL) {
         int rc = copy_pending_batch_to_direct_buffers(
             pending,
@@ -563,7 +560,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
             (size_t)payload_capacity_bytes
         );
         if (pending->next_index >= pending->results.len) {
-            clear_pending_batch(engine);
+            clear_pending_batch();
         }
         return rc;
     }
@@ -577,7 +574,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         return rc;
     }
 
-    pending = store_pending_batch(engine, &fetched);
+    pending = store_pending_batch(&fetched);
     if (pending == NULL) {
         bre_free_packed_eval_results(&fetched);
         return -1;
@@ -590,7 +587,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         (size_t)payload_capacity_bytes
     );
     if (pending->next_index >= pending->results.len) {
-        clear_pending_batch(engine);
+        clear_pending_batch();
     }
     return rc;
 }
