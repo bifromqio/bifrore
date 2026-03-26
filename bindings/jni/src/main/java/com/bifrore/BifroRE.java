@@ -2,6 +2,7 @@ package com.bifrore;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletionStage;
@@ -503,18 +504,22 @@ public final class BifroRE implements AutoCloseable {
         }
 
         slot.messageCount = count;
+        IntBuffer headerView = slot.headerBuffer.asReadOnlyBuffer()
+            .order(ByteOrder.nativeOrder())
+            .asIntBuffer();
+        ByteBuffer payloadView = slot.payloadBuffer.asReadOnlyBuffer().order(ByteOrder.nativeOrder());
         for (int i = 0; i < count; i++) {
             int base = i * 3;
-            int ruleIndex = slot.headerBuffer.getInt(base * Integer.BYTES);
-            int payloadOffset = slot.headerBuffer.getInt((base + 1) * Integer.BYTES);
-            int payloadLength = slot.headerBuffer.getInt((base + 2) * Integer.BYTES);
+            int ruleIndex = headerView.get(base);
+            int payloadOffset = headerView.get(base + 1);
+            int payloadLength = headerView.get(base + 2);
             RuleMetadata metadata = metadataFor(ruleIndex);
             Runnable task = () -> {
                 CompletionStage<?> stage = null;
                 try {
                     stage = handler.onMessage(
                         ruleIndex,
-                        slot.payloadBuffer.asReadOnlyBuffer().order(ByteOrder.nativeOrder()),
+                        payloadView,
                         payloadOffset,
                         payloadLength,
                         metadata
