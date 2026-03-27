@@ -26,6 +26,11 @@ extern void *bre_create_with_config_and_payload_format_and_client_ids_path(
     const char *path,
     int payload_format,
     const char *client_ids_path);
+extern void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+    const char *path,
+    int payload_format,
+    const char *client_ids_path,
+    int notify_mode);
 extern void bre_destroy(void *engine);
 extern int bre_disconnect(void *engine);
 extern int bre_start_mqtt(
@@ -474,11 +479,12 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jclass cls,
     jstring path,
     jint payload_format,
-    jstring client_ids_path);
+    jstring client_ids_path,
+    jint notify_mode);
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfig(JNIEnv *env, jclass cls, jstring path) {
     return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
-        env, cls, path, 1, NULL);
+        env, cls, path, 1, NULL, 0);
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(
@@ -487,7 +493,7 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jstring path,
     jint payload_format) {
     return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
-        env, cls, path, payload_format, NULL);
+        env, cls, path, payload_format, NULL, 0);
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
@@ -495,7 +501,8 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jclass cls,
     jstring path,
     jint payload_format,
-    jstring client_ids_path) {
+    jstring client_ids_path,
+    jint notify_mode) {
     (void)cls;
     if (path == NULL) {
         return 0;
@@ -505,10 +512,11 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     if (client_ids_path != NULL) {
         client_ids_path_str = (*env)->GetStringUTFChars(env, client_ids_path, NULL);
     }
-    void *engine = bre_create_with_config_and_payload_format_and_client_ids_path(
+    void *engine = bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
         path_str,
         (int)payload_format,
-        client_ids_path_str);
+        client_ids_path_str,
+        (int)notify_mode);
     (*env)->ReleaseStringUTFChars(env, path, path_str);
     if (client_ids_path_str != NULL) {
         (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);

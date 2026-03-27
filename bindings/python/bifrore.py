@@ -26,6 +26,8 @@ class _RuleMetadata(ctypes.Structure):
 class BifroRE:
     PAYLOAD_JSON = 1
     PAYLOAD_PROTOBUF = 2
+    NOTIFY_MODE_POLL = 0
+    NOTIFY_MODE_PUSH = 1
 
     def __init__(
         self,
@@ -54,6 +56,7 @@ class BifroRE:
             rule_path.encode("utf-8"),
             payload_format,
             client_ids_path.encode("utf-8") if client_ids_path else None,
+            self.NOTIFY_MODE_PUSH,
         )
         if not self.handle:
             raise RuntimeError("Failed to create engine with rule file")
@@ -108,6 +111,7 @@ class BifroRE:
             c_char_p,
             c_int,
             c_char_p,
+            c_int,
         ]
         self.lib.bre_create_with_config_and_payload_format_and_client_ids_path.restype = c_void_p
         self.lib.bre_destroy.argtypes = [c_void_p]
