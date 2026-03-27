@@ -93,6 +93,10 @@ static pthread_once_t JNI_CACHE_ONCE = PTHREAD_ONCE_INIT;
 static int JNI_CACHE_INIT_OK = 0;
 static struct DirectPendingBatch DIRECT_PENDING = {0};
 static int DIRECT_PENDING_ACTIVE = 0;
+static const size_t DIRECT_MERGE_PAYLOAD_NUM = 1;
+static const size_t DIRECT_MERGE_PAYLOAD_DEN = 4;
+static const size_t DIRECT_MERGE_HEADER_NUM = 1;
+static const size_t DIRECT_MERGE_HEADER_DEN = 4;
 
 static struct DirectPendingBatch *find_pending_batch(void) {
     if (DIRECT_PENDING_ACTIVE) {
@@ -124,47 +128,90 @@ static struct DirectPendingBatch *store_pending_batch(
     return &DIRECT_PENDING;
 }
 
-static int copy_pending_batch_to_direct_buffers(
-    struct DirectPendingBatch *batch,
-    uint32_t *header_ptr,
-    size_t header_capacity_ints,
-    unsigned char *payload_ptr,
+static struct DirectPendingBatch *store_pending_batch_with_index(
+    struct BifroPackedEvalResults *results,
+    size_t next_index) {
+    clear_pending_batch();
+    DIRECT_PENDING.results = *results;
+    DIRECT_PENDING.next_index = next_index;
+    DIRECT_PENDING_ACTIVE = 1;
+    results->rule_indices = NULL;
+    results->payload_offsets = NULL;
+    results->payload_lengths = NULL;
+    results->payload_data = NULL;
+    results->len = 0;
+    results->payload_data_len = 0;
+    return &DIRECT_PENDING;
+}
+
+static size_t remaining_batch_payload_bytes(
+    const struct BifroPackedEvalResults *results,
+    size_t next_index) {
+    size_t total = 0;
+    for (size_t i = next_index; i < results->len; i++) {
+        total += (size_t)results->payload_lengths[i];
+    }
+    return total;
+}
+
+static size_t remaining_batch_message_count(
+    const struct BifroPackedEvalResults *results,
+    size_t next_index) {
+    return next_index >= results->len ? 0 : results->len - next_index;
+}
+
+static int should_merge_pending_batch(
+    const struct DirectPendingBatch *batch,
+    size_t header_capacity_records,
     size_t payload_capacity_bytes) {
-    size_t header_capacity_records = header_capacity_ints / 3;
-    if (batch->next_index >= batch->results.len) {
+    size_t remaining_messages = remaining_batch_message_count(&batch->results, batch->next_index);
+    size_t remaining_payload = remaining_batch_payload_bytes(&batch->results, batch->next_index);
+    return remaining_messages > 0
+        && remaining_payload * DIRECT_MERGE_PAYLOAD_DEN < payload_capacity_bytes * DIRECT_MERGE_PAYLOAD_NUM
+        && remaining_messages * DIRECT_MERGE_HEADER_DEN < header_capacity_records * DIRECT_MERGE_HEADER_NUM;
+}
+
+static int copy_batch_to_direct_buffers(
+    const struct BifroPackedEvalResults *results,
+    size_t *next_index,
+    uint32_t *header_ptr,
+    size_t header_capacity_records,
+    unsigned char *payload_ptr,
+    size_t payload_capacity_bytes,
+    size_t *emitted,
+    size_t *payload_offset) {
+    if (*next_index >= results->len) {
         return 0;
     }
     if (header_capacity_records == 0) {
         return -4;
     }
-    size_t first_length = (size_t)batch->results.payload_lengths[batch->next_index];
-    if (first_length > payload_capacity_bytes) {
+    size_t first_length = (size_t)results->payload_lengths[*next_index];
+    if (*emitted == 0 && *payload_offset == 0 && first_length > payload_capacity_bytes) {
         return -5;
     }
 
-    size_t emitted = 0;
-    size_t payload_offset = 0;
-    while (batch->next_index < batch->results.len && emitted < header_capacity_records) {
-        size_t idx = batch->next_index;
-        size_t payload_length = (size_t)batch->results.payload_lengths[idx];
-        if (payload_offset + payload_length > payload_capacity_bytes) {
+    while (*next_index < results->len && *emitted < header_capacity_records) {
+        size_t idx = *next_index;
+        size_t payload_length = (size_t)results->payload_lengths[idx];
+        if (*payload_offset + payload_length > payload_capacity_bytes) {
             break;
         }
-        header_ptr[emitted * 3] = batch->results.rule_indices[idx];
-        header_ptr[emitted * 3 + 1] = (uint32_t)payload_offset;
-        header_ptr[emitted * 3 + 2] = batch->results.payload_lengths[idx];
+        header_ptr[*emitted * 3] = results->rule_indices[idx];
+        header_ptr[*emitted * 3 + 1] = (uint32_t)(*payload_offset);
+        header_ptr[*emitted * 3 + 2] = results->payload_lengths[idx];
         if (payload_length > 0) {
             memcpy(
-                payload_ptr + payload_offset,
-                batch->results.payload_data + batch->results.payload_offsets[idx],
+                payload_ptr + *payload_offset,
+                results->payload_data + results->payload_offsets[idx],
                 payload_length
             );
         }
-        payload_offset += payload_length;
-        emitted += 1;
-        batch->next_index += 1;
+        *payload_offset += payload_length;
+        *emitted += 1;
+        *next_index += 1;
     }
-    return (int)emitted;
+    return 0;
 }
 
 static void init_jni_cache_once(void) {
@@ -549,20 +596,62 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         return -1;
     }
     void *engine = (void *)handle;
+    size_t header_capacity_records = (size_t)header_capacity_ints / 3;
 
     struct DirectPendingBatch *pending = find_pending_batch();
     if (pending != NULL) {
-        int rc = copy_pending_batch_to_direct_buffers(
+        int merge_pending = should_merge_pending_batch(
             pending,
-            header_ptr,
-            (size_t)header_capacity_ints,
-            payload_ptr,
+            header_capacity_records,
             (size_t)payload_capacity_bytes
         );
+        size_t emitted = 0;
+        size_t payload_offset = 0;
+        int rc = copy_batch_to_direct_buffers(
+            &pending->results,
+            &pending->next_index,
+            header_ptr,
+            header_capacity_records,
+            payload_ptr,
+            (size_t)payload_capacity_bytes,
+            &emitted,
+            &payload_offset
+        );
+        if (rc < 0) {
+            return rc;
+        }
         if (pending->next_index >= pending->results.len) {
             clear_pending_batch();
         }
-        return rc;
+        if (merge_pending && emitted < header_capacity_records && payload_offset < (size_t)payload_capacity_bytes) {
+            struct BifroPackedEvalResults fetched = {0};
+            int fetch_rc = bre_poll_eval_results_packed(engine, 0, &fetched);
+            if (fetch_rc > 0 && fetched.len > 0) {
+                size_t fetched_index = 0;
+                rc = copy_batch_to_direct_buffers(
+                    &fetched,
+                    &fetched_index,
+                    header_ptr,
+                    header_capacity_records,
+                    payload_ptr,
+                    (size_t)payload_capacity_bytes,
+                    &emitted,
+                    &payload_offset
+                );
+                if (rc < 0 && emitted == 0) {
+                    bre_free_packed_eval_results(&fetched);
+                    return rc;
+                }
+                if (fetched_index < fetched.len) {
+                    store_pending_batch_with_index(&fetched, fetched_index);
+                } else {
+                    bre_free_packed_eval_results(&fetched);
+                }
+            } else if (fetched.len > 0) {
+                bre_free_packed_eval_results(&fetched);
+            }
+        }
+        return (int)emitted;
     }
 
     struct BifroPackedEvalResults fetched = {0};
@@ -574,22 +663,32 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         return rc;
     }
 
-    pending = store_pending_batch(&fetched);
-    if (pending == NULL) {
-        bre_free_packed_eval_results(&fetched);
-        return -1;
-    }
-    rc = copy_pending_batch_to_direct_buffers(
-        pending,
+    size_t fetched_index = 0;
+    size_t emitted = 0;
+    size_t payload_offset = 0;
+    rc = copy_batch_to_direct_buffers(
+        &fetched,
+        &fetched_index,
         header_ptr,
-        (size_t)header_capacity_ints,
+        header_capacity_records,
         payload_ptr,
-        (size_t)payload_capacity_bytes
+        (size_t)payload_capacity_bytes,
+        &emitted,
+        &payload_offset
     );
-    if (pending->next_index >= pending->results.len) {
-        clear_pending_batch();
+    if (rc < 0) {
+        bre_free_packed_eval_results(&fetched);
+        return rc;
     }
-    return rc;
+    if (fetched_index < fetched.len) {
+        if (store_pending_batch_with_index(&fetched, fetched_index) == NULL) {
+            bre_free_packed_eval_results(&fetched);
+            return -1;
+        }
+    } else {
+        bre_free_packed_eval_results(&fetched);
+    }
+    return (int)emitted;
 }
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(
