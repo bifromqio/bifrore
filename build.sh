@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [java|jni|python|provision-cli|all|bench|bench-diff]"
+  echo "Usage: ./build.sh [java|jni|jni-test|python|provision-cli|all|bench|bench-diff]"
   exit 1
 }
 
@@ -109,6 +109,33 @@ build_jni() {
     $JNI_LDFLAGS \
     -o "$BUILD_DIR/libbifrore_jni.$JNI_LIB_EXT" \
     "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni.c"
+}
+
+build_jni_test() {
+  echo "Building JNI direct-helper tests..."
+  if [[ -z "${JAVA_HOME:-}" ]]; then
+    if [[ "$OS_NAME" == "Darwin" ]]; then
+      JAVA_HOME="$(/usr/libexec/java_home 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "${JAVA_HOME:-}" ]]; then
+    echo "JAVA_HOME is not set"
+    exit 3
+  fi
+  JNI_INCLUDE="$JAVA_HOME/include"
+  JNI_PLATFORM_INCLUDE="$JNI_INCLUDE"
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/darwin"
+  elif [[ "$OS_NAME" == "Linux" ]]; then
+    JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/linux"
+  fi
+
+  cc $JNI_CFLAGS -pthread \
+    -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
+    -o "$BUILD_DIR/bifrore-jni-direct-test" \
+    "$ROOT_DIR/bindings/jni/src/test/c/bifrore_jni_direct_test.c"
+
+  "$BUILD_DIR/bifrore-jni-direct-test"
 }
 
 build_java_jar() {
@@ -290,6 +317,9 @@ case "$TARGET" in
   jni)
     build_rust
     build_jni
+    ;;
+  jni-test)
+    build_jni_test
     ;;
   java)
     build_rust
