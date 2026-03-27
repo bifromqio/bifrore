@@ -85,6 +85,8 @@ struct JniClassCache {
 struct DirectPendingBatch {
     struct BifroPackedEvalResults results;
     size_t next_index;
+    size_t remaining_messages;
+    size_t remaining_payload_bytes;
 };
 
 static struct JniClassCache JNI_CACHE = {0};
@@ -118,6 +120,8 @@ static struct DirectPendingBatch *store_pending_batch(
     clear_pending_batch();
     DIRECT_PENDING.results = *results;
     DIRECT_PENDING.next_index = 0;
+    DIRECT_PENDING.remaining_messages = results->len;
+    DIRECT_PENDING.remaining_payload_bytes = results->payload_data_len;
     DIRECT_PENDING_ACTIVE = 1;
     results->rule_indices = NULL;
     results->payload_offsets = NULL;
@@ -134,6 +138,10 @@ static struct DirectPendingBatch *store_pending_batch_with_index(
     clear_pending_batch();
     DIRECT_PENDING.results = *results;
     DIRECT_PENDING.next_index = next_index;
+    DIRECT_PENDING.remaining_messages = next_index >= results->len ? 0 : results->len - next_index;
+    DIRECT_PENDING.remaining_payload_bytes = next_index >= results->len
+        ? 0
+        : results->payload_data_len - (size_t)results->payload_offsets[next_index];
     DIRECT_PENDING_ACTIVE = 1;
     results->rule_indices = NULL;
     results->payload_offsets = NULL;
@@ -144,31 +152,13 @@ static struct DirectPendingBatch *store_pending_batch_with_index(
     return &DIRECT_PENDING;
 }
 
-static size_t remaining_batch_payload_bytes(
-    const struct BifroPackedEvalResults *results,
-    size_t next_index) {
-    size_t total = 0;
-    for (size_t i = next_index; i < results->len; i++) {
-        total += (size_t)results->payload_lengths[i];
-    }
-    return total;
-}
-
-static size_t remaining_batch_message_count(
-    const struct BifroPackedEvalResults *results,
-    size_t next_index) {
-    return next_index >= results->len ? 0 : results->len - next_index;
-}
-
 static int should_merge_pending_batch(
     const struct DirectPendingBatch *batch,
     size_t header_capacity_records,
     size_t payload_capacity_bytes) {
-    size_t remaining_messages = remaining_batch_message_count(&batch->results, batch->next_index);
-    size_t remaining_payload = remaining_batch_payload_bytes(&batch->results, batch->next_index);
-    return remaining_messages > 0
-        && remaining_payload * DIRECT_MERGE_PAYLOAD_DEN < payload_capacity_bytes * DIRECT_MERGE_PAYLOAD_NUM
-        && remaining_messages * DIRECT_MERGE_HEADER_DEN < header_capacity_records * DIRECT_MERGE_HEADER_NUM;
+    return batch->remaining_messages > 0
+        && batch->remaining_payload_bytes * DIRECT_MERGE_PAYLOAD_DEN < payload_capacity_bytes * DIRECT_MERGE_PAYLOAD_NUM
+        && batch->remaining_messages * DIRECT_MERGE_HEADER_DEN < header_capacity_records * DIRECT_MERGE_HEADER_NUM;
 }
 
 static int copy_batch_to_direct_buffers(
@@ -179,7 +169,9 @@ static int copy_batch_to_direct_buffers(
     unsigned char *payload_ptr,
     size_t payload_capacity_bytes,
     size_t *emitted,
-    size_t *payload_offset) {
+    size_t *payload_offset,
+    size_t *copied_messages,
+    size_t *copied_payload_bytes) {
     if (*next_index >= results->len) {
         return 0;
     }
@@ -210,6 +202,12 @@ static int copy_batch_to_direct_buffers(
         *payload_offset += payload_length;
         *emitted += 1;
         *next_index += 1;
+        if (copied_messages != NULL) {
+            *copied_messages += 1;
+        }
+        if (copied_payload_bytes != NULL) {
+            *copied_payload_bytes += payload_length;
+        }
     }
     return 0;
 }
@@ -607,6 +605,8 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         );
         size_t emitted = 0;
         size_t payload_offset = 0;
+        size_t copied_messages = 0;
+        size_t copied_payload_bytes = 0;
         int rc = copy_batch_to_direct_buffers(
             &pending->results,
             &pending->next_index,
@@ -615,11 +615,15 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
             payload_ptr,
             (size_t)payload_capacity_bytes,
             &emitted,
-            &payload_offset
+            &payload_offset,
+            &copied_messages,
+            &copied_payload_bytes
         );
         if (rc < 0) {
             return rc;
         }
+        pending->remaining_messages -= copied_messages;
+        pending->remaining_payload_bytes -= copied_payload_bytes;
         if (pending->next_index >= pending->results.len) {
             clear_pending_batch();
         }
@@ -628,6 +632,8 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
             int fetch_rc = bre_poll_eval_results_packed(engine, 0, &fetched);
             if (fetch_rc > 0 && fetched.len > 0) {
                 size_t fetched_index = 0;
+                copied_messages = 0;
+                copied_payload_bytes = 0;
                 rc = copy_batch_to_direct_buffers(
                     &fetched,
                     &fetched_index,
@@ -636,7 +642,9 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
                     payload_ptr,
                     (size_t)payload_capacity_bytes,
                     &emitted,
-                    &payload_offset
+                    &payload_offset,
+                    &copied_messages,
+                    &copied_payload_bytes
                 );
                 if (rc < 0 && emitted == 0) {
                     bre_free_packed_eval_results(&fetched);
@@ -666,6 +674,8 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
     size_t fetched_index = 0;
     size_t emitted = 0;
     size_t payload_offset = 0;
+    size_t copied_messages = 0;
+    size_t copied_payload_bytes = 0;
     rc = copy_batch_to_direct_buffers(
         &fetched,
         &fetched_index,
@@ -674,7 +684,9 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
         payload_ptr,
         (size_t)payload_capacity_bytes,
         &emitted,
-        &payload_offset
+        &payload_offset,
+        &copied_messages,
+        &copied_payload_bytes
     );
     if (rc < 0) {
         bre_free_packed_eval_results(&fetched);
