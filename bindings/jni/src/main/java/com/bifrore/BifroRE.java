@@ -43,6 +43,7 @@ public final class BifroRE implements AutoCloseable {
 
     public static final int PAYLOAD_JSON = 1;
     public static final int PAYLOAD_PROTOBUF = 2;
+    private static final int NOTIFY_MODE_POLL = 0;
 
     public interface MessageHandler {
         void onMessage(int ruleIndex, byte[] payloadBlob, int offset, int length, RuleMetadata metadata);
@@ -193,7 +194,8 @@ public final class BifroRE implements AutoCloseable {
         this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
             ruleJsonPath,
             payloadFormat,
-            this.clientIdsPath
+            this.clientIdsPath,
+            NOTIFY_MODE_POLL
         );
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
@@ -700,7 +702,8 @@ public final class BifroRE implements AutoCloseable {
     private static native long nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
         String path,
         int payloadFormat,
-        String clientIdsPath
+        String clientIdsPath,
+        int notifyMode
     );
     private static native void nativeDestroy(long handle);
     private static native int nativeDisconnect(long handle);

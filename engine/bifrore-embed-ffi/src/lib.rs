@@ -34,6 +34,13 @@ pub enum BifroREPayloadFormat {
     Protobuf = 2,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BifroRENotifyMode {
+    Poll = 0,
+    PushNotify = 1,
+}
+
 pub type BifroRELogCallback =
     extern "C" fn(
         user_data: *mut c_void,
@@ -370,10 +377,11 @@ fn free_rule_metadata_inner(metadata_ref: &mut BifroRuleMetadata) {
 
 #[no_mangle]
 pub extern "C" fn bre_create_with_config(config_path: *const c_char) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path(
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
         config_path,
         BifroREPayloadFormat::Json as c_int,
         ptr::null(),
+        BifroRENotifyMode::Poll as c_int,
     )
 }
 
@@ -382,10 +390,11 @@ pub extern "C" fn bre_create_with_config_and_payload_format(
     config_path: *const c_char,
     payload_format: c_int,
 ) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path(
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
         config_path,
         payload_format,
         ptr::null(),
+        BifroRENotifyMode::Poll as c_int,
     )
 }
 
@@ -395,12 +404,32 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
     payload_format: c_int,
     client_ids_path: *const c_char,
 ) -> *mut BifroRE {
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+        config_path,
+        payload_format,
+        client_ids_path,
+        BifroRENotifyMode::Poll as c_int,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+    config_path: *const c_char,
+    payload_format: c_int,
+    client_ids_path: *const c_char,
+    notify_mode: c_int,
+) -> *mut BifroRE {
     ensure_logger_initialized();
     if config_path.is_null() {
         return ptr::null_mut();
     }
     let Some(payload_format) = PayloadFormat::from_ffi_code(payload_format) else {
         return ptr::null_mut();
+    };
+    let notify_mode = match notify_mode {
+        0 => BifroRENotifyMode::Poll,
+        1 => BifroRENotifyMode::PushNotify,
+        _ => return ptr::null_mut(),
     };
 
     let config_path = unsafe { CStr::from_ptr(config_path) };
@@ -427,7 +456,10 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
         return ptr::null_mut();
     }
 
-    let (notify_read_fd, notify_write_fd) = create_notify_pipe().unwrap_or((-1, -1));
+    let (notify_read_fd, notify_write_fd) = match notify_mode {
+        BifroRENotifyMode::Poll => (-1, -1),
+        BifroRENotifyMode::PushNotify => create_notify_pipe().unwrap_or((-1, -1)),
+    };
     let engine = BifroRE {
         inner: Mutex::new(rule_engine),
         adapter: None,
@@ -443,9 +475,10 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
         active_client_ids: Vec::new(),
     };
     log::info!(
-        "BifroRE created with config path={} payload_format={:?}",
+        "BifroRE created with config path={} payload_format={:?} notify_mode={:?}",
         config_path,
-        payload_format
+        payload_format,
+        notify_mode
     );
     Box::into_raw(Box::new(engine))
 }
