@@ -59,7 +59,7 @@ pub struct PlannedColumn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalExprPlan {
     Const(Value),
-    PayloadField(String),
+    PayloadField(Vec<String>),
     MetaQos,
     MetaRetain,
     MetaDup,
@@ -102,7 +102,7 @@ pub enum FastPredicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastField {
-    Payload(String),
+    Payload(Vec<String>),
     MetaQos,
     MetaRetain,
     MetaDup,
@@ -299,8 +299,14 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             "timestamp" => EvalExprPlan::MetaTimestamp,
             "clientId" => EvalExprPlan::MetaClientId,
             "username" => EvalExprPlan::MetaUsername,
-            _ => EvalExprPlan::PayloadField(value.clone()),
+            _ => EvalExprPlan::PayloadField(vec![value.clone()]),
         },
+        Expr::CompoundIdentifier(idents) => EvalExprPlan::PayloadField(
+            idents
+                .iter()
+                .map(|ident| ident.value.clone())
+                .collect(),
+        ),
         Expr::Value(value) => match value {
             sqlparser::ast::Value::Number(num, _) => num
                 .parse::<f64>()
@@ -468,7 +474,7 @@ fn compile_fast_predicate(plan: &EvalExprPlan) -> Option<FastPredicate> {
 
 fn compile_fast_field(plan: &EvalExprPlan) -> Option<FastField> {
     match plan {
-        EvalExprPlan::PayloadField(name) => Some(FastField::Payload(name.clone())),
+        EvalExprPlan::PayloadField(path) => Some(FastField::Payload(path.clone())),
         EvalExprPlan::MetaQos => Some(FastField::MetaQos),
         EvalExprPlan::MetaRetain => Some(FastField::MetaRetain),
         EvalExprPlan::MetaDup => Some(FastField::MetaDup),
@@ -761,7 +767,7 @@ fn evaluate_fast_or(
 
 fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<RuntimeValue<'a>> {
     match field {
-        FastField::Payload(name) => match ctx.payload.get(name)? {
+        FastField::Payload(path) => match payload_value_by_path(ctx.payload, path)? {
             Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
             Value::String(value) => Some(RuntimeValue::String(value)),
             Value::Bool(value) => Some(RuntimeValue::Bool(*value)),
@@ -841,7 +847,7 @@ fn evaluate_plan_runtime_value<'a>(
             Value::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
             _ => None,
         },
-        EvalExprPlan::PayloadField(field) => match ctx.payload.get(field)? {
+        EvalExprPlan::PayloadField(path) => match payload_value_by_path(ctx.payload, path)? {
             Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
             Value::String(text) => Some(RuntimeValue::String(text)),
             Value::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
@@ -917,7 +923,7 @@ fn compare_runtime_runtime(
 fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> {
     match plan {
         EvalExprPlan::Const(value) => Some(value.clone()),
-        EvalExprPlan::PayloadField(field) => ctx.payload.get(field).cloned(),
+        EvalExprPlan::PayloadField(path) => payload_value_by_path(ctx.payload, path).cloned(),
         EvalExprPlan::MetaQos => Some(Value::Number(serde_json::Number::from(ctx.message.qos))),
         EvalExprPlan::MetaRetain => Some(Value::Bool(ctx.message.retain)),
         EvalExprPlan::MetaDup => Some(Value::Bool(ctx.message.dup)),
@@ -1034,8 +1040,24 @@ fn value_to_non_negative_u64(value: &Value) -> Option<u64> {
 fn derive_alias(expr: &Expr) -> String {
     match expr {
         Expr::Identifier(Ident { value, .. }) => value.clone(),
+        Expr::CompoundIdentifier(idents) => idents
+            .last()
+            .map(|ident| ident.value.clone())
+            .unwrap_or_else(|| expr.to_string()),
         _ => expr.to_string(),
     }
+}
+
+fn payload_value_by_path<'a>(
+    payload: &'a serde_json::Map<String, Value>,
+    path: &[String],
+) -> Option<&'a Value> {
+    let (first, rest) = path.split_first()?;
+    let mut current = payload.get(first)?;
+    for segment in rest {
+        current = current.get(segment)?;
+    }
+    Some(current)
 }
 
 fn normalize_topic(topic: &str) -> String {
@@ -1155,6 +1177,55 @@ mod tests {
         let evaluated = evaluate_rule(&compiled, &message).expect("evaluated");
         let output: Value = serde_json::from_slice(&evaluated.payload).unwrap();
         assert_eq!(output["h"], Value::from(9));
+    }
+
+    #[test]
+    fn evaluate_where_with_nested_payload_field() {
+        let rule = RuleDefinition {
+            expression: "select * from data where a.b.temp >= 20".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+
+        let payload = serde_json::json!({"a": {"b": {"temp": 20}}, "c": "d"});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert!(evaluate_rule(&compiled, &message).is_some());
+
+        let payload = serde_json::json!({"a": {"b": {"temp": 19}}, "c": "d"});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert!(evaluate_rule(&compiled, &message).is_none());
+    }
+
+    #[test]
+    fn evaluate_select_nested_payload_field() {
+        let rule = RuleDefinition {
+            expression: "select a.b.temp as temperature, c from data where a.b.temp >= 20"
+                .to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+
+        let payload = serde_json::json!({"a": {"b": {"temp": 20}}, "c": "d"});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        let evaluated = evaluate_rule(&compiled, &message).expect("evaluated");
+        let output: Value = serde_json::from_slice(&evaluated.payload).unwrap();
+        assert_eq!(output["temperature"], Value::from(20));
+        assert_eq!(output["c"], Value::from("d"));
+    }
+
+    #[test]
+    fn derive_alias_from_nested_payload_field() {
+        let rule = RuleDefinition {
+            expression: "select a.b.temp from data where a.b.temp >= 20".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+
+        let payload = serde_json::json!({"a": {"b": {"temp": 20}}});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        let evaluated = evaluate_rule(&compiled, &message).expect("evaluated");
+        let output: Value = serde_json::from_slice(&evaluated.payload).unwrap();
+        assert_eq!(output["temp"], Value::from(20));
     }
 
     #[test]
