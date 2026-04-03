@@ -1379,13 +1379,13 @@ mod tests {
             FastPredicate::And { profile, .. } => profile,
             _ => panic!("expected fast AND predicate"),
         };
-        let left_total = profile.left_true.load(std::sync::atomic::Ordering::Relaxed)
-            + profile.left_false.load(std::sync::atomic::Ordering::Relaxed);
-        let right_total = profile.right_true.load(std::sync::atomic::Ordering::Relaxed)
-            + profile.right_false.load(std::sync::atomic::Ordering::Relaxed);
+        let left_total = profile.left_true.load(Ordering::Relaxed)
+            + profile.left_false.load(Ordering::Relaxed);
+        let right_total = profile.right_true.load(Ordering::Relaxed)
+            + profile.right_false.load(Ordering::Relaxed);
 
         assert!(right_total > left_total);
-        assert!(profile.right_false.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(profile.right_false.load(Ordering::Relaxed) > 0);
     }
 
     #[test]
@@ -1402,7 +1402,7 @@ mod tests {
             assert!(evaluate_rule(&compiled, &message).is_none());
         }
 
-        assert!(!compiled.fast_path_profile.enabled.load(std::sync::atomic::Ordering::Relaxed));
-        assert!(compiled.fast_path_profile.downgrade_logged.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!compiled.fast_path_profile.enabled.load(Ordering::Relaxed));
+        assert!(compiled.fast_path_profile.downgrade_logged.load(Ordering::Relaxed));
     }
 }
