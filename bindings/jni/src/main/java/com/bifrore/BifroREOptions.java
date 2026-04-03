@@ -9,6 +9,8 @@ public final class BifroREOptions {
     public boolean multiNci = false;
     public int payloadFormat = BifroRE.PAYLOAD_JSON;
     public String clientIdsPath = "./client_ids";
+    public String protobufDescriptorSetPath;
+    public String protobufMessageName;
     public int callbackQueueCapacity = 1024;
     public int pollBatchLimit = 64;
     public int directPollSlotCount = 4;
@@ -51,6 +53,16 @@ public final class BifroREOptions {
 
     public BifroREOptions clientIdsPath(String clientIdsPath) {
         this.clientIdsPath = clientIdsPath;
+        return this;
+    }
+
+    public BifroREOptions protobufDescriptorSetPath(String protobufDescriptorSetPath) {
+        this.protobufDescriptorSetPath = protobufDescriptorSetPath;
+        return this;
+    }
+
+    public BifroREOptions protobufMessageName(String protobufMessageName) {
+        this.protobufMessageName = protobufMessageName;
         return this;
     }
 

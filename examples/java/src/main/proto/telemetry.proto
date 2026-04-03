@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package example.telemetry;
+
+option java_package = "com.example.proto";
+option java_outer_classname = "TelemetryProto";
+
+message Reading {
+  double temp = 1;
+  double hum = 2;
+  bool online = 3;
+}
+
+message Sensor {
+  string device = 1;
+  Reading reading = 2;
+}
+
+message Envelope {
+  Sensor sensor = 1;
+  string site = 2;
+}

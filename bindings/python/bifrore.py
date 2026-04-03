@@ -48,15 +48,19 @@ class BifroRE:
         multi_nci=False,
         payload_format=PAYLOAD_JSON,
         client_ids_path="./client_ids",
+        protobuf_descriptor_set_path=None,
+        protobuf_message_name=None,
     ):
         lib_path, rule_path = self._resolve_paths(lib_path_or_rule_path, rule_path)
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
-        self.handle = self.lib.bre_create_with_config_and_payload_format_and_client_ids_path(
+        self.handle = self.lib.bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
             rule_path.encode("utf-8"),
             payload_format,
             client_ids_path.encode("utf-8") if client_ids_path else None,
             self.NOTIFY_MODE_PUSH,
+            protobuf_descriptor_set_path.encode("utf-8") if protobuf_descriptor_set_path else None,
+            protobuf_message_name.encode("utf-8") if protobuf_message_name else None,
         )
         if not self.handle:
             raise RuntimeError("Failed to create engine with rule file")
@@ -114,6 +118,15 @@ class BifroRE:
             c_int,
         ]
         self.lib.bre_create_with_config_and_payload_format_and_client_ids_path.restype = c_void_p
+        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema.argtypes = [
+            c_char_p,
+            c_int,
+            c_char_p,
+            c_int,
+            c_char_p,
+            c_char_p,
+        ]
+        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema.restype = c_void_p
         self.lib.bre_destroy.argtypes = [c_void_p]
         self.lib.bre_start_mqtt.argtypes = [
             c_void_p,
