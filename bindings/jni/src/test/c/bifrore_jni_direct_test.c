@@ -32,6 +32,34 @@ void *bre_create_with_config_and_payload_format_and_client_ids_path(
     return NULL;
 }
 
+void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+    const char *path,
+    int payload_format,
+    const char *client_ids_path,
+    int notify_mode) {
+    (void)path;
+    (void)payload_format;
+    (void)client_ids_path;
+    (void)notify_mode;
+    return NULL;
+}
+
+void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+    const char *path,
+    int payload_format,
+    const char *client_ids_path,
+    int notify_mode,
+    const char *protobuf_descriptor_set_path,
+    const char *protobuf_message_name) {
+    (void)path;
+    (void)payload_format;
+    (void)client_ids_path;
+    (void)notify_mode;
+    (void)protobuf_descriptor_set_path;
+    (void)protobuf_message_name;
+    return NULL;
+}
+
 void bre_destroy(void *engine) {
     (void)engine;
 }

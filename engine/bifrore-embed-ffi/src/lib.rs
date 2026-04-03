@@ -2,7 +2,9 @@ use bifrore_embed_core::message::Message;
 use bifrore_embed_core::mqtt::{
     start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
 };
-use bifrore_embed_core::payload::PayloadFormat;
+use bifrore_embed_core::payload::{
+    dynamic_protobuf_decoder_from_descriptor_set_file, PayloadFormat,
+};
 use bifrore_embed_core::runtime::{RuleEngine, RuleMetadata};
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
@@ -377,11 +379,13 @@ fn free_rule_metadata_inner(metadata_ref: &mut BifroRuleMetadata) {
 
 #[no_mangle]
 pub extern "C" fn bre_create_with_config(config_path: *const c_char) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
         config_path,
         BifroREPayloadFormat::Json as c_int,
         ptr::null(),
         BifroRENotifyMode::Poll as c_int,
+        ptr::null(),
+        ptr::null(),
     )
 }
 
@@ -390,11 +394,13 @@ pub extern "C" fn bre_create_with_config_and_payload_format(
     config_path: *const c_char,
     payload_format: c_int,
 ) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
         config_path,
         payload_format,
         ptr::null(),
         BifroRENotifyMode::Poll as c_int,
+        ptr::null(),
+        ptr::null(),
     )
 }
 
@@ -404,11 +410,13 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
     payload_format: c_int,
     client_ids_path: *const c_char,
 ) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
         config_path,
         payload_format,
         client_ids_path,
         BifroRENotifyMode::Poll as c_int,
+        ptr::null(),
+        ptr::null(),
     )
 }
 
@@ -418,6 +426,25 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_
     payload_format: c_int,
     client_ids_path: *const c_char,
     notify_mode: c_int,
+) -> *mut BifroRE {
+    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+        config_path,
+        payload_format,
+        client_ids_path,
+        notify_mode,
+        ptr::null(),
+        ptr::null(),
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+    config_path: *const c_char,
+    payload_format: c_int,
+    client_ids_path: *const c_char,
+    notify_mode: c_int,
+    protobuf_descriptor_set_path: *const c_char,
+    protobuf_message_name: *const c_char,
 ) -> *mut BifroRE {
     ensure_logger_initialized();
     if config_path.is_null() {
@@ -451,7 +478,37 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_
         }
     };
 
-    let mut rule_engine = RuleEngine::with_payload_format(payload_format);
+    let mut rule_engine = if payload_format == PayloadFormat::Protobuf
+        && !protobuf_descriptor_set_path.is_null()
+        && !protobuf_message_name.is_null()
+    {
+        let descriptor_path = match unsafe { CStr::from_ptr(protobuf_descriptor_set_path) }.to_str() {
+            Ok(value) if !value.trim().is_empty() => value.trim(),
+            _ => return ptr::null_mut(),
+        };
+        let message_name = match unsafe { CStr::from_ptr(protobuf_message_name) }.to_str() {
+            Ok(value) if !value.trim().is_empty() => value.trim(),
+            _ => return ptr::null_mut(),
+        };
+        let decoder = match dynamic_protobuf_decoder_from_descriptor_set_file(
+            descriptor_path,
+            message_name,
+        ) {
+            Ok(decoder) => decoder,
+            Err(err) => {
+                log::warn!(
+                    "failed to initialize protobuf decoder descriptor_set={} message={} error={}",
+                    descriptor_path,
+                    message_name,
+                    err
+                );
+                return ptr::null_mut();
+            }
+        };
+        RuleEngine::with_payload_decoder(decoder)
+    } else {
+        RuleEngine::with_payload_format(payload_format)
+    };
     if rule_engine.load_rules_from_json(config_path).is_err() {
         return ptr::null_mut();
     }

@@ -1,6 +1,9 @@
 use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage};
 use prost_types::{value, ListValue, Struct, Value as PbValue};
 use serde_json::{Map, Value};
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,6 +66,34 @@ where
         map_fn(message)
     };
     PayloadDecoder::ProtobufTyped(Arc::new(decode))
+}
+
+pub fn dynamic_protobuf_decoder_from_descriptor_set_file<P: AsRef<Path>>(
+    descriptor_set_path: P,
+    message_name: &str,
+) -> Result<PayloadDecoder, String> {
+    let descriptor_set = fs::read(descriptor_set_path).map_err(|err| err.to_string())?;
+    dynamic_protobuf_decoder_from_descriptor_set_bytes(&descriptor_set, message_name)
+}
+
+pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
+    descriptor_set: &[u8],
+    message_name: &str,
+) -> Result<PayloadDecoder, String> {
+    let pool = DescriptorPool::decode(descriptor_set).map_err(|err| err.to_string())?;
+    let message_descriptor = pool
+        .get_message_by_name(message_name)
+        .ok_or_else(|| format!("protobuf message not found in descriptor set: {message_name}"))?;
+    let decode = move |payload: &[u8]| {
+        let message =
+            DynamicMessage::decode(message_descriptor.clone(), payload).map_err(|err| err.to_string())?;
+        let value = serde_json::to_value(&message).map_err(|err| err.to_string())?;
+        value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "decoded protobuf message must map to a JSON object".to_string())
+    };
+    Ok(PayloadDecoder::ProtobufTyped(Arc::new(decode)))
 }
 
 pub fn decode_payload_object(

@@ -156,6 +156,8 @@ public final class BifroRE implements AutoCloseable {
             options.multiNci,
             options.payloadFormat,
             options.clientIdsPath,
+            options.protobufDescriptorSetPath,
+            options.protobufMessageName,
             options.callbackQueueCapacity,
             options.pollBatchLimit,
             options.directPollSlotCount,
@@ -172,6 +174,8 @@ public final class BifroRE implements AutoCloseable {
         boolean multiNci,
         int payloadFormat,
         String clientIdsPath,
+        String protobufDescriptorSetPath,
+        String protobufMessageName,
         int callbackQueueCapacity,
         int pollBatchLimit,
         int directPollSlotCount,
@@ -191,11 +195,13 @@ public final class BifroRE implements AutoCloseable {
         this.directPayloadBufferBytes = Math.max(1, directPayloadBufferBytes);
         this.clientIdsPath =
             (clientIdsPath == null || clientIdsPath.isBlank()) ? "./client_ids" : clientIdsPath;
-        this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+        this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
             ruleJsonPath,
             payloadFormat,
             this.clientIdsPath,
-            NOTIFY_MODE_POLL
+            NOTIFY_MODE_POLL,
+            protobufDescriptorSetPath,
+            protobufMessageName
         );
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
@@ -699,11 +705,13 @@ public final class BifroRE implements AutoCloseable {
 
     private static native long nativeCreateWithConfig(String path);
     private static native long nativeCreateWithConfigAndPayloadFormat(String path, int payloadFormat);
-    private static native long nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
+    private static native long nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
         String path,
         int payloadFormat,
         String clientIdsPath,
-        int notifyMode
+        int notifyMode,
+        String protobufDescriptorSetPath,
+        String protobufMessageName
     );
     private static native void nativeDestroy(long handle);
     private static native int nativeDisconnect(long handle);

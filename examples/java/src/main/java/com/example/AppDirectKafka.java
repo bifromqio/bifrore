@@ -2,6 +2,7 @@ package com.example;
 
 import com.bifrore.BifroRE;
 import com.bifrore.BifroREOptions;
+import com.example.proto.TelemetryProto;
 import com.sun.net.httpserver.HttpServer;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -17,15 +18,36 @@ import java.util.concurrent.CompletableFuture;
 
 public final class AppDirectKafka {
     public static void main(String[] args) throws Exception {
+        byte[] samplePayload = TelemetryProto.Envelope.newBuilder()
+            .setSensor(
+                TelemetryProto.Sensor.newBuilder()
+                    .setDevice("sensor-a")
+                    .setReading(
+                        TelemetryProto.Reading.newBuilder()
+                            .setTemp(23.5)
+                            .setHum(61.0)
+                            .setOnline(true)
+                            .build()
+                    )
+                    .build()
+            )
+            .setSite("factory-a")
+            .build()
+            .toByteArray();
+        System.out.println("protobuf sample payload bytes=" + samplePayload.length);
+
         BifroRE engine = new BifroRE(
             new BifroREOptions()
                 .host("127.0.0.1")
                 .port(1883)
+                .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
                 .callbackQueueCapacity(1024)
                 .pollBatchLimit(64)
                 .directPollSlotCount(4)
                 .directPayloadBufferBytes(1024 * 1024)
-                .ruleJsonPath(ExampleSupport.extractRuleResource())
+                .ruleJsonPath(ExampleSupport.extractProtobufRuleResource())
+                .protobufDescriptorSetPath(ExampleSupport.extractProtobufDescriptorResource())
+                .protobufMessageName("example.telemetry.Envelope")
         );
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         HttpServer metricsServer = ExampleSupport.startMetricsServer(registry);

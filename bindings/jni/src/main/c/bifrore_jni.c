@@ -31,6 +31,13 @@ extern void *bre_create_with_config_and_payload_format_and_client_ids_path_and_n
     int payload_format,
     const char *client_ids_path,
     int notify_mode);
+extern void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+    const char *path,
+    int payload_format,
+    const char *client_ids_path,
+    int notify_mode,
+    const char *protobuf_descriptor_set_path,
+    const char *protobuf_message_name);
 extern void bre_destroy(void *engine);
 extern int bre_disconnect(void *engine);
 extern int bre_start_mqtt(
@@ -481,6 +488,15 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jint payload_format,
     jstring client_ids_path,
     jint notify_mode);
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
+    JNIEnv *env,
+    jclass cls,
+    jstring path,
+    jint payload_format,
+    jstring client_ids_path,
+    jint notify_mode,
+    jstring protobuf_descriptor_set_path,
+    jstring protobuf_message_name);
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfig(JNIEnv *env, jclass cls, jstring path) {
     return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
@@ -520,6 +536,55 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     (*env)->ReleaseStringUTFChars(env, path, path_str);
     if (client_ids_path_str != NULL) {
         (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);
+    }
+    return (jlong)engine;
+}
+
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
+    JNIEnv *env,
+    jclass cls,
+    jstring path,
+    jint payload_format,
+    jstring client_ids_path,
+    jint notify_mode,
+    jstring protobuf_descriptor_set_path,
+    jstring protobuf_message_name) {
+    (void)cls;
+    if (path == NULL) {
+        return 0;
+    }
+    const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
+    const char *client_ids_path_str = NULL;
+    const char *protobuf_descriptor_set_path_str = NULL;
+    const char *protobuf_message_name_str = NULL;
+    if (client_ids_path != NULL) {
+        client_ids_path_str = (*env)->GetStringUTFChars(env, client_ids_path, NULL);
+    }
+    if (protobuf_descriptor_set_path != NULL) {
+        protobuf_descriptor_set_path_str =
+            (*env)->GetStringUTFChars(env, protobuf_descriptor_set_path, NULL);
+    }
+    if (protobuf_message_name != NULL) {
+        protobuf_message_name_str = (*env)->GetStringUTFChars(env, protobuf_message_name, NULL);
+    }
+    void *engine =
+        bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+            path_str,
+            (int)payload_format,
+            client_ids_path_str,
+            (int)notify_mode,
+            protobuf_descriptor_set_path_str,
+            protobuf_message_name_str);
+    (*env)->ReleaseStringUTFChars(env, path, path_str);
+    if (client_ids_path_str != NULL) {
+        (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);
+    }
+    if (protobuf_descriptor_set_path_str != NULL) {
+        (*env)->ReleaseStringUTFChars(
+            env, protobuf_descriptor_set_path, protobuf_descriptor_set_path_str);
+    }
+    if (protobuf_message_name_str != NULL) {
+        (*env)->ReleaseStringUTFChars(env, protobuf_message_name, protobuf_message_name_str);
     }
     return (jlong)engine;
 }

@@ -19,6 +19,9 @@ import java.nio.file.StandardCopyOption;
 
 final class ExampleSupport {
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String DEFAULT_RULE_RESOURCE = "/com/example/rule.json";
+    private static final String PROTOBUF_RULE_RESOURCE = "/com/example/rule-protobuf.json";
+    private static final String PROTOBUF_DESCRIPTOR_RESOURCE = "/com/example/telemetry.desc";
 
     private ExampleSupport() {}
 
@@ -32,11 +35,23 @@ final class ExampleSupport {
     }
 
     static String extractRuleResource() throws Exception {
-        try (InputStream input = ExampleSupport.class.getResourceAsStream("/com/example/rule.json")) {
+        return extractResource(DEFAULT_RULE_RESOURCE, "bifrore-rule-", ".json");
+    }
+
+    static String extractProtobufRuleResource() throws Exception {
+        return extractResource(PROTOBUF_RULE_RESOURCE, "bifrore-rule-protobuf-", ".json");
+    }
+
+    static String extractProtobufDescriptorResource() throws Exception {
+        return extractResource(PROTOBUF_DESCRIPTOR_RESOURCE, "bifrore-protobuf-", ".desc");
+    }
+
+    private static String extractResource(String resourcePath, String prefix, String suffix) throws Exception {
+        try (InputStream input = ExampleSupport.class.getResourceAsStream(resourcePath)) {
             if (input == null) {
-                throw new IllegalStateException("missing resource: /com/example/rule.json");
+                throw new IllegalStateException("missing resource: " + resourcePath);
             }
-            Path tempFile = Files.createTempFile("bifrore-rule-", ".json");
+            Path tempFile = Files.createTempFile(prefix, suffix);
             Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING);
             tempFile.toFile().deleteOnExit();
             return tempFile.toAbsolutePath().toString();

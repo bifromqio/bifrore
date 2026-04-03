@@ -34,7 +34,8 @@ See `examples/java/pom.xml`.
 Two example entrypoints are provided:
 
 - Heap-based JNI path: `examples/java/src/main/java/com/example/AppHeap.java`
-- Direct-buffer JNI path with async Kafka forwarding: `examples/java/src/main/java/com/example/AppDirectKafka.java`
+- Direct-buffer JNI path with async Kafka forwarding and protobuf payload decoding:
+  `examples/java/src/main/java/com/example/AppDirectKafka.java`
 
 The example exposes Prometheus metrics on:
 
@@ -69,6 +70,16 @@ The callback reads the payload slice directly from the shared heap batch blob.
 `AppDirectKafka` uses the direct-buffer async callback:
 
 - `onNextAsyncDirect((ruleIndex, payloadBuffer, offset, length, metadata) -> CompletionStage<?>)`
+
+The direct example also configures protobuf payload decoding at engine init with:
+
+- `payloadFormat(BifroRE.PAYLOAD_PROTOBUF)`
+- `protobufDescriptorSetPath(...)`
+- `protobufMessageName("example.telemetry.Envelope")`
+
+The nested protobuf schema source lives at:
+
+- `examples/java/src/main/proto/telemetry.proto`
 
 Important contract for the direct callback:
 
