@@ -2,9 +2,7 @@ use bifrore_embed_core::message::Message;
 use bifrore_embed_core::mqtt::{
     start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
 };
-use bifrore_embed_core::payload::{
-    dynamic_protobuf_decoder_from_descriptor_set_file, PayloadFormat,
-};
+use bifrore_embed_core::payload::PayloadFormat;
 use bifrore_embed_core::runtime::{RuleEngine, RuleMetadata};
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
@@ -478,10 +476,11 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_
         }
     };
 
-    let mut rule_engine = if payload_format == PayloadFormat::Protobuf
-        && !protobuf_descriptor_set_path.is_null()
-        && !protobuf_message_name.is_null()
-    {
+    let mut rule_engine = if payload_format == PayloadFormat::Protobuf {
+        if protobuf_descriptor_set_path.is_null() || protobuf_message_name.is_null() {
+            log::warn!("protobuf payload format requires descriptor_set_path and message_name");
+            return ptr::null_mut();
+        }
         let descriptor_path = match unsafe { CStr::from_ptr(protobuf_descriptor_set_path) }.to_str() {
             Ok(value) if !value.trim().is_empty() => value.trim(),
             _ => return ptr::null_mut(),
@@ -490,11 +489,11 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_
             Ok(value) if !value.trim().is_empty() => value.trim(),
             _ => return ptr::null_mut(),
         };
-        let decoder = match dynamic_protobuf_decoder_from_descriptor_set_file(
+        match RuleEngine::with_protobuf_descriptor_set_file(
             descriptor_path,
             message_name,
         ) {
-            Ok(decoder) => decoder,
+            Ok(engine) => engine,
             Err(err) => {
                 log::warn!(
                     "failed to initialize protobuf decoder descriptor_set={} message={} error={}",
@@ -504,10 +503,9 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_
                 );
                 return ptr::null_mut();
             }
-        };
-        RuleEngine::with_payload_decoder(decoder)
+        }
     } else {
-        RuleEngine::with_payload_format(payload_format)
+        RuleEngine::with_json()
     };
     if rule_engine.load_rules_from_json(config_path).is_err() {
         return ptr::null_mut();

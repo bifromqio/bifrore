@@ -1,7 +1,5 @@
-use crate::msg_ir::{MsgIr, PayloadValue};
-use prost::Message;
+use crate::msg_ir::MsgIr;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-use prost_types::{value, ListValue, Struct, Value as PbValue};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -25,20 +23,20 @@ impl PayloadFormat {
     }
 }
 
-type TypedDecodeFn =
-    dyn Fn(&[u8], Option<&HashSet<String>>) -> Result<MsgIr, String> + Send + Sync + 'static;
+type DecodeFn = dyn Fn(&[u8], Option<&HashSet<String>>) -> Result<MsgIr, String> + Send + Sync + 'static;
 
 #[derive(Clone)]
 pub enum PayloadDecoder {
     Json,
-    ProtobufTyped(Arc<TypedDecodeFn>),
+    #[doc(hidden)]
+    Protobuf(Arc<DecodeFn>),
 }
 
 impl std::fmt::Debug for PayloadDecoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Json => f.write_str("Json"),
-            Self::ProtobufTyped(_) => f.write_str("ProtobufTyped"),
+            Self::Protobuf(_) => f.write_str("Protobuf"),
         }
     }
 }
@@ -53,28 +51,9 @@ impl PayloadDecoder {
     pub fn from_format(format: PayloadFormat) -> Self {
         match format {
             PayloadFormat::Json => Self::Json,
-            PayloadFormat::Protobuf => Self::ProtobufTyped(Arc::new(decode_protobuf_struct_object)),
+            PayloadFormat::Protobuf => Self::Protobuf(Arc::new(unsupported_protobuf_decoder)),
         }
     }
-}
-
-pub fn typed_protobuf_decoder<T, F>(map_fn: F) -> PayloadDecoder
-where
-    T: Message + Default + Send + Sync + 'static,
-    F: Fn(T) -> Result<MsgIr, String> + Send + Sync + 'static,
-{
-    let decode = move |payload: &[u8]| {
-        let message = T::decode(payload).map_err(|err| err.to_string())?;
-        map_fn(message)
-    };
-    let decode = move |payload: &[u8], required_fields: Option<&HashSet<String>>| {
-        let mut decoded = decode(payload)?;
-        if let Some(required_fields) = required_fields {
-            decoded.retain_fields(required_fields);
-        }
-        Ok(decoded)
-    };
-    PayloadDecoder::ProtobufTyped(Arc::new(decode))
 }
 
 pub fn dynamic_protobuf_decoder_from_descriptor_set_file<P: AsRef<Path>>(
@@ -103,7 +82,7 @@ pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
             .ok_or_else(|| "decoded protobuf message must map to a JSON object".to_string())?;
         MsgIr::from_json_object_with_required_fields(&object, required_fields)
     };
-    Ok(PayloadDecoder::ProtobufTyped(Arc::new(decode)))
+    Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
 }
 
 pub fn decode_payload_ir(payload: &[u8], format: PayloadFormat) -> Result<MsgIr, String> {
@@ -121,7 +100,7 @@ pub fn decode_payload_ir_with_decoder_and_required_fields(
 ) -> Result<MsgIr, String> {
     match decoder {
         PayloadDecoder::Json => decode_json_ir(payload, required_fields),
-        PayloadDecoder::ProtobufTyped(decode) => decode(payload, required_fields),
+        PayloadDecoder::Protobuf(decode) => decode(payload, required_fields),
     }
 }
 
@@ -142,51 +121,23 @@ fn decode_json_ir(payload: &[u8], required_fields: Option<&HashSet<String>>) -> 
     MsgIr::from_json_object_with_required_fields(&object, required_fields)
 }
 
-fn decode_protobuf_struct_object(
-    payload: &[u8],
-    required_fields: Option<&HashSet<String>>,
+fn unsupported_protobuf_decoder(
+    _payload: &[u8],
+    _required_fields: Option<&HashSet<String>>,
 ) -> Result<MsgIr, String> {
-    let parsed = Struct::decode(payload).map_err(|err| err.to_string())?;
-    let fields = convert_protobuf_struct(parsed);
-    Ok(MsgIr::from_protobuf_struct_with_required_fields(&fields, required_fields))
-}
-
-fn convert_protobuf_struct(input: Struct) -> Vec<(String, PayloadValue)> {
-    input
-        .fields
-        .into_iter()
-        .map(|(key, value)| (key, convert_protobuf_value(value)))
-        .collect()
-}
-
-fn convert_protobuf_list(input: ListValue) -> Vec<PayloadValue> {
-    input
-        .values
-        .into_iter()
-        .map(convert_protobuf_value)
-        .collect()
-}
-
-fn convert_protobuf_value(input: PbValue) -> PayloadValue {
-    match input.kind {
-        Some(value::Kind::NullValue(_)) => PayloadValue::Null,
-        Some(value::Kind::NumberValue(number)) => PayloadValue::Number(number),
-        Some(value::Kind::StringValue(text)) => PayloadValue::String(text),
-        Some(value::Kind::BoolValue(flag)) => PayloadValue::Bool(flag),
-        Some(value::Kind::StructValue(object)) => PayloadValue::Object(convert_protobuf_struct(object)),
-        Some(value::Kind::ListValue(list)) => PayloadValue::Array(convert_protobuf_list(list)),
-        None => PayloadValue::Null,
-    }
+    Err("protobuf payload decoding requires a descriptor-set file and fully-qualified message name".to_string())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
+
     #[derive(Clone, PartialEq, ::prost::Message)]
-    struct TypedPayload {
+    struct EvalPayload {
         #[prost(double, tag = "1")]
         temp: f64,
-        #[prost(string, tag = "2")]
-        device: String,
+        #[prost(double, tag = "2")]
+        hum: f64,
     }
 
     #[test]
@@ -197,48 +148,27 @@ mod tests {
     }
 
     #[test]
-    fn decode_typed_protobuf_payload() {
-        let decoder = typed_protobuf_decoder::<TypedPayload, _>(|message| {
-            let mut output = MsgIr::new();
-            output.insert("temp", PayloadValue::from(message.temp));
-            output.insert("device", PayloadValue::from(message.device));
-            Ok(output)
-        });
-        let payload = TypedPayload {
+    fn decode_schema_based_protobuf_payload() {
+        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
+            include_bytes!("../testdata/bifrore_test.desc"),
+            "bifrore.test.EvalPayload",
+        )
+        .expect("protobuf decoder");
+        let payload = EvalPayload {
             temp: 30.0,
-            device: "sensor-a".to_string(),
+            hum: 61.0,
         }
         .encode_to_vec();
 
-        let decoded = decode_payload_ir_with_decoder(&payload, &decoder).expect("decode typed protobuf");
-        assert_eq!(decoded.get_key("temp"), Some(&PayloadValue::from(30.0)));
-        assert_eq!(decoded.get_key("device"), Some(&PayloadValue::from("sensor-a")));
+        let decoded = decode_payload_ir_with_decoder(&payload, &decoder).expect("decode protobuf");
+        assert_eq!(decoded.get_key("temp").and_then(|value| value.as_f64()), Some(30.0));
+        assert_eq!(decoded.get_key("hum").and_then(|value| value.as_f64()), Some(61.0));
     }
 
     #[test]
-    fn decode_protobuf_struct_payload() {
-        let mut nested = Struct::default();
-        nested
-            .fields
-            .insert("hum".to_string(), PbValue { kind: Some(value::Kind::NumberValue(61.0)) });
-
-        let mut root = Struct::default();
-        root.fields.insert(
-            "temp".to_string(),
-            PbValue {
-                kind: Some(value::Kind::NumberValue(30.0)),
-            },
-        );
-        root.fields.insert(
-            "meta".to_string(),
-            PbValue {
-                kind: Some(value::Kind::StructValue(nested)),
-            },
-        );
-        let payload = root.encode_to_vec();
-
-        let decoded = decode_payload_ir(&payload, PayloadFormat::Protobuf).expect("decode protobuf struct");
-        assert_eq!(decoded.get_key("temp"), Some(&PayloadValue::from(30.0)));
-        assert_eq!(decoded.get_key("meta.hum"), Some(&PayloadValue::from(61.0)));
+    fn decode_protobuf_without_schema_is_rejected() {
+        let err = decode_payload_ir(&[0x08, 0x96, 0x01], PayloadFormat::Protobuf)
+            .expect_err("protobuf without schema should fail");
+        assert!(err.contains("descriptor-set"));
     }
 }

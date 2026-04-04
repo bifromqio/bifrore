@@ -1,10 +1,16 @@
 use crate::message::Message;
 use crate::metrics::EvalMetrics;
 use crate::msg_ir::MsgIr;
-use crate::payload::{decode_payload_ir_with_decoder_and_required_fields, PayloadDecoder, PayloadFormat};
+use crate::payload::{
+    dynamic_protobuf_decoder_from_descriptor_set_bytes,
+    dynamic_protobuf_decoder_from_descriptor_set_file,
+};
+use crate::payload::{
+    decode_payload_ir_with_decoder_and_required_fields, PayloadDecoder, PayloadFormat
+};
 use crate::rule::{
-    compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
-    RuleError,
+    compile_rule, evaluate_rule_with_payload_and_topic_parts,
+    CompiledRule, RuleDefinition, RuleError,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -37,17 +43,36 @@ impl Default for RuleEngine {
 
 impl RuleEngine {
     pub fn new() -> Self {
-        Self::with_payload_format(PayloadFormat::Json)
+        Self::with_json()
     }
 
-    pub fn with_payload_format(payload_format: PayloadFormat) -> Self {
-        Self::with_payload_decoder(PayloadDecoder::from_format(payload_format))
+    pub fn with_json() -> Self {
+        Self::with_payload_decoder(PayloadDecoder::from_format(PayloadFormat::Json))
     }
 
+    pub fn with_protobuf_descriptor_set_file<P: AsRef<Path>>(
+        descriptor_set_path: P,
+        message_name: &str,
+    ) -> Result<Self, String> {
+        let decoder =
+            dynamic_protobuf_decoder_from_descriptor_set_file(descriptor_set_path, message_name)?;
+        Ok(Self::with_payload_decoder(decoder))
+    }
+
+    pub fn with_protobuf_descriptor_set_bytes(
+        descriptor_set: &[u8],
+        message_name: &str,
+    ) -> Result<Self, String> {
+        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(descriptor_set, message_name)?;
+        Ok(Self::with_payload_decoder(decoder))
+    }
+
+    #[doc(hidden)]
     pub fn with_payload_decoder(payload_decoder: PayloadDecoder) -> Self {
         Self::with_payload_decoder_and_cache_capacity(payload_decoder, DEFAULT_TOPIC_CACHE_CAPACITY)
     }
 
+    #[doc(hidden)]
     pub fn with_payload_decoder_and_cache_capacity(
         payload_decoder: PayloadDecoder,
         topic_cache_capacity: usize,
@@ -500,8 +525,6 @@ impl TopicTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msg_ir::{MsgIr, PayloadValue};
-    use crate::payload::typed_protobuf_decoder;
     use prost::Message as _;
 
     #[derive(Clone, PartialEq, ::prost::Message)]
@@ -594,15 +617,12 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_with_typed_protobuf_typed_predicates_and_projection() {
-        let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
-            let mut output = MsgIr::new();
-            output.insert("temp", PayloadValue::from(message.temp));
-            output.insert("device", PayloadValue::from(message.device));
-            output.insert("online", PayloadValue::from(message.online));
-            Ok(output)
-        });
-        let mut engine = RuleEngine::with_payload_decoder(decoder);
+    fn evaluate_with_schema_based_protobuf_predicates_and_projection() {
+        let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+            include_bytes!("../testdata/bifrore_test.desc"),
+            "bifrore.test.TypedRuntimePayload",
+        )
+        .expect("protobuf engine");
         engine
             .add_rule(RuleDefinition {
                 expression: "select device as d from data where temp >= 20 and online = true"
@@ -626,15 +646,12 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_with_typed_protobuf_invalid_payload_is_dropped() {
-        let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
-            let mut output = MsgIr::new();
-            output.insert("temp", PayloadValue::from(message.temp));
-            output.insert("device", PayloadValue::from(message.device));
-            output.insert("online", PayloadValue::from(message.online));
-            Ok(output)
-        });
-        let mut engine = RuleEngine::with_payload_decoder(decoder);
+    fn evaluate_with_schema_based_protobuf_invalid_payload_is_dropped() {
+        let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+            include_bytes!("../testdata/bifrore_test.desc"),
+            "bifrore.test.TypedRuntimePayload",
+        )
+        .expect("protobuf engine");
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from data where temp > 10".to_string(),
@@ -648,14 +665,12 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_with_typed_protobuf_decoder() {
-        let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
-            let mut output = MsgIr::new();
-            output.insert("temp", PayloadValue::from(message.temp));
-            output.insert("device", PayloadValue::from(message.device));
-            Ok(output)
-        });
-        let mut engine = RuleEngine::with_payload_decoder(decoder);
+    fn evaluate_with_schema_based_protobuf_decoder() {
+        let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+            include_bytes!("../testdata/bifrore_test.desc"),
+            "bifrore.test.TypedRuntimePayload",
+        )
+        .expect("protobuf engine");
         engine
             .add_rule(RuleDefinition {
                 expression: "select device as d from data where temp > 20".to_string(),

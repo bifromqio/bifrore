@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package bifrore.test;
+
+message EvalPayload {
+  double temp = 1;
+  double hum = 2;
+}
+
+message TypedRuntimePayload {
+  double temp = 1;
+  string device = 2;
+  bool online = 3;
+}
+
+message TypedMetric {
+  double value = 1;
+  bool ok = 2;
+  string label = 3;
+}
+
+message TypedDeepNode {
+  TypedDeepNode child = 1;
+  double value = 2;
+  string label = 3;
+}
+
+message TypedPayload {
+  double temp = 1;
+  double hum = 2;
+  TypedDeepNode deep = 3;
+  repeated TypedMetric metrics = 4;
+  string device = 5;
+}

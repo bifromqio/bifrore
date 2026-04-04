@@ -1,6 +1,4 @@
 use bifrore_embed_core::message::Message;
-use bifrore_embed_core::msg_ir::{MsgIr, PayloadValue};
-use bifrore_embed_core::payload::typed_protobuf_decoder;
 use bifrore_embed_core::runtime::RuleEngine;
 use bifrore_embed_core::rule::RuleDefinition;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
@@ -99,13 +97,11 @@ fn build_engine_with_expr(rule_count: usize, expr_builder: impl Fn(usize) -> Str
 }
 
 fn build_protobuf_engine(rule_count: usize) -> RuleEngine {
-    let decoder = typed_protobuf_decoder::<EvalPayload, _>(|message| {
-        let mut output = MsgIr::new();
-        output.insert("temp", PayloadValue::from(message.temp));
-        output.insert("hum", PayloadValue::from(message.hum));
-        Ok(output)
-    });
-    let mut engine = RuleEngine::with_payload_decoder(decoder);
+    let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+        include_bytes!("../testdata/bifrore_test.desc"),
+        "bifrore.test.EvalPayload",
+    )
+    .expect("protobuf engine");
     for idx in 0..rule_count {
         let expression = format!(
             "select (temp + {idx}) * 2 as t from sensors/+/temp where temp > 20 and hum < 80"
