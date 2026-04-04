@@ -177,29 +177,6 @@ impl MsgIr {
         }
     }
 
-    pub fn from_protobuf_struct_with_required_fields(
-        fields: &[(String, PayloadValue)],
-        required_fields: Option<&HashSet<String>>,
-    ) -> Self {
-        match required_fields {
-            Some(required_fields) if !required_fields.is_empty() => {
-                let mut ir = Self::new();
-                for key in required_fields {
-                    if let Some(value) = lookup_payload_path(fields, key) {
-                        ir.insert(key.clone(), value.clone());
-                    }
-                }
-                ir
-            }
-            _ => {
-                let mut ir = Self::new();
-                for (key, value) in fields {
-                    ir.flatten_insert(key, value);
-                }
-                ir
-            }
-        }
-    }
 }
 
 fn lookup_json_path<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
@@ -208,25 +185,6 @@ fn lookup_json_path<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Va
     let mut current = map.get(first)?;
     for segment in segments {
         current = current.get(segment)?;
-    }
-    Some(current)
-}
-
-fn lookup_payload_path<'a>(fields: &'a [(String, PayloadValue)], key: &str) -> Option<&'a PayloadValue> {
-    let mut segments = key.split('.');
-    let first = segments.next()?;
-    let mut current = fields
-        .iter()
-        .find(|(name, _)| name == first)
-        .map(|(_, value)| value)?;
-    for segment in segments {
-        let PayloadValue::Object(entries) = current else {
-            return None;
-        };
-        current = entries
-            .iter()
-            .find(|(name, _)| name == segment)
-            .map(|(_, value)| value)?;
     }
     Some(current)
 }
