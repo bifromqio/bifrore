@@ -1,6 +1,7 @@
 use crate::message::Message;
 use crate::metrics::EvalMetrics;
-use crate::payload::{decode_payload_object_with_decoder, PayloadDecoder, PayloadFormat};
+use crate::msg_ir::MsgIr;
+use crate::payload::{decode_payload_ir_with_decoder_and_required_fields, PayloadDecoder, PayloadFormat};
 use crate::rule::{
     compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
     RuleError,
@@ -109,8 +110,15 @@ impl RuleEngine {
             return results;
         }
 
-        let payload_obj =
-            match decode_payload_object_with_decoder(&message.payload, &self.payload_decoder) {
+        let required_fields = collect_required_fields(&self.rules, &matched_rule_indexes);
+        let payload_obj = if required_fields.is_empty() {
+            MsgIr::new()
+        } else {
+            match decode_payload_ir_with_decoder_and_required_fields(
+                &message.payload,
+                &self.payload_decoder,
+                Some(&required_fields),
+            ) {
                 Ok(value) => value,
                 Err(err) => {
                     log::warn!(
@@ -121,7 +129,8 @@ impl RuleEngine {
                     );
                     return results;
                 }
-            };
+            }
+        };
         let topic_parts: Vec<&str> = message.topic.split('/').collect();
 
         let use_parallel = matched_rule_indexes.len() >= self.eval_parallel_threshold
@@ -248,7 +257,7 @@ fn evaluate_single_rule(
     rule_index: usize,
     rules: &[Option<CompiledRule>],
     message: &Message,
-    payload_obj: &serde_json::Map<String, serde_json::Value>,
+    payload_obj: &MsgIr,
     topic_parts: &[&str],
 ) -> Option<EvalAttempt> {
     let rule = rules.get(rule_index).and_then(|slot| slot.as_ref())?;
@@ -276,6 +285,19 @@ fn build_eval_pool() -> Option<rayon::ThreadPool> {
         .thread_name(|idx| format!("bifrore-eval-{idx}"))
         .build()
         .ok()
+}
+
+fn collect_required_fields(
+    rules: &[Option<CompiledRule>],
+    matched_rule_indexes: &[usize],
+) -> HashSet<String> {
+    let mut fields = HashSet::new();
+    for rule_index in matched_rule_indexes {
+        if let Some(rule) = rules.get(*rule_index).and_then(|slot| slot.as_ref()) {
+            fields.extend(rule.required_payload_fields.iter().cloned());
+        }
+    }
+    fields
 }
 
 #[derive(Debug)]
@@ -478,6 +500,7 @@ impl TopicTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msg_ir::{MsgIr, PayloadValue};
     use crate::payload::typed_protobuf_decoder;
     use prost::Message as _;
 
@@ -573,10 +596,10 @@ mod tests {
     #[test]
     fn evaluate_with_typed_protobuf_typed_predicates_and_projection() {
         let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
-            let mut output = serde_json::Map::new();
-            output.insert("temp".to_string(), serde_json::Value::from(message.temp));
-            output.insert("device".to_string(), serde_json::Value::from(message.device));
-            output.insert("online".to_string(), serde_json::Value::from(message.online));
+            let mut output = MsgIr::new();
+            output.insert("temp", PayloadValue::from(message.temp));
+            output.insert("device", PayloadValue::from(message.device));
+            output.insert("online", PayloadValue::from(message.online));
             Ok(output)
         });
         let mut engine = RuleEngine::with_payload_decoder(decoder);
@@ -605,10 +628,10 @@ mod tests {
     #[test]
     fn evaluate_with_typed_protobuf_invalid_payload_is_dropped() {
         let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
-            let mut output = serde_json::Map::new();
-            output.insert("temp".to_string(), serde_json::Value::from(message.temp));
-            output.insert("device".to_string(), serde_json::Value::from(message.device));
-            output.insert("online".to_string(), serde_json::Value::from(message.online));
+            let mut output = MsgIr::new();
+            output.insert("temp", PayloadValue::from(message.temp));
+            output.insert("device", PayloadValue::from(message.device));
+            output.insert("online", PayloadValue::from(message.online));
             Ok(output)
         });
         let mut engine = RuleEngine::with_payload_decoder(decoder);
@@ -627,9 +650,9 @@ mod tests {
     #[test]
     fn evaluate_with_typed_protobuf_decoder() {
         let decoder = typed_protobuf_decoder::<TypedRuntimePayload, _>(|message| {
-            let mut output = serde_json::Map::new();
-            output.insert("temp".to_string(), serde_json::Value::from(message.temp));
-            output.insert("device".to_string(), serde_json::Value::from(message.device));
+            let mut output = MsgIr::new();
+            output.insert("temp", PayloadValue::from(message.temp));
+            output.insert("device", PayloadValue::from(message.device));
             Ok(output)
         });
         let mut engine = RuleEngine::with_payload_decoder(decoder);

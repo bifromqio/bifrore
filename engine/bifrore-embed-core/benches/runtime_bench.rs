@@ -1,4 +1,5 @@
 use bifrore_embed_core::message::Message;
+use bifrore_embed_core::msg_ir::{MsgIr, PayloadValue};
 use bifrore_embed_core::payload::typed_protobuf_decoder;
 use bifrore_embed_core::runtime::RuleEngine;
 use bifrore_embed_core::rule::RuleDefinition;
@@ -99,9 +100,9 @@ fn build_engine_with_expr(rule_count: usize, expr_builder: impl Fn(usize) -> Str
 
 fn build_protobuf_engine(rule_count: usize) -> RuleEngine {
     let decoder = typed_protobuf_decoder::<EvalPayload, _>(|message| {
-        let mut output = serde_json::Map::new();
-        output.insert("temp".to_string(), JsonValue::from(message.temp));
-        output.insert("hum".to_string(), JsonValue::from(message.hum));
+        let mut output = MsgIr::new();
+        output.insert("temp", PayloadValue::from(message.temp));
+        output.insert("hum", PayloadValue::from(message.hum));
         Ok(output)
     });
     let mut engine = RuleEngine::with_payload_decoder(decoder);
