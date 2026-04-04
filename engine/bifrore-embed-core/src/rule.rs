@@ -1,9 +1,11 @@
 use crate::message::Message;
+use crate::msg_ir::{MsgIr, PayloadValue};
 #[cfg(test)]
-use crate::payload::{decode_payload_object, PayloadFormat};
+use crate::payload::{decode_payload_ir, PayloadFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, Query, Select,
@@ -30,6 +32,7 @@ pub struct CompiledRule {
     pub fast_where: Option<FastPredicate>,
     pub fast_path_profile: FastPathProfile,
     pub destinations: Vec<String>,
+    pub required_payload_fields: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +62,7 @@ pub struct PlannedColumn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalExprPlan {
     Const(Value),
-    PayloadField(Vec<String>),
+    PayloadField(String),
     MetaQos,
     MetaRetain,
     MetaDup,
@@ -102,7 +105,7 @@ pub enum FastPredicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastField {
-    Payload(Vec<String>),
+    Payload(String),
     MetaQos,
     MetaRetain,
     MetaDup,
@@ -185,6 +188,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let select_plan = compile_select_plan(&select);
     let where_plan = where_expr.as_ref().map(compile_expr_plan);
     let fast_where = where_plan.as_ref().and_then(compile_fast_predicate);
+    let required_payload_fields = collect_required_payload_fields(&select_plan, where_plan.as_ref());
     let has_unknown_plan = select_plan_has_unknown(&select_plan)
         || where_plan
             .as_ref()
@@ -209,6 +213,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         fast_where,
         fast_path_profile: FastPathProfile::new(),
         destinations: rule.destinations,
+        required_payload_fields,
     })
 }
 
@@ -299,13 +304,10 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             "timestamp" => EvalExprPlan::MetaTimestamp,
             "clientId" => EvalExprPlan::MetaClientId,
             "username" => EvalExprPlan::MetaUsername,
-            _ => EvalExprPlan::PayloadField(vec![value.clone()]),
+            _ => EvalExprPlan::PayloadField(value.clone()),
         },
         Expr::CompoundIdentifier(idents) => EvalExprPlan::PayloadField(
-            idents
-                .iter()
-                .map(|ident| ident.value.clone())
-                .collect(),
+            idents.iter().map(|ident| ident.value.as_str()).collect::<Vec<_>>().join("."),
         ),
         Expr::Value(value) => match value {
             sqlparser::ast::Value::Number(num, _) => num
@@ -430,6 +432,51 @@ fn plan_has_unknown(plan: &EvalExprPlan) -> bool {
     }
 }
 
+fn collect_required_payload_fields(
+    select_plan: &SelectPlan,
+    where_plan: Option<&EvalExprPlan>,
+) -> HashSet<String> {
+    let mut fields = HashSet::new();
+    collect_required_payload_fields_from_select(select_plan, &mut fields);
+    if let Some(where_plan) = where_plan {
+        collect_required_payload_fields_from_plan(where_plan, &mut fields);
+    }
+    fields
+}
+
+fn collect_required_payload_fields_from_select(
+    select_plan: &SelectPlan,
+    fields: &mut HashSet<String>,
+) {
+    match select_plan {
+        SelectPlan::All => {}
+        SelectPlan::Columns(columns) => {
+            for column in columns {
+                collect_required_payload_fields_from_plan(&column.expr, fields);
+            }
+        }
+    }
+}
+
+fn collect_required_payload_fields_from_plan(plan: &EvalExprPlan, fields: &mut HashSet<String>) {
+    match plan {
+        EvalExprPlan::PayloadField(path) => {
+            fields.insert(path.clone());
+        }
+        EvalExprPlan::Binary { left, right, .. } => {
+            collect_required_payload_fields_from_plan(left, fields);
+            collect_required_payload_fields_from_plan(right, fields);
+        }
+        EvalExprPlan::TopicLevel { level } => {
+            collect_required_payload_fields_from_plan(level, fields);
+        }
+        EvalExprPlan::PropertiesKey { key } => {
+            collect_required_payload_fields_from_plan(key, fields);
+        }
+        _ => {}
+    }
+}
+
 fn compile_fast_predicate(plan: &EvalExprPlan) -> Option<FastPredicate> {
     match plan {
         EvalExprPlan::Const(Value::Bool(value)) => Some(FastPredicate::Const(*value)),
@@ -537,7 +584,7 @@ fn invert_fast_cmp_op(op: FastCmpOp) -> FastCmpOp {
 pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     rule: &CompiledRule,
     message: &Message,
-    payload_obj: &serde_json::Map<String, Value>,
+    payload_obj: &MsgIr,
     topic_parts: &[&str],
 ) -> Option<Message> {
     let context = EvalContext {
@@ -599,7 +646,7 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
 
 struct EvalContext<'a> {
     message: &'a Message,
-    payload: &'a serde_json::Map<String, Value>,
+    payload: &'a MsgIr,
     topic_parts: &'a [&'a str],
 }
 
@@ -768,9 +815,9 @@ fn evaluate_fast_or(
 fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<RuntimeValue<'a>> {
     match field {
         FastField::Payload(path) => match payload_value_by_path(ctx.payload, path)? {
-            Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
-            Value::String(value) => Some(RuntimeValue::String(value)),
-            Value::Bool(value) => Some(RuntimeValue::Bool(*value)),
+            PayloadValue::Number(number) => Some(RuntimeValue::Number(*number)),
+            PayloadValue::String(value) => Some(RuntimeValue::String(value)),
+            PayloadValue::Bool(value) => Some(RuntimeValue::Bool(*value)),
             _ => None,
         },
         FastField::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
@@ -848,9 +895,9 @@ fn evaluate_plan_runtime_value<'a>(
             _ => None,
         },
         EvalExprPlan::PayloadField(path) => match payload_value_by_path(ctx.payload, path)? {
-            Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
-            Value::String(text) => Some(RuntimeValue::String(text)),
-            Value::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
+            PayloadValue::Number(number) => Some(RuntimeValue::Number(*number)),
+            PayloadValue::String(text) => Some(RuntimeValue::String(text)),
+            PayloadValue::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
             _ => None,
         },
         EvalExprPlan::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
@@ -923,7 +970,7 @@ fn compare_runtime_runtime(
 fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> {
     match plan {
         EvalExprPlan::Const(value) => Some(value.clone()),
-        EvalExprPlan::PayloadField(path) => payload_value_by_path(ctx.payload, path).cloned(),
+        EvalExprPlan::PayloadField(path) => payload_value_by_path(ctx.payload, path).map(PayloadValue::to_json_value),
         EvalExprPlan::MetaQos => Some(Value::Number(serde_json::Number::from(ctx.message.qos))),
         EvalExprPlan::MetaRetain => Some(Value::Bool(ctx.message.retain)),
         EvalExprPlan::MetaDup => Some(Value::Bool(ctx.message.dup)),
@@ -1048,16 +1095,8 @@ fn derive_alias(expr: &Expr) -> String {
     }
 }
 
-fn payload_value_by_path<'a>(
-    payload: &'a serde_json::Map<String, Value>,
-    path: &[String],
-) -> Option<&'a Value> {
-    let (first, rest) = path.split_first()?;
-    let mut current = payload.get(first)?;
-    for segment in rest {
-        current = current.get(segment)?;
-    }
-    Some(current)
+fn payload_value_by_path<'a>(payload: &'a MsgIr, path: &str) -> Option<&'a PayloadValue> {
+    payload.get_key(path)
 }
 
 fn normalize_topic(topic: &str) -> String {
@@ -1121,7 +1160,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     
     pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
-        let obj = decode_payload_object(&message.payload, PayloadFormat::Json).ok()?;
+        let obj = decode_payload_ir(&message.payload, PayloadFormat::Json).ok()?;
         let topic_parts: Vec<&str> = message.topic.split('/').collect();
         evaluate_rule_with_payload_and_topic_parts(rule, message, &obj, &topic_parts)
     }
