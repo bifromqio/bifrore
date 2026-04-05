@@ -1,8 +1,9 @@
+use crate::payload::PayloadDecodePlan;
 use prost_reflect::{
     DynamicMessage, MapKey as ProtobufMapKey, ReflectMessage, Value as ProtobufValue,
 };
 use serde_json::{Map, Number, Value as JsonValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PayloadValue {
@@ -176,12 +177,13 @@ impl MsgIr {
         Ok(ir)
     }
 
-    pub fn from_json_object_with_required_fields(
+    pub fn from_json_object_with_decode_plan(
         map: &Map<String, JsonValue>,
-        required_fields: Option<&HashSet<String>>,
+        plan: PayloadDecodePlan<'_>,
     ) -> Result<Self, String> {
-        match required_fields {
-            Some(required_fields) if !required_fields.is_empty() => {
+        match plan {
+            PayloadDecodePlan::None => Ok(Self::new()),
+            PayloadDecodePlan::Sparse(required_fields) if !required_fields.is_empty() => {
                 let mut ir = Self::new();
                 for key in required_fields {
                     if let Some(value) = lookup_json_path(map, key) {
@@ -190,16 +192,17 @@ impl MsgIr {
                 }
                 Ok(ir)
             }
-            _ => Self::from_json_object_ref(map),
+            PayloadDecodePlan::Sparse(_) | PayloadDecodePlan::Full => Self::from_json_object_ref(map),
         }
     }
 
-    pub fn from_protobuf_message_with_required_fields(
+    pub fn from_protobuf_message_with_decode_plan(
         message: &DynamicMessage,
-        required_fields: Option<&HashSet<String>>,
+        plan: PayloadDecodePlan<'_>,
     ) -> Result<Self, String> {
-        match required_fields {
-            Some(required_fields) if !required_fields.is_empty() => {
+        match plan {
+            PayloadDecodePlan::None => Ok(Self::new()),
+            PayloadDecodePlan::Sparse(required_fields) if !required_fields.is_empty() => {
                 let mut ir = Self::new();
                 for key in required_fields {
                     if let Some(value) = extract_protobuf_payload_value(message, key)? {
@@ -208,7 +211,7 @@ impl MsgIr {
                 }
                 Ok(ir)
             }
-            _ => {
+            PayloadDecodePlan::Sparse(_) | PayloadDecodePlan::Full => {
                 let mut ir = Self::new();
                 flatten_dynamic_message_into_ir(&mut ir, message, None)?;
                 Ok(ir)

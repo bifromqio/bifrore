@@ -6,7 +6,7 @@ use crate::payload::{
     dynamic_protobuf_decoder_from_descriptor_set_file,
 };
 use crate::payload::{
-    decode_payload_ir_with_decoder_and_required_fields, PayloadDecoder, PayloadFormat
+    decode_payload_ir_with_decoder_and_plan, PayloadDecodePlan, PayloadDecoder, PayloadFormat
 };
 use crate::rule::{
     compile_rule, evaluate_rule_with_payload_and_topic_parts,
@@ -136,24 +136,25 @@ impl RuleEngine {
         }
 
         let required_fields = collect_required_fields(&self.rules, &matched_rule_indexes);
-        let payload_obj = if required_fields.is_empty() {
-            MsgIr::new()
+        let decode_plan = if required_fields.is_empty() {
+            PayloadDecodePlan::None
         } else {
-            match decode_payload_ir_with_decoder_and_required_fields(
-                &message.payload,
-                &self.payload_decoder,
-                Some(&required_fields),
-            ) {
-                Ok(value) => value,
-                Err(err) => {
-                    log::warn!(
-                        "dropping message with invalid payload topic={} decoder={:?} error={}",
-                        message.topic,
-                        self.payload_decoder,
-                        err
-                    );
-                    return results;
-                }
+            PayloadDecodePlan::Sparse(&required_fields)
+        };
+        let payload_obj = match decode_payload_ir_with_decoder_and_plan(
+            &message.payload,
+            &self.payload_decoder,
+            decode_plan,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!(
+                    "dropping message with invalid payload topic={} decoder={:?} error={}",
+                    message.topic,
+                    self.payload_decoder,
+                    err
+                );
+                return results;
             }
         };
         let topic_parts: Vec<&str> = message.topic.split('/').collect();
