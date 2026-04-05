@@ -75,12 +75,7 @@ pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
     let decode = move |payload: &[u8], required_fields: Option<&HashSet<String>>| {
         let message =
             DynamicMessage::decode(message_descriptor.clone(), payload).map_err(|err| err.to_string())?;
-        let value = serde_json::to_value(&message).map_err(|err| err.to_string())?;
-        let object = value
-            .as_object()
-            .cloned()
-            .ok_or_else(|| "decoded protobuf message must map to a JSON object".to_string())?;
-        MsgIr::from_json_object_with_required_fields(&object, required_fields)
+        MsgIr::from_protobuf_message_with_required_fields(&message, required_fields)
     };
     Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
 }
@@ -116,9 +111,8 @@ fn decode_json_ir(payload: &[u8], required_fields: Option<&HashSet<String>>) -> 
 
     let object = parsed
         .as_object()
-        .cloned()
         .ok_or_else(|| "payload must be a JSON object".to_string())?;
-    MsgIr::from_json_object_with_required_fields(&object, required_fields)
+    MsgIr::from_json_object_with_required_fields(object, required_fields)
 }
 
 fn unsupported_protobuf_decoder(
