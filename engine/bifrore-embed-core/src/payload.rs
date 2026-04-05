@@ -23,7 +23,14 @@ impl PayloadFormat {
     }
 }
 
-type DecodeFn = dyn Fn(&[u8], Option<&HashSet<String>>) -> Result<MsgIr, String> + Send + Sync + 'static;
+type DecodeFn = dyn Fn(&[u8], PayloadDecodePlan<'_>) -> Result<MsgIr, String> + Send + Sync + 'static;
+
+#[derive(Debug, Clone, Copy)]
+pub enum PayloadDecodePlan<'a> {
+    None,
+    Sparse(&'a HashSet<String>),
+    Full,
+}
 
 #[derive(Clone)]
 pub enum PayloadDecoder {
@@ -72,10 +79,10 @@ pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
     let message_descriptor = pool
         .get_message_by_name(message_name)
         .ok_or_else(|| format!("protobuf message not found in descriptor set: {message_name}"))?;
-    let decode = move |payload: &[u8], required_fields: Option<&HashSet<String>>| {
+    let decode = move |payload: &[u8], plan: PayloadDecodePlan<'_>| {
         let message =
             DynamicMessage::decode(message_descriptor.clone(), payload).map_err(|err| err.to_string())?;
-        MsgIr::from_protobuf_message_with_required_fields(&message, required_fields)
+        MsgIr::from_protobuf_message_with_decode_plan(&message, plan)
     };
     Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
 }
@@ -85,21 +92,25 @@ pub fn decode_payload_ir(payload: &[u8], format: PayloadFormat) -> Result<MsgIr,
 }
 
 pub fn decode_payload_ir_with_decoder(payload: &[u8], decoder: &PayloadDecoder) -> Result<MsgIr, String> {
-    decode_payload_ir_with_decoder_and_required_fields(payload, decoder, None)
+    decode_payload_ir_with_decoder_and_plan(payload, decoder, PayloadDecodePlan::Full)
 }
 
-pub fn decode_payload_ir_with_decoder_and_required_fields(
+pub fn decode_payload_ir_with_decoder_and_plan(
     payload: &[u8],
     decoder: &PayloadDecoder,
-    required_fields: Option<&HashSet<String>>,
+    plan: PayloadDecodePlan<'_>,
 ) -> Result<MsgIr, String> {
     match decoder {
-        PayloadDecoder::Json => decode_json_ir(payload, required_fields),
-        PayloadDecoder::Protobuf(decode) => decode(payload, required_fields),
+        PayloadDecoder::Json => decode_json_ir(payload, plan),
+        PayloadDecoder::Protobuf(decode) => decode(payload, plan),
     }
 }
 
-fn decode_json_ir(payload: &[u8], required_fields: Option<&HashSet<String>>) -> Result<MsgIr, String> {
+fn decode_json_ir(payload: &[u8], plan: PayloadDecodePlan<'_>) -> Result<MsgIr, String> {
+    if matches!(plan, PayloadDecodePlan::None) {
+        return Ok(MsgIr::new());
+    }
+
     #[cfg(feature = "simd-json")]
     let parsed: Value = {
         let mut buffer = payload.to_vec();
@@ -112,12 +123,12 @@ fn decode_json_ir(payload: &[u8], required_fields: Option<&HashSet<String>>) -> 
     let object = parsed
         .as_object()
         .ok_or_else(|| "payload must be a JSON object".to_string())?;
-    MsgIr::from_json_object_with_required_fields(object, required_fields)
+    MsgIr::from_json_object_with_decode_plan(object, plan)
 }
 
 fn unsupported_protobuf_decoder(
     _payload: &[u8],
-    _required_fields: Option<&HashSet<String>>,
+    _plan: PayloadDecodePlan<'_>,
 ) -> Result<MsgIr, String> {
     Err("protobuf payload decoding requires a descriptor-set file and fully-qualified message name".to_string())
 }
