@@ -157,7 +157,12 @@ impl RuleEngine {
                 return results;
             }
         };
-        let topic_parts: Vec<&str> = message.topic.split('/').collect();
+        let topic_parts_storage = if matched_rules_require_topic_parts(&self.rules, &matched_rule_indexes) {
+            Some(message.topic.split('/').collect::<Vec<_>>())
+        } else {
+            None
+        };
+        let topic_parts = topic_parts_storage.as_deref().unwrap_or(&[]);
 
         let use_parallel = matched_rule_indexes.len() >= self.eval_parallel_threshold
             && self
@@ -179,7 +184,7 @@ impl RuleEngine {
                                 rules,
                                 message,
                                 &payload_obj,
-                                &topic_parts,
+                                topic_parts,
                             )
                         })
                         .collect::<Vec<_>>()
@@ -193,7 +198,7 @@ impl RuleEngine {
                         &self.rules,
                         message,
                         &payload_obj,
-                        &topic_parts,
+                        topic_parts,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -324,6 +329,19 @@ fn collect_required_fields(
         }
     }
     fields
+}
+
+fn matched_rules_require_topic_parts(
+    rules: &[Option<CompiledRule>],
+    matched_rule_indexes: &[usize],
+) -> bool {
+    matched_rule_indexes.iter().any(|rule_index| {
+        rules
+            .get(*rule_index)
+            .and_then(|slot| slot.as_ref())
+            .map(|rule| rule.requires_topic_parts)
+            .unwrap_or(false)
+    })
 }
 
 #[derive(Debug)]
