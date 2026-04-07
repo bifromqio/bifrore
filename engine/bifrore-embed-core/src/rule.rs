@@ -33,6 +33,7 @@ pub struct CompiledRule {
     pub fast_path_profile: FastPathProfile,
     pub destinations: Vec<String>,
     pub required_payload_fields: HashSet<String>,
+    pub requires_topic_parts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +190,11 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let where_plan = where_expr.as_ref().map(compile_expr_plan);
     let fast_where = where_plan.as_ref().and_then(compile_fast_predicate);
     let required_payload_fields = collect_required_payload_fields(&select_plan, where_plan.as_ref());
+    let requires_topic_parts = select_plan_requires_topic_parts(&select_plan)
+        || where_plan
+            .as_ref()
+            .map(plan_requires_topic_parts)
+            .unwrap_or(false);
     let has_unknown_plan = select_plan_has_unknown(&select_plan)
         || where_plan
             .as_ref()
@@ -214,6 +220,7 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         fast_path_profile: FastPathProfile::new(),
         destinations: rule.destinations,
         required_payload_fields,
+        requires_topic_parts,
     })
 }
 
@@ -442,6 +449,26 @@ fn collect_required_payload_fields(
         collect_required_payload_fields_from_plan(where_plan, &mut fields);
     }
     fields
+}
+
+fn select_plan_requires_topic_parts(plan: &SelectPlan) -> bool {
+    match plan {
+        SelectPlan::All => false,
+        SelectPlan::Columns(columns) => columns
+            .iter()
+            .any(|column| plan_requires_topic_parts(&column.expr)),
+    }
+}
+
+fn plan_requires_topic_parts(plan: &EvalExprPlan) -> bool {
+    match plan {
+        EvalExprPlan::TopicLevel { .. } => true,
+        EvalExprPlan::Binary { left, right, .. } => {
+            plan_requires_topic_parts(left) || plan_requires_topic_parts(right)
+        }
+        EvalExprPlan::PropertiesKey { key } => plan_requires_topic_parts(key),
+        _ => false,
+    }
 }
 
 fn collect_required_payload_fields_from_select(
@@ -1314,6 +1341,7 @@ mod tests {
         let compiled = compile_rule(rule).expect("compile");
         assert_eq!(compiled.topic_filter, "data");
         assert_eq!(compiled.aliased_topic_filter, "source_data");
+        assert!(!compiled.requires_topic_parts);
     }
 
     #[test]
@@ -1324,6 +1352,7 @@ mod tests {
             destinations: vec!["dest".to_string()],
         };
         let compiled = compile_rule(rule).expect("compile");
+        assert!(compiled.requires_topic_parts);
         let payload = serde_json::json!({"temp": 25});
         let message = Message::new("sensors/room1/temp", serde_json::to_vec(&payload).unwrap());
         assert!(evaluate_rule(&compiled, &message).is_some());
