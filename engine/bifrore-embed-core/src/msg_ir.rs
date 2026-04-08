@@ -5,6 +5,28 @@ use prost_reflect::{
 use serde_json::{Map, Number, Value as JsonValue};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompiledPayloadField {
+    key: String,
+    segments: Vec<String>,
+}
+
+impl CompiledPayloadField {
+    pub fn from_key(key: impl Into<String>) -> Self {
+        let key = key.into();
+        let segments = key.split('.').map(str::to_string).collect();
+        Self { key, segments }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PayloadValue {
     Null,
@@ -153,7 +175,8 @@ impl TryFrom<JsonValue> for PayloadValue {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MsgIr {
-    fields: HashMap<String, PayloadValue>,
+    slot_by_key: HashMap<String, usize>,
+    values: Vec<Option<PayloadValue>>,
 }
 
 impl MsgIr {
@@ -162,11 +185,49 @@ impl MsgIr {
     }
 
     pub fn insert(&mut self, path: impl Into<String>, value: PayloadValue) {
-        self.fields.insert(path.into(), value);
+        let key = path.into();
+        match self.slot_by_key.get(&key).copied() {
+            Some(slot) => self.values[slot] = Some(value),
+            None => {
+                let slot = self.values.len();
+                self.slot_by_key.insert(key, slot);
+                self.values.push(Some(value));
+            }
+        }
     }
 
     pub fn get_key(&self, key: &str) -> Option<&PayloadValue> {
-        self.fields.get(key)
+        self.slot_by_key
+            .get(key)
+            .and_then(|slot| self.values.get(*slot))
+            .and_then(Option::as_ref)
+    }
+
+    pub fn get_field(&self, field: &CompiledPayloadField) -> Option<&PayloadValue> {
+        self.get_key(field.key())
+    }
+
+    fn with_sparse_layout(fields: &[&CompiledPayloadField]) -> Self {
+        let mut slot_by_key = HashMap::with_capacity(fields.len());
+        for (slot, field) in fields.iter().enumerate() {
+            slot_by_key.insert(field.key().to_string(), slot);
+        }
+        Self {
+            slot_by_key,
+            values: vec![None; fields.len()],
+        }
+    }
+
+    fn insert_sparse(&mut self, field: &CompiledPayloadField, value: PayloadValue) {
+        let Some(slot) = self.slot_by_key.get(field.key()).copied() else {
+            debug_assert!(
+                false,
+                "sparse MsgIr layout missing field: {}",
+                field.key()
+            );
+            return;
+        };
+        self.values[slot] = Some(value);
     }
 
     pub fn from_json_object_ref(map: &Map<String, JsonValue>) -> Result<Self, String> {
@@ -184,10 +245,10 @@ impl MsgIr {
         match plan {
             PayloadDecodePlan::None => Ok(Self::new()),
             PayloadDecodePlan::Sparse(required_fields) if !required_fields.is_empty() => {
-                let mut ir = Self::new();
-                for key in required_fields {
-                    if let Some(value) = lookup_json_path(map, key) {
-                        ir.insert(key.clone(), PayloadValue::try_from_json_ref(value)?);
+                let mut ir = Self::with_sparse_layout(required_fields);
+                for field in required_fields {
+                    if let Some(value) = lookup_json_path(map, field.segments()) {
+                        ir.insert_sparse(field, PayloadValue::try_from_json_ref(value)?);
                     }
                 }
                 Ok(ir)
@@ -203,10 +264,10 @@ impl MsgIr {
         match plan {
             PayloadDecodePlan::None => Ok(Self::new()),
             PayloadDecodePlan::Sparse(required_fields) if !required_fields.is_empty() => {
-                let mut ir = Self::new();
-                for key in required_fields {
-                    if let Some(value) = extract_protobuf_payload_value(message, key)? {
-                        ir.insert(key.clone(), value);
+                let mut ir = Self::with_sparse_layout(required_fields);
+                for field in required_fields {
+                    if let Some(value) = extract_protobuf_payload_value(message, field.segments())? {
+                        ir.insert_sparse(field, value);
                     }
                 }
                 Ok(ir)
@@ -220,11 +281,10 @@ impl MsgIr {
     }
 }
 
-fn lookup_json_path<'a>(map: &'a Map<String, JsonValue>, key: &str) -> Option<&'a JsonValue> {
-    let mut segments = key.split('.');
-    let first = segments.next()?;
+fn lookup_json_path<'a>(map: &'a Map<String, JsonValue>, segments: &[String]) -> Option<&'a JsonValue> {
+    let (first, rest) = segments.split_first()?;
     let mut current = map.get(first)?;
-    for segment in segments {
+    for segment in rest {
         current = current.get(segment)?;
     }
     Some(current)
@@ -273,9 +333,8 @@ fn flatten_payload_value_into_ir(ir: &mut MsgIr, path: &str, value: &PayloadValu
 
 fn extract_protobuf_payload_value(
     message: &DynamicMessage,
-    key: &str,
+    segments: &[String],
 ) -> Result<Option<PayloadValue>, String> {
-    let segments: Vec<&str> = key.split('.').collect();
     if segments.is_empty() {
         return Ok(None);
     }
@@ -284,7 +343,7 @@ fn extract_protobuf_payload_value(
 
 fn extract_protobuf_payload_value_from_segments(
     message: &DynamicMessage,
-    segments: &[&str],
+    segments: &[String],
 ) -> Result<Option<PayloadValue>, String> {
     let Some((segment, rest)) = segments.split_first() else {
         return Ok(None);

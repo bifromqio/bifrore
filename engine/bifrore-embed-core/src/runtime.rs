@@ -318,14 +318,19 @@ fn build_eval_pool() -> Option<rayon::ThreadPool> {
         .ok()
 }
 
-fn collect_required_fields(
-    rules: &[Option<CompiledRule>],
+fn collect_required_fields<'a>(
+    rules: &'a [Option<CompiledRule>],
     matched_rule_indexes: &[usize],
-) -> HashSet<String> {
-    let mut fields = HashSet::new();
+) -> Vec<&'a crate::msg_ir::CompiledPayloadField> {
+    let mut seen = HashSet::new();
+    let mut fields = Vec::new();
     for rule_index in matched_rule_indexes {
         if let Some(rule) = rules.get(*rule_index).and_then(|slot| slot.as_ref()) {
-            fields.extend(rule.required_payload_fields.iter().cloned());
+            for field in &rule.required_payload_fields {
+                if seen.insert(field.key()) {
+                    fields.push(field);
+                }
+            }
         }
     }
     fields

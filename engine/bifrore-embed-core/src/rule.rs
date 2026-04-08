@@ -1,5 +1,5 @@
 use crate::message::Message;
-use crate::msg_ir::{MsgIr, PayloadValue};
+use crate::msg_ir::{CompiledPayloadField, MsgIr, PayloadValue};
 #[cfg(test)]
 use crate::payload::{decode_payload_ir, PayloadFormat};
 use regex::Regex;
@@ -32,7 +32,7 @@ pub struct CompiledRule {
     pub fast_where: Option<FastPredicate>,
     pub fast_path_profile: FastPathProfile,
     pub destinations: Vec<String>,
-    pub required_payload_fields: HashSet<String>,
+    pub required_payload_fields: Vec<CompiledPayloadField>,
     pub requires_topic_parts: bool,
 }
 
@@ -63,7 +63,7 @@ pub struct PlannedColumn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalExprPlan {
     Const(Value),
-    PayloadField(String),
+    PayloadField(CompiledPayloadField),
     MetaQos,
     MetaRetain,
     MetaDup,
@@ -106,7 +106,7 @@ pub enum FastPredicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastField {
-    Payload(String),
+    Payload(CompiledPayloadField),
     MetaQos,
     MetaRetain,
     MetaDup,
@@ -311,11 +311,11 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             "timestamp" => EvalExprPlan::MetaTimestamp,
             "clientId" => EvalExprPlan::MetaClientId,
             "username" => EvalExprPlan::MetaUsername,
-            _ => EvalExprPlan::PayloadField(value.clone()),
+            _ => EvalExprPlan::PayloadField(CompiledPayloadField::from_key(value.clone())),
         },
-        Expr::CompoundIdentifier(idents) => EvalExprPlan::PayloadField(
+        Expr::CompoundIdentifier(idents) => EvalExprPlan::PayloadField(CompiledPayloadField::from_key(
             idents.iter().map(|ident| ident.value.as_str()).collect::<Vec<_>>().join("."),
-        ),
+        )),
         Expr::Value(value) => match value {
             sqlparser::ast::Value::Number(num, _) => num
                 .parse::<f64>()
@@ -442,11 +442,12 @@ fn plan_has_unknown(plan: &EvalExprPlan) -> bool {
 fn collect_required_payload_fields(
     select_plan: &SelectPlan,
     where_plan: Option<&EvalExprPlan>,
-) -> HashSet<String> {
-    let mut fields = HashSet::new();
-    collect_required_payload_fields_from_select(select_plan, &mut fields);
+) -> Vec<CompiledPayloadField> {
+    let mut fields = Vec::new();
+    let mut seen = HashSet::new();
+    collect_required_payload_fields_from_select(select_plan, &mut fields, &mut seen);
     if let Some(where_plan) = where_plan {
-        collect_required_payload_fields_from_plan(where_plan, &mut fields);
+        collect_required_payload_fields_from_plan(where_plan, &mut fields, &mut seen);
     }
     fields
 }
@@ -473,32 +474,39 @@ fn plan_requires_topic_parts(plan: &EvalExprPlan) -> bool {
 
 fn collect_required_payload_fields_from_select(
     select_plan: &SelectPlan,
-    fields: &mut HashSet<String>,
+    fields: &mut Vec<CompiledPayloadField>,
+    seen: &mut HashSet<String>,
 ) {
     match select_plan {
         SelectPlan::All => {}
         SelectPlan::Columns(columns) => {
             for column in columns {
-                collect_required_payload_fields_from_plan(&column.expr, fields);
+                collect_required_payload_fields_from_plan(&column.expr, fields, seen);
             }
         }
     }
 }
 
-fn collect_required_payload_fields_from_plan(plan: &EvalExprPlan, fields: &mut HashSet<String>) {
+fn collect_required_payload_fields_from_plan(
+    plan: &EvalExprPlan,
+    fields: &mut Vec<CompiledPayloadField>,
+    seen: &mut HashSet<String>,
+) {
     match plan {
         EvalExprPlan::PayloadField(path) => {
-            fields.insert(path.clone());
+            if seen.insert(path.key().to_string()) {
+                fields.push(path.clone());
+            }
         }
         EvalExprPlan::Binary { left, right, .. } => {
-            collect_required_payload_fields_from_plan(left, fields);
-            collect_required_payload_fields_from_plan(right, fields);
+            collect_required_payload_fields_from_plan(left, fields, seen);
+            collect_required_payload_fields_from_plan(right, fields, seen);
         }
         EvalExprPlan::TopicLevel { level } => {
-            collect_required_payload_fields_from_plan(level, fields);
+            collect_required_payload_fields_from_plan(level, fields, seen);
         }
         EvalExprPlan::PropertiesKey { key } => {
-            collect_required_payload_fields_from_plan(key, fields);
+            collect_required_payload_fields_from_plan(key, fields, seen);
         }
         _ => {}
     }
@@ -1122,8 +1130,11 @@ fn derive_alias(expr: &Expr) -> String {
     }
 }
 
-fn payload_value_by_path<'a>(payload: &'a MsgIr, path: &str) -> Option<&'a PayloadValue> {
-    payload.get_key(path)
+fn payload_value_by_path<'a>(
+    payload: &'a MsgIr,
+    path: &CompiledPayloadField,
+) -> Option<&'a PayloadValue> {
+    payload.get_field(path)
 }
 
 fn normalize_topic(topic: &str) -> String {

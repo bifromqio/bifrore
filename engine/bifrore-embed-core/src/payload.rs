@@ -1,7 +1,6 @@
-use crate::msg_ir::MsgIr;
+use crate::msg_ir::{CompiledPayloadField, MsgIr};
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -28,7 +27,7 @@ type DecodeFn = dyn Fn(&[u8], PayloadDecodePlan<'_>) -> Result<MsgIr, String> + 
 #[derive(Debug, Clone, Copy)]
 pub enum PayloadDecodePlan<'a> {
     None,
-    Sparse(&'a HashSet<String>),
+    Sparse(&'a [&'a CompiledPayloadField]),
     Full,
 }
 
