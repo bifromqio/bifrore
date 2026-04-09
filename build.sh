@@ -137,7 +137,7 @@ build_jni_test() {
   cc $JNI_CFLAGS -pthread \
     -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
     -o "$BUILD_DIR/bifrore-jni-direct-test" \
-    "$ROOT_DIR/bindings/jni/src/test/c/bifrore_jni_direct_test.c"
+    "$ROOT_DIR/bindings/jni/test/c/bifrore_jni_direct_test.c"
 
   "$BUILD_DIR/bifrore-jni-direct-test"
 }
