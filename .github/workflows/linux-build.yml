@@ -1,17 +1,27 @@
-name: Linux Build
+name: Linux Release Build
 
 on:
-  push:
-  pull_request:
-  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
 
 jobs:
   build-linux-artifacts:
     runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+    env:
+      BIFRORE_WHEEL_PLATFORM_TAG: manylinux_2_28_x86_64
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Install system build tools
+        run: |
+          dnf install -y gcc gcc-c++ make findutils which tar gzip zip
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -22,10 +32,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       - name: Install Python packaging dependencies
         run: python -m pip install --upgrade pip setuptools wheel
@@ -41,16 +51,18 @@ jobs:
           test -f build/bifrore-java.jar
           ls -1 build/*.whl
 
-      - name: Upload jar artifact
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bifrore-java-jar-linux
-          path: build/bifrore-java.jar
+          name: bifrore-linux-release-artifacts
+          path: |
+            build/bifrore-java.jar
+            build/*.whl
           if-no-files-found: error
 
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload assets to GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          name: bifrore-python-wheel-linux
-          path: build/*.whl
-          if-no-files-found: error
+          files: |
+            build/bifrore-java.jar
+            build/*.whl

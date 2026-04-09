@@ -39,6 +39,10 @@ esac
 mkdir -p "$BUILD_DIR"
 
 platform_tag() {
+  if [[ -n "${BIFRORE_WHEEL_PLATFORM_TAG:-}" ]]; then
+    echo "$BIFRORE_WHEEL_PLATFORM_TAG"
+    return
+  fi
   case "$OS_NAME" in
     Darwin)
       case "$(uname -m)" in
