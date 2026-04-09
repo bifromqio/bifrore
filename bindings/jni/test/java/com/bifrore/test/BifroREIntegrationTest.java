@@ -209,7 +209,7 @@ final class BifroREIntegrationTest {
             .host("127.0.0.1")
             .port(1883)
             .ruleJsonPath(rulePath)
-            .clientIdsPath(clientIdsDir.toString())
+            .clientIdsPath(clientIdsDir.resolve("client_ids.txt").toString())
             .groupName(groupName)
             .callbackQueueCapacity(64)
             .pollBatchLimit(16);
