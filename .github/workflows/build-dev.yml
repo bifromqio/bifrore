@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 30
     env:
       MAVEN_REPO_LOCAL: ${{ github.workspace }}/.m2-ci
+      BIFROMQ_LOG_DIR: ${{ github.workspace }}/.bifromq-logs
 
     steps:
       - name: Check out repository
@@ -25,6 +26,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Install MQTT probe client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto-clients
 
       - name: Run Rust core tests
         run: cargo test -p bifrore-embed-core --features mqtt -- --nocapture
@@ -48,23 +54,32 @@ jobs:
 
       - name: Start BifroMQ broker
         run: |
+          rm -rf "$BIFROMQ_LOG_DIR"
+          mkdir -p "$BIFROMQ_LOG_DIR"
+          chmod 0777 "$BIFROMQ_LOG_DIR"
           docker run -d \
             --name bifromq \
             -m 1g \
             -e MEM_LIMIT=1073741824 \
+            -v "$BIFROMQ_LOG_DIR:/home/bifromq/logs" \
             -p 1883:1883 \
             apache/bifromq:4.0.0-incubating
 
       - name: Wait for broker readiness
         run: |
           for i in $(seq 1 60); do
-            if nc -z 127.0.0.1 1883; then
-              sleep 10
+            if mosquitto_pub -V mqttv5 -h 127.0.0.1 -p 1883 -i bifrore-ci-probe -q 0 \
+              -t bifrore/ci/probe -m ready >/dev/null 2>&1; then
               exit 0
             fi
             sleep 2
           done
-          docker logs bifromq
+          echo "==== docker logs ===="
+          docker logs bifromq || true
+          echo "==== info.log ===="
+          cat "$BIFROMQ_LOG_DIR/info.log" || true
+          echo "==== error.log ===="
+          cat "$BIFROMQ_LOG_DIR/error.log" || true
           exit 1
 
       - name: Run Java JNI integration tests
@@ -72,7 +87,11 @@ jobs:
 
       - name: Dump broker logs on failure
         if: failure()
-        run: docker logs bifromq
+        run: |
+          echo "==== docker error logs ===="
+          docker logs bifromq || true
+          echo "==== error.log ===="
+          cat "$BIFROMQ_LOG_DIR/error.log" || true
 
       - name: Stop broker
         if: always()
