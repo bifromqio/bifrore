@@ -130,6 +130,9 @@ public final class BifroRE implements AutoCloseable {
     private final int callbackQueueCapacity;
     private final int directPollSlotCount;
     private final int directPayloadBufferBytes;
+    private final boolean cleanStart;
+    private final int sessionExpiryInterval;
+    private final String groupName;
     private final RuleMetadata[] ruleMetadataTable;
     private final ArrayBlockingQueue<PollSlot> freeDirectSlots;
     private final AtomicLong callbackSubmittedCount;
@@ -161,7 +164,10 @@ public final class BifroRE implements AutoCloseable {
             options.callbackQueueCapacity,
             options.pollBatchLimit,
             options.directPollSlotCount,
-            options.directPayloadBufferBytes
+            options.directPayloadBufferBytes,
+            options.cleanStart,
+            options.sessionExpiryInterval,
+            options.groupName
         );
     }
 
@@ -179,7 +185,10 @@ public final class BifroRE implements AutoCloseable {
         int callbackQueueCapacity,
         int pollBatchLimit,
         int directPollSlotCount,
-        int directPayloadBufferBytes
+        int directPayloadBufferBytes,
+        boolean cleanStart,
+        int sessionExpiryInterval,
+        String groupName
     ) {
         acquireSingleton();
         this.singletonHeld = true;
@@ -193,6 +202,10 @@ public final class BifroRE implements AutoCloseable {
         this.callbackQueueCapacity = Math.max(1, callbackQueueCapacity);
         this.directPollSlotCount = Math.max(1, directPollSlotCount);
         this.directPayloadBufferBytes = Math.max(1, directPayloadBufferBytes);
+        this.cleanStart = cleanStart;
+        this.sessionExpiryInterval = Math.max(0, sessionExpiryInterval);
+        this.groupName =
+            (groupName == null || groupName.isBlank()) ? "bifrore-group" : groupName;
         this.clientIdsPath =
             (clientIdsPath == null || clientIdsPath.isBlank()) ? "./client_ids" : clientIdsPath;
         this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
@@ -255,9 +268,9 @@ public final class BifroRE implements AutoCloseable {
             clientCount,
             null,
             null,
-            true,
-            3600,
-            "bifrore-group",
+            cleanStart,
+            sessionExpiryInterval,
+            groupName,
             false,
             "",
             30,

@@ -1,0 +1,78 @@
+name: Test BifroRE
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+jobs:
+  core-and-java-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MAVEN_REPO_LOCAL: ${{ github.workspace }}/.m2-ci
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Run Rust core tests
+        run: cargo test -p bifrore-embed-core --features mqtt -- --nocapture
+        working-directory: engine
+
+      - name: Run JNI helper tests
+        run: ./build.sh jni-test
+
+      - name: Build Java jar
+        run: ./build.sh java
+
+      - name: Install local Java jar to Maven repository
+        run: |
+          mvn -q -Dmaven.repo.local="$MAVEN_REPO_LOCAL" org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
+            -Dfile=build/bifrore-java.jar \
+            -DgroupId=com.bifrore \
+            -DartifactId=bifrore-java \
+            -Dversion=0.1.0 \
+            -Dpackaging=jar \
+            -DgeneratePom=true
+
+      - name: Start BifroMQ broker
+        run: |
+          docker run -d \
+            --name bifromq \
+            -m 1g \
+            -e MEM_LIMIT=1073741824 \
+            -p 1883:1883 \
+            apache/bifromq:latest
+
+      - name: Wait for broker readiness
+        run: |
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 1883; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs bifromq
+          exit 1
+
+      - name: Run Java JNI integration tests
+        run: mvn -q -Dmaven.repo.local="$MAVEN_REPO_LOCAL" -f bindings/jni/test/pom.xml test
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: docker logs bifromq
+
+      - name: Stop broker
+        if: always()
+        run: docker rm -f bifromq
