@@ -59,6 +59,7 @@ jobs:
         run: |
           for i in $(seq 1 60); do
             if nc -z 127.0.0.1 1883; then
+              sleep 10
               exit 0
             fi
             sleep 2
