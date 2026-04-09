@@ -109,10 +109,10 @@ build_jni() {
 
   cc $JNI_CFLAGS \
     -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
-    -L"$BUILD_DIR" -lbifrore_embed \
-    $JNI_LDFLAGS \
     -o "$BUILD_DIR/libbifrore_jni.$JNI_LIB_EXT" \
-    "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni.c"
+    "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni.c" \
+    -L"$BUILD_DIR" -lbifrore_embed \
+    $JNI_LDFLAGS
 }
 
 build_jni_test() {
