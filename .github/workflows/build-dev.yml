@@ -53,7 +53,7 @@ jobs:
             -m 1g \
             -e MEM_LIMIT=1073741824 \
             -p 1883:1883 \
-            apache/bifromq:latest
+            apache/bifromq:4.0.0-incubating
 
       - name: Wait for broker readiness
         run: |
