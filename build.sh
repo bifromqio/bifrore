@@ -28,7 +28,7 @@ case "$OS_NAME" in
     RUST_LIB_EXT="so"
     JNI_LIB_EXT="so"
     JNI_CFLAGS="-fPIC"
-    JNI_LDFLAGS="-shared -Wl,-rpath,'$$ORIGIN'"
+    JNI_LDFLAGS='-shared -Wl,-rpath,$ORIGIN'
     ;;
   *)
     echo "Unsupported OS: $OS_NAME"
