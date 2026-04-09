@@ -15,6 +15,9 @@ public final class BifroREOptions {
     public int pollBatchLimit = 64;
     public int directPollSlotCount = 4;
     public int directPayloadBufferBytes = 1024 * 1024;
+    public boolean cleanStart = true;
+    public int sessionExpiryInterval = 3600;
+    public String groupName = "bifrore-group";
 
     public BifroREOptions ruleJsonPath(String ruleJsonPath) {
         this.ruleJsonPath = ruleJsonPath;
@@ -83,6 +86,21 @@ public final class BifroREOptions {
 
     public BifroREOptions directPayloadBufferBytes(int directPayloadBufferBytes) {
         this.directPayloadBufferBytes = directPayloadBufferBytes;
+        return this;
+    }
+
+    public BifroREOptions cleanStart(boolean cleanStart) {
+        this.cleanStart = cleanStart;
+        return this;
+    }
+
+    public BifroREOptions sessionExpiryInterval(int sessionExpiryInterval) {
+        this.sessionExpiryInterval = sessionExpiryInterval;
+        return this;
+    }
+
+    public BifroREOptions groupName(String groupName) {
+        this.groupName = groupName;
         return this;
     }
 }
