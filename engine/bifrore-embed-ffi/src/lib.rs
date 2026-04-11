@@ -1,4 +1,5 @@
 use bifrore_embed_core::message::Message;
+use bifrore_embed_core::metrics::{EvalMetricsSnapshot, LatencyMetricsSnapshot};
 use bifrore_embed_core::mqtt::{
     start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
 };
@@ -276,6 +277,7 @@ pub struct BifroRE {
     poll_batch_limit: usize,
     client_ids_path: String,
     active_client_ids: Vec<String>,
+    ffi_metrics: FfiMetrics,
 }
 
 pub type BifroEvalCallback = extern "C" fn(
@@ -289,6 +291,202 @@ pub type BifroEvalCallback = extern "C" fn(
 struct EvalResultRecord {
     rule_index: u16,
     payload: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct FfiMetrics {
+    ingress_message_count: std::sync::atomic::AtomicU64,
+    core_queue_depth: std::sync::atomic::AtomicU64,
+    core_queue_depth_max: std::sync::atomic::AtomicU64,
+    core_queue_drop_count: std::sync::atomic::AtomicU64,
+    ffi_queue_depth: std::sync::atomic::AtomicU64,
+    ffi_queue_depth_max: std::sync::atomic::AtomicU64,
+    ffi_queue_drop_count: std::sync::atomic::AtomicU64,
+}
+
+impl FfiMetrics {
+    fn record_ingress(&self) {
+        self.ingress_message_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_core_queue_enqueued(&self) {
+        let depth = self.core_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        update_max_atomic(&self.core_queue_depth_max, depth);
+    }
+
+    fn record_core_queue_dequeued(&self) {
+        self.core_queue_depth.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn record_core_queue_drop(&self) {
+        self.core_queue_drop_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_ffi_queue_enqueued(&self) {
+        let depth = self.ffi_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        update_max_atomic(&self.ffi_queue_depth_max, depth);
+    }
+
+    fn record_ffi_queue_dequeued(&self, count: u64) {
+        if count > 0 {
+            self.ffi_queue_depth.fetch_sub(count, Ordering::Relaxed);
+        }
+    }
+
+    fn record_ffi_queue_drop(&self) {
+        self.ffi_queue_drop_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> FfiMetricsSnapshot {
+        FfiMetricsSnapshot {
+            ingress_message_count: self.ingress_message_count.load(Ordering::Relaxed),
+            core_queue_depth: self.core_queue_depth.load(Ordering::Relaxed),
+            core_queue_depth_max: self.core_queue_depth_max.load(Ordering::Relaxed),
+            core_queue_drop_count: self.core_queue_drop_count.load(Ordering::Relaxed),
+            ffi_queue_depth: self.ffi_queue_depth.load(Ordering::Relaxed),
+            ffi_queue_depth_max: self.ffi_queue_depth_max.load(Ordering::Relaxed),
+            ffi_queue_drop_count: self.ffi_queue_drop_count.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FfiMetricsSnapshot {
+    ingress_message_count: u64,
+    core_queue_depth: u64,
+    core_queue_depth_max: u64,
+    core_queue_drop_count: u64,
+    ffi_queue_depth: u64,
+    ffi_queue_depth_max: u64,
+    ffi_queue_drop_count: u64,
+}
+
+#[repr(C)]
+pub struct BifroREMetricsSnapshot {
+    pub ingress_message_count: u64,
+    pub core_queue_depth: u64,
+    pub core_queue_depth_max: u64,
+    pub core_queue_drop_count: u64,
+    pub ffi_queue_depth: u64,
+    pub ffi_queue_depth_max: u64,
+    pub ffi_queue_drop_count: u64,
+    pub eval_count: u64,
+    pub eval_error_count: u64,
+    pub eval_total_total_nanos: u64,
+    pub eval_total_max_nanos: u64,
+    pub topic_match_count: u64,
+    pub topic_match_total_nanos: u64,
+    pub topic_match_max_nanos: u64,
+    pub payload_decode_count: u64,
+    pub payload_decode_total_nanos: u64,
+    pub payload_decode_max_nanos: u64,
+    pub msg_ir_build_count: u64,
+    pub msg_ir_build_total_nanos: u64,
+    pub msg_ir_build_max_nanos: u64,
+    pub fast_where_count: u64,
+    pub fast_where_total_nanos: u64,
+    pub fast_where_max_nanos: u64,
+    pub predicate_count: u64,
+    pub predicate_total_nanos: u64,
+    pub predicate_max_nanos: u64,
+    pub projection_count: u64,
+    pub projection_total_nanos: u64,
+    pub projection_max_nanos: u64,
+}
+
+fn update_max_atomic(target: &std::sync::atomic::AtomicU64, value: u64) {
+    let mut current = target.load(Ordering::Relaxed);
+    while value > current {
+        match target.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn write_latency_snapshot(
+    count: &mut u64,
+    total_nanos: &mut u64,
+    max_nanos: &mut u64,
+    snapshot: LatencyMetricsSnapshot,
+) {
+    *count = snapshot.count;
+    *total_nanos = snapshot.total_nanos;
+    *max_nanos = snapshot.max_nanos;
+}
+
+fn combine_metrics_snapshot(
+    ffi: FfiMetricsSnapshot,
+    eval: EvalMetricsSnapshot,
+) -> BifroREMetricsSnapshot {
+    let mut snapshot = BifroREMetricsSnapshot {
+        ingress_message_count: ffi.ingress_message_count,
+        core_queue_depth: ffi.core_queue_depth,
+        core_queue_depth_max: ffi.core_queue_depth_max,
+        core_queue_drop_count: ffi.core_queue_drop_count,
+        ffi_queue_depth: ffi.ffi_queue_depth,
+        ffi_queue_depth_max: ffi.ffi_queue_depth_max,
+        ffi_queue_drop_count: ffi.ffi_queue_drop_count,
+        eval_count: eval.eval_count,
+        eval_error_count: eval.eval_error_count,
+        eval_total_total_nanos: eval.eval_total.total_nanos,
+        eval_total_max_nanos: eval.eval_total.max_nanos,
+        topic_match_count: 0,
+        topic_match_total_nanos: 0,
+        topic_match_max_nanos: 0,
+        payload_decode_count: 0,
+        payload_decode_total_nanos: 0,
+        payload_decode_max_nanos: 0,
+        msg_ir_build_count: 0,
+        msg_ir_build_total_nanos: 0,
+        msg_ir_build_max_nanos: 0,
+        fast_where_count: 0,
+        fast_where_total_nanos: 0,
+        fast_where_max_nanos: 0,
+        predicate_count: 0,
+        predicate_total_nanos: 0,
+        predicate_max_nanos: 0,
+        projection_count: 0,
+        projection_total_nanos: 0,
+        projection_max_nanos: 0,
+    };
+    write_latency_snapshot(
+        &mut snapshot.topic_match_count,
+        &mut snapshot.topic_match_total_nanos,
+        &mut snapshot.topic_match_max_nanos,
+        eval.topic_match,
+    );
+    write_latency_snapshot(
+        &mut snapshot.payload_decode_count,
+        &mut snapshot.payload_decode_total_nanos,
+        &mut snapshot.payload_decode_max_nanos,
+        eval.payload_decode,
+    );
+    write_latency_snapshot(
+        &mut snapshot.msg_ir_build_count,
+        &mut snapshot.msg_ir_build_total_nanos,
+        &mut snapshot.msg_ir_build_max_nanos,
+        eval.msg_ir_build,
+    );
+    write_latency_snapshot(
+        &mut snapshot.fast_where_count,
+        &mut snapshot.fast_where_total_nanos,
+        &mut snapshot.fast_where_max_nanos,
+        eval.fast_where,
+    );
+    write_latency_snapshot(
+        &mut snapshot.predicate_count,
+        &mut snapshot.predicate_total_nanos,
+        &mut snapshot.predicate_max_nanos,
+        eval.predicate,
+    );
+    write_latency_snapshot(
+        &mut snapshot.projection_count,
+        &mut snapshot.projection_total_nanos,
+        &mut snapshot.projection_max_nanos,
+        eval.projection,
+    );
+    snapshot
 }
 
 #[repr(C)]
@@ -528,6 +726,7 @@ pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_
         poll_batch_limit: DEFAULT_POLL_BATCH_SIZE,
         client_ids_path,
         active_client_ids: Vec::new(),
+        ffi_metrics: FfiMetrics::default(),
     };
     log::info!(
         "BifroRE created with config path={} payload_format={:?} notify_mode={:?}",
@@ -602,29 +801,20 @@ pub extern "C" fn bre_set_log_callback(
 #[no_mangle]
 pub extern "C" fn bre_metrics_snapshot(
     engine: *const BifroRE,
-    eval_count: *mut u64,
-    eval_error_count: *mut u64,
-    eval_total_nanos: *mut u64,
-    eval_max_nanos: *mut u64,
+    out_snapshot: *mut BifroREMetricsSnapshot,
 ) -> c_int {
-    if engine.is_null() {
+    if engine.is_null() || out_snapshot.is_null() {
         return -1;
     }
-    let guard = unsafe { &*engine }.inner.lock().unwrap();
-    let snapshot = guard.metrics().snapshot();
+    let engine_ref = unsafe { &*engine };
+    let eval_snapshot = {
+        let guard = engine_ref.inner.lock().unwrap();
+        guard.metrics().snapshot()
+    };
+    let ffi_snapshot = engine_ref.ffi_metrics.snapshot();
+    let snapshot = combine_metrics_snapshot(ffi_snapshot, eval_snapshot);
     unsafe {
-        if !eval_count.is_null() {
-            ptr::write(eval_count, snapshot.eval_count);
-        }
-        if !eval_error_count.is_null() {
-            ptr::write(eval_error_count, snapshot.eval_error_count);
-        }
-        if !eval_total_nanos.is_null() {
-            ptr::write(eval_total_nanos, snapshot.eval_total_nanos);
-        }
-        if !eval_max_nanos.is_null() {
-            ptr::write(eval_max_nanos, snapshot.eval_max_nanos);
-        }
+        ptr::write(out_snapshot, snapshot);
     }
     0
 }
@@ -825,6 +1015,7 @@ pub extern "C" fn bre_start_mqtt(
         while let Ok(delivery) = core_queue_rx.recv() {
             let message: &Message = &delivery.message;
             let engine = unsafe { &*engine_ptr };
+            engine.ffi_metrics.record_core_queue_dequeued();
             let mut guard = engine.inner.lock().unwrap();
             let results = guard.evaluate(message);
             drop(guard);
@@ -836,9 +1027,11 @@ pub extern "C" fn bre_start_mqtt(
                     payload: result.message.payload,
                 };
                 if eval_result_tx_for_worker.send(eval_result).is_err() {
+                    engine.ffi_metrics.record_ffi_queue_drop();
                     log::warn!("dropping eval result because poll queue is closed");
                     break;
                 }
+                engine.ffi_metrics.record_ffi_queue_enqueued();
                 enqueued_any = true;
             }
             if enqueued_any {
@@ -848,9 +1041,15 @@ pub extern "C" fn bre_start_mqtt(
     });
 
     let core_queue_tx_for_handler = core_queue_tx.clone();
+    let engine_ptr_for_handler = engine as usize;
     let handler: MessageHandler = std::sync::Arc::new(move |delivery: IncomingDelivery| {
+        let engine = unsafe { &*(engine_ptr_for_handler as *const BifroRE) };
+        engine.ffi_metrics.record_ingress();
         if core_queue_tx_for_handler.try_send(delivery).is_err() {
+            engine.ffi_metrics.record_core_queue_drop();
             log::warn!("dropping incoming message because core queue is full or closed");
+        } else {
+            engine.ffi_metrics.record_core_queue_enqueued();
         }
     });
 
@@ -964,6 +1163,7 @@ pub extern "C" fn bre_poll_eval_results_packed(
     if receiver.is_empty() {
         engine.notify_pending.store(false, Ordering::Release);
     }
+    engine.ffi_metrics.record_ffi_queue_dequeued(records.len() as u64);
 
     let mut rule_indices = Vec::with_capacity(records.len());
     let mut payload_offsets = Vec::with_capacity(records.len());
