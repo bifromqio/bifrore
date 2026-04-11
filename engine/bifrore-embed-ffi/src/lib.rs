@@ -1026,13 +1026,21 @@ pub extern "C" fn bre_start_mqtt(
                     rule_index: result.rule_index as u16,
                     payload: result.message.payload,
                 };
-                if eval_result_tx_for_worker.send(eval_result).is_err() {
-                    engine.ffi_metrics.record_ffi_queue_drop();
-                    log::warn!("dropping eval result because poll queue is closed");
-                    break;
+                match eval_result_tx_for_worker.try_send(eval_result) {
+                    Ok(()) => {
+                        engine.ffi_metrics.record_ffi_queue_enqueued();
+                        enqueued_any = true;
+                    }
+                    Err(flume::TrySendError::Full(_)) => {
+                        engine.ffi_metrics.record_ffi_queue_drop();
+                        log::warn!("dropping eval result because poll queue is full");
+                    }
+                    Err(flume::TrySendError::Disconnected(_)) => {
+                        engine.ffi_metrics.record_ffi_queue_drop();
+                        log::warn!("dropping eval result because poll queue is closed");
+                        break;
+                    }
                 }
-                engine.ffi_metrics.record_ffi_queue_enqueued();
-                enqueued_any = true;
             }
             if enqueued_any {
                 maybe_notify_eval_ready(notify_write_fd, &engine.notify_pending);
