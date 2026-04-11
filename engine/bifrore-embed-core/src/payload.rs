@@ -1,3 +1,4 @@
+use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::msg_ir::{CompiledPayloadField, MsgIr};
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::Value;
@@ -22,7 +23,11 @@ impl PayloadFormat {
     }
 }
 
-type DecodeFn = dyn Fn(&[u8], PayloadDecodePlan<'_>) -> Result<MsgIr, String> + Send + Sync + 'static;
+type DecodeFn =
+    dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>) -> Result<MsgIr, String>
+        + Send
+        + Sync
+        + 'static;
 
 #[derive(Debug, Clone, Copy)]
 pub enum PayloadDecodePlan<'a> {
@@ -78,10 +83,26 @@ pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
     let message_descriptor = pool
         .get_message_by_name(message_name)
         .ok_or_else(|| format!("protobuf message not found in descriptor set: {message_name}"))?;
-    let decode = move |payload: &[u8], plan: PayloadDecodePlan<'_>| {
+    let decode = move |payload: &[u8], plan: PayloadDecodePlan<'_>, metrics: Option<&EvalMetrics>| {
+        let decode_start = std::time::Instant::now();
         let message =
             DynamicMessage::decode(message_descriptor.clone(), payload).map_err(|err| err.to_string())?;
-        MsgIr::from_protobuf_message_with_decode_plan(&message, plan)
+        if let Some(metrics) = metrics {
+            metrics.record_stage(
+                LatencyStage::PayloadDecode,
+                decode_start.elapsed().as_nanos() as u64,
+            );
+        }
+
+        let ir_start = std::time::Instant::now();
+        let ir = MsgIr::from_protobuf_message_with_decode_plan(&message, plan)?;
+        if let Some(metrics) = metrics {
+            metrics.record_stage(
+                LatencyStage::MsgIrBuild,
+                ir_start.elapsed().as_nanos() as u64,
+            );
+        }
+        Ok(ir)
     };
     Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
 }
@@ -91,25 +112,31 @@ pub fn decode_payload_ir(payload: &[u8], format: PayloadFormat) -> Result<MsgIr,
 }
 
 pub fn decode_payload_ir_with_decoder(payload: &[u8], decoder: &PayloadDecoder) -> Result<MsgIr, String> {
-    decode_payload_ir_with_decoder_and_plan(payload, decoder, PayloadDecodePlan::Full)
+    decode_payload_ir_with_decoder_and_plan_and_metrics(payload, decoder, PayloadDecodePlan::Full, None)
 }
 
-pub fn decode_payload_ir_with_decoder_and_plan(
+pub fn decode_payload_ir_with_decoder_and_plan_and_metrics(
     payload: &[u8],
     decoder: &PayloadDecoder,
     plan: PayloadDecodePlan<'_>,
+    metrics: Option<&EvalMetrics>,
 ) -> Result<MsgIr, String> {
     match decoder {
-        PayloadDecoder::Json => decode_json_ir(payload, plan),
-        PayloadDecoder::Protobuf(decode) => decode(payload, plan),
+        PayloadDecoder::Json => decode_json_ir(payload, plan, metrics),
+        PayloadDecoder::Protobuf(decode) => decode(payload, plan, metrics),
     }
 }
 
-fn decode_json_ir(payload: &[u8], plan: PayloadDecodePlan<'_>) -> Result<MsgIr, String> {
+fn decode_json_ir(
+    payload: &[u8],
+    plan: PayloadDecodePlan<'_>,
+    metrics: Option<&EvalMetrics>,
+) -> Result<MsgIr, String> {
     if matches!(plan, PayloadDecodePlan::None) {
         return Ok(MsgIr::new());
     }
 
+    let decode_start = std::time::Instant::now();
     #[cfg(feature = "simd-json")]
     let parsed: Value = {
         let mut buffer = payload.to_vec();
@@ -118,16 +145,31 @@ fn decode_json_ir(payload: &[u8], plan: PayloadDecodePlan<'_>) -> Result<MsgIr, 
 
     #[cfg(not(feature = "simd-json"))]
     let parsed: Value = serde_json::from_slice(payload).map_err(|err| err.to_string())?;
+    if let Some(metrics) = metrics {
+        metrics.record_stage(
+            LatencyStage::PayloadDecode,
+            decode_start.elapsed().as_nanos() as u64,
+        );
+    }
 
     let object = parsed
         .as_object()
         .ok_or_else(|| "payload must be a JSON object".to_string())?;
-    MsgIr::from_json_object_with_decode_plan(object, plan)
+    let ir_start = std::time::Instant::now();
+    let ir = MsgIr::from_json_object_with_decode_plan(object, plan)?;
+    if let Some(metrics) = metrics {
+        metrics.record_stage(
+            LatencyStage::MsgIrBuild,
+            ir_start.elapsed().as_nanos() as u64,
+        );
+    }
+    Ok(ir)
 }
 
 fn unsupported_protobuf_decoder(
     _payload: &[u8],
     _plan: PayloadDecodePlan<'_>,
+    _metrics: Option<&EvalMetrics>,
 ) -> Result<MsgIr, String> {
     Err("protobuf payload decoding requires a descriptor-set file and fully-qualified message name".to_string())
 }

@@ -1,12 +1,13 @@
 use crate::message::Message;
-use crate::metrics::EvalMetrics;
+use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::msg_ir::MsgIr;
 use crate::payload::{
     dynamic_protobuf_decoder_from_descriptor_set_bytes,
     dynamic_protobuf_decoder_from_descriptor_set_file,
 };
 use crate::payload::{
-    decode_payload_ir_with_decoder_and_plan, PayloadDecodePlan, PayloadDecoder, PayloadFormat
+    decode_payload_ir_with_decoder_and_plan_and_metrics, PayloadDecodePlan, PayloadDecoder,
+    PayloadFormat,
 };
 use crate::rule::{
     compile_rule, evaluate_rule_with_payload_and_topic_parts,
@@ -130,7 +131,12 @@ impl RuleEngine {
 
     pub fn evaluate(&mut self, message: &Message) -> Vec<RuleEvaluation> {
         let mut results = Vec::new();
+        let topic_match_start = Instant::now();
         let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
+        self.metrics.record_stage(
+            LatencyStage::TopicMatch,
+            topic_match_start.elapsed().as_nanos() as u64,
+        );
         if matched_rule_indexes.is_empty() {
             return results;
         }
@@ -141,10 +147,11 @@ impl RuleEngine {
         } else {
             PayloadDecodePlan::Sparse(&required_fields)
         };
-        let payload_obj = match decode_payload_ir_with_decoder_and_plan(
+        let payload_obj = match decode_payload_ir_with_decoder_and_plan_and_metrics(
             &message.payload,
             &self.payload_decoder,
             decode_plan,
+            Some(&self.metrics),
         ) {
             Ok(value) => value,
             Err(err) => {
@@ -180,14 +187,15 @@ impl RuleEngine {
                         .par_iter()
                         .filter_map(|rule_index| {
                             evaluate_single_rule(
-                                *rule_index,
-                                rules,
-                                message,
-                                &payload_obj,
-                                topic_parts,
-                            )
-                        })
-                        .collect::<Vec<_>>()
+                        *rule_index,
+                        rules,
+                        message,
+                        &payload_obj,
+                        topic_parts,
+                        &self.metrics,
+                    )
+                })
+                .collect::<Vec<_>>()
                 })
         } else {
             matched_rule_indexes
@@ -199,14 +207,15 @@ impl RuleEngine {
                         message,
                         &payload_obj,
                         topic_parts,
+                        &self.metrics,
                     )
                 })
                 .collect::<Vec<_>>()
         };
         for attempt in attempts {
-            self.metrics.record(attempt.duration_nanos, attempt.success);
+            self.metrics.record_eval(attempt.duration_nanos, attempt.success);
             if let Some(evaluation) = attempt.evaluation {
-                log::info!("evaluation={:?}", evaluation);
+                log::trace!("evaluation={:?}", evaluation);
                 results.push(evaluation);
             }
         }
@@ -290,10 +299,17 @@ fn evaluate_single_rule(
     message: &Message,
     payload_obj: &MsgIr,
     topic_parts: &[&str],
+    metrics: &EvalMetrics,
 ) -> Option<EvalAttempt> {
     let rule = rules.get(rule_index).and_then(|slot| slot.as_ref())?;
     let start = Instant::now();
-    let evaluated = evaluate_rule_with_payload_and_topic_parts(rule, message, payload_obj, topic_parts);
+    let evaluated = evaluate_rule_with_payload_and_topic_parts(
+        rule,
+        message,
+        payload_obj,
+        topic_parts,
+        metrics,
+    );
     let duration_nanos = start.elapsed().as_nanos() as u64;
     let success = evaluated.is_some();
     let evaluation = evaluated.map(|evaluated_message| RuleEvaluation {
@@ -595,7 +611,8 @@ mod tests {
         let snapshot = engine.metrics().snapshot();
         assert_eq!(snapshot.eval_count, 1);
         assert_eq!(snapshot.eval_error_count, 0);
-        assert!(snapshot.eval_total_nanos > 0);
+        assert!(snapshot.eval_total.total_nanos > 0);
+        assert!(snapshot.topic_match.count > 0);
     }
 
     #[test]

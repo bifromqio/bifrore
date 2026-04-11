@@ -165,15 +165,11 @@ int bre_set_log_callback(
 
 int bre_metrics_snapshot(
     void *engine,
-    uint64_t *eval_count,
-    uint64_t *eval_error_count,
-    uint64_t *eval_total_nanos,
-    uint64_t *eval_max_nanos) {
+    struct BifroREMetricsSnapshot *out_snapshot) {
     (void)engine;
-    (void)eval_count;
-    (void)eval_error_count;
-    (void)eval_total_nanos;
-    (void)eval_max_nanos;
+    if (out_snapshot != NULL) {
+        memset(out_snapshot, 0, sizeof(*out_snapshot));
+    }
     return 0;
 }
 

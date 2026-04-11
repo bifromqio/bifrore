@@ -355,7 +355,7 @@ async fn run_event_loop(
                     Ok(rumqttc::v5::Event::Incoming(rumqttc::v5::mqttbytes::v5::Packet::Publish(publish))) => {
                         let topic = String::from_utf8_lossy(&publish.topic).into_owned();
                         let mut msg = Message::new(topic, publish.payload.to_vec());
-                        log::info!("Received publish packet: {:?}", msg);
+                        log::trace!("Received publish packet: {:?}", msg);
                         msg.qos = publish.qos as u8;
                         msg.retain = publish.retain;
                         msg.dup = publish.dup;

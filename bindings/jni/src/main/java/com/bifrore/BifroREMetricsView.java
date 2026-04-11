@@ -40,6 +40,34 @@ public final class BifroREMetricsView {
         return current.evalCount == 0 ? 0.0 : (double) current.evalTotalNanos / current.evalCount;
     }
 
+    public double ingressMessageCount() {
+        return current().ingressMessageCount;
+    }
+
+    public double coreQueueDepth() {
+        return current().coreQueueDepth;
+    }
+
+    public double coreQueueDepthMax() {
+        return current().coreQueueDepthMax;
+    }
+
+    public double coreQueueDropCount() {
+        return current().coreQueueDropCount;
+    }
+
+    public double ffiQueueDepth() {
+        return current().ffiQueueDepth;
+    }
+
+    public double ffiQueueDepthMax() {
+        return current().ffiQueueDepthMax;
+    }
+
+    public double ffiQueueDropCount() {
+        return current().ffiQueueDropCount;
+    }
+
     public double callbackDroppedCount() {
         return current().callbackDroppedCount;
     }
@@ -83,6 +111,13 @@ public final class BifroREMetricsView {
         final long evalErrorCount;
         final long evalTotalNanos;
         final long evalMaxNanos;
+        final long ingressMessageCount;
+        final long coreQueueDepth;
+        final long coreQueueDepthMax;
+        final long coreQueueDropCount;
+        final long ffiQueueDepth;
+        final long ffiQueueDepthMax;
+        final long ffiQueueDropCount;
         final long callbackDroppedCount;
         final long callbackPendingCount;
         final long callbackQueueDepth;
@@ -94,6 +129,13 @@ public final class BifroREMetricsView {
             long evalErrorCount,
             long evalTotalNanos,
             long evalMaxNanos,
+            long ingressMessageCount,
+            long coreQueueDepth,
+            long coreQueueDepthMax,
+            long coreQueueDropCount,
+            long ffiQueueDepth,
+            long ffiQueueDepthMax,
+            long ffiQueueDropCount,
             long callbackDroppedCount,
             long callbackPendingCount,
             long callbackQueueDepth,
@@ -104,6 +146,13 @@ public final class BifroREMetricsView {
             this.evalErrorCount = evalErrorCount;
             this.evalTotalNanos = evalTotalNanos;
             this.evalMaxNanos = evalMaxNanos;
+            this.ingressMessageCount = ingressMessageCount;
+            this.coreQueueDepth = coreQueueDepth;
+            this.coreQueueDepthMax = coreQueueDepthMax;
+            this.coreQueueDropCount = coreQueueDropCount;
+            this.ffiQueueDepth = ffiQueueDepth;
+            this.ffiQueueDepthMax = ffiQueueDepthMax;
+            this.ffiQueueDropCount = ffiQueueDropCount;
             this.callbackDroppedCount = callbackDroppedCount;
             this.callbackPendingCount = callbackPendingCount;
             this.callbackQueueDepth = callbackQueueDepth;
@@ -112,16 +161,23 @@ public final class BifroREMetricsView {
         }
 
         static ViewSnapshot empty() {
-            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
-            BifroRE.MetricsSnapshot snapshot = metrics != null ? metrics : new BifroRE.MetricsSnapshot(0, 0, 0, 0);
+            BifroRE.MetricsSnapshot snapshot = metrics != null ? metrics : BifroRE.MetricsSnapshot.empty();
             return new ViewSnapshot(
                 snapshot.evalCount,
                 snapshot.evalErrorCount,
-                snapshot.evalTotalNanos,
-                snapshot.evalMaxNanos,
+                snapshot.evalTotal.totalNanos,
+                snapshot.evalTotal.maxNanos,
+                snapshot.ingressMessageCount,
+                snapshot.coreQueueDepth,
+                snapshot.coreQueueDepthMax,
+                snapshot.coreQueueDropCount,
+                snapshot.ffiQueueDepth,
+                snapshot.ffiQueueDepthMax,
+                snapshot.ffiQueueDropCount,
                 engine.callbackDroppedCount(),
                 engine.callbackPendingCount(),
                 engine.callbackQueueDepth(),

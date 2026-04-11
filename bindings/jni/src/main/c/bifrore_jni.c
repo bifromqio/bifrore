@@ -19,6 +19,38 @@ struct BifroRuleMetadata {
     size_t destinations_len;
 };
 
+struct BifroREMetricsSnapshot {
+    uint64_t ingress_message_count;
+    uint64_t core_queue_depth;
+    uint64_t core_queue_depth_max;
+    uint64_t core_queue_drop_count;
+    uint64_t ffi_queue_depth;
+    uint64_t ffi_queue_depth_max;
+    uint64_t ffi_queue_drop_count;
+    uint64_t eval_count;
+    uint64_t eval_error_count;
+    uint64_t eval_total_total_nanos;
+    uint64_t eval_total_max_nanos;
+    uint64_t topic_match_count;
+    uint64_t topic_match_total_nanos;
+    uint64_t topic_match_max_nanos;
+    uint64_t payload_decode_count;
+    uint64_t payload_decode_total_nanos;
+    uint64_t payload_decode_max_nanos;
+    uint64_t msg_ir_build_count;
+    uint64_t msg_ir_build_total_nanos;
+    uint64_t msg_ir_build_max_nanos;
+    uint64_t fast_where_count;
+    uint64_t fast_where_total_nanos;
+    uint64_t fast_where_max_nanos;
+    uint64_t predicate_count;
+    uint64_t predicate_total_nanos;
+    uint64_t predicate_max_nanos;
+    uint64_t projection_count;
+    uint64_t projection_total_nanos;
+    uint64_t projection_max_nanos;
+};
+
 // FFI functions from Rust cdylib
 extern void *bre_create_with_config(const char *path);
 extern void *bre_create_with_config_and_payload_format(const char *path, int payload_format);
@@ -73,10 +105,7 @@ extern int bre_set_log_callback(
     int min_level);
 extern int bre_metrics_snapshot(
     void *engine,
-    uint64_t *eval_count,
-    uint64_t *eval_error_count,
-    uint64_t *eval_total_nanos,
-    uint64_t *eval_max_nanos);
+    struct BifroREMetricsSnapshot *out_snapshot);
 extern int bre_set_poll_batch_limit(void *engine, uint32_t limit);
 
 struct LogCallbackCtx {
@@ -90,8 +119,6 @@ struct JniClassCache {
     jmethodID poll_batch_ctor;
     jclass rule_metadata_cls;
     jmethodID rule_metadata_ctor;
-    jclass metrics_snapshot_cls;
-    jmethodID metrics_snapshot_ctor;
 };
 
 struct DirectPendingBatch {
@@ -383,25 +410,6 @@ static void init_jni_cache_once(void) {
         "(I[Ljava/lang/String;)V"
     );
     if (JNI_CACHE.rule_metadata_ctor == NULL) {
-        return;
-    }
-
-    local = (*env)->FindClass(env, "com/bifrore/BifroRE$MetricsSnapshot");
-    if (local == NULL) {
-        return;
-    }
-    JNI_CACHE.metrics_snapshot_cls = (*env)->NewGlobalRef(env, local);
-    (*env)->DeleteLocalRef(env, local);
-    if (JNI_CACHE.metrics_snapshot_cls == NULL) {
-        return;
-    }
-    JNI_CACHE.metrics_snapshot_ctor = (*env)->GetMethodID(
-        env,
-        JNI_CACHE.metrics_snapshot_cls,
-        "<init>",
-        "(JJJJ)V"
-    );
-    if (JNI_CACHE.metrics_snapshot_ctor == NULL) {
         return;
     }
 
@@ -829,7 +837,7 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(
     return (jlong)ctx;
 }
 
-JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshot(
+JNIEXPORT jlongArray JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshotValues(
     JNIEnv *env,
     jclass cls,
     jlong handle) {
@@ -838,29 +846,50 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshot(
         return NULL;
     }
 
-    uint64_t eval_count = 0;
-    uint64_t eval_error_count = 0;
-    uint64_t eval_total_nanos = 0;
-    uint64_t eval_max_nanos = 0;
+    struct BifroREMetricsSnapshot snapshot;
     if (bre_metrics_snapshot(
             (void *)handle,
-            &eval_count,
-            &eval_error_count,
-            &eval_total_nanos,
-            &eval_max_nanos) != 0) {
+            &snapshot) != 0) {
         return NULL;
     }
-    if (!ensure_jni_cache(env)) {
+    jlong values[] = {
+        (jlong)snapshot.ingress_message_count,
+        (jlong)snapshot.core_queue_depth,
+        (jlong)snapshot.core_queue_depth_max,
+        (jlong)snapshot.core_queue_drop_count,
+        (jlong)snapshot.ffi_queue_depth,
+        (jlong)snapshot.ffi_queue_depth_max,
+        (jlong)snapshot.ffi_queue_drop_count,
+        (jlong)snapshot.eval_count,
+        (jlong)snapshot.eval_error_count,
+        (jlong)snapshot.eval_total_total_nanos,
+        (jlong)snapshot.eval_total_max_nanos,
+        (jlong)snapshot.topic_match_count,
+        (jlong)snapshot.topic_match_total_nanos,
+        (jlong)snapshot.topic_match_max_nanos,
+        (jlong)snapshot.payload_decode_count,
+        (jlong)snapshot.payload_decode_total_nanos,
+        (jlong)snapshot.payload_decode_max_nanos,
+        (jlong)snapshot.msg_ir_build_count,
+        (jlong)snapshot.msg_ir_build_total_nanos,
+        (jlong)snapshot.msg_ir_build_max_nanos,
+        (jlong)snapshot.fast_where_count,
+        (jlong)snapshot.fast_where_total_nanos,
+        (jlong)snapshot.fast_where_max_nanos,
+        (jlong)snapshot.predicate_count,
+        (jlong)snapshot.predicate_total_nanos,
+        (jlong)snapshot.predicate_max_nanos,
+        (jlong)snapshot.projection_count,
+        (jlong)snapshot.projection_total_nanos,
+        (jlong)snapshot.projection_max_nanos,
+    };
+    jsize value_count = (jsize)(sizeof(values) / sizeof(values[0]));
+    jlongArray array = (*env)->NewLongArray(env, value_count);
+    if (array == NULL) {
         return NULL;
     }
-    return (*env)->NewObject(
-        env,
-        JNI_CACHE.metrics_snapshot_cls,
-        JNI_CACHE.metrics_snapshot_ctor,
-        (jlong)eval_count,
-        (jlong)eval_error_count,
-        (jlong)eval_total_nanos,
-        (jlong)eval_max_nanos);
+    (*env)->SetLongArrayRegion(env, array, 0, value_count, values);
+    return array;
 }
 
 JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetPollBatchLimit(

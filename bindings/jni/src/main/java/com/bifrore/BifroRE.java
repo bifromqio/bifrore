@@ -104,16 +104,150 @@ public final class BifroRE implements AutoCloseable {
     }
 
     public static final class MetricsSnapshot {
+        public static final class StageLatencySnapshot {
+            public final long count;
+            public final long totalNanos;
+            public final long maxNanos;
+
+            StageLatencySnapshot(long count, long totalNanos, long maxNanos) {
+                this.count = count;
+                this.totalNanos = totalNanos;
+                this.maxNanos = maxNanos;
+            }
+
+            public long avgNanos() {
+                return count == 0 ? 0L : totalNanos / count;
+            }
+        }
+
+        public final long ingressMessageCount;
+        public final long coreQueueDepth;
+        public final long coreQueueDepthMax;
+        public final long coreQueueDropCount;
+        public final long ffiQueueDepth;
+        public final long ffiQueueDepthMax;
+        public final long ffiQueueDropCount;
         public final long evalCount;
         public final long evalErrorCount;
-        public final long evalTotalNanos;
-        public final long evalMaxNanos;
+        public final StageLatencySnapshot evalTotal;
+        public final StageLatencySnapshot topicMatch;
+        public final StageLatencySnapshot payloadDecode;
+        public final StageLatencySnapshot msgIrBuild;
+        public final StageLatencySnapshot fastWhere;
+        public final StageLatencySnapshot predicate;
+        public final StageLatencySnapshot projection;
 
-        MetricsSnapshot(long evalCount, long evalErrorCount, long evalTotalNanos, long evalMaxNanos) {
+        MetricsSnapshot(
+            long ingressMessageCount,
+            long coreQueueDepth,
+            long coreQueueDepthMax,
+            long coreQueueDropCount,
+            long ffiQueueDepth,
+            long ffiQueueDepthMax,
+            long ffiQueueDropCount,
+            long evalCount,
+            long evalErrorCount,
+            StageLatencySnapshot evalTotal,
+            StageLatencySnapshot topicMatch,
+            StageLatencySnapshot payloadDecode,
+            StageLatencySnapshot msgIrBuild,
+            StageLatencySnapshot fastWhere,
+            StageLatencySnapshot predicate,
+            StageLatencySnapshot projection
+        ) {
+            this.ingressMessageCount = ingressMessageCount;
+            this.coreQueueDepth = coreQueueDepth;
+            this.coreQueueDepthMax = coreQueueDepthMax;
+            this.coreQueueDropCount = coreQueueDropCount;
+            this.ffiQueueDepth = ffiQueueDepth;
+            this.ffiQueueDepthMax = ffiQueueDepthMax;
+            this.ffiQueueDropCount = ffiQueueDropCount;
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
-            this.evalTotalNanos = evalTotalNanos;
-            this.evalMaxNanos = evalMaxNanos;
+            this.evalTotal = evalTotal;
+            this.topicMatch = topicMatch;
+            this.payloadDecode = payloadDecode;
+            this.msgIrBuild = msgIrBuild;
+            this.fastWhere = fastWhere;
+            this.predicate = predicate;
+            this.projection = projection;
+        }
+
+        static MetricsSnapshot empty() {
+            StageLatencySnapshot emptyStage = new StageLatencySnapshot(0, 0, 0);
+            return new MetricsSnapshot(
+                0, 0, 0, 0, 0, 0, 0, 0, 0,
+                emptyStage,
+                emptyStage,
+                emptyStage,
+                emptyStage,
+                emptyStage,
+                emptyStage,
+                emptyStage
+            );
+        }
+
+        static MetricsSnapshot from(long[] values) {
+            if (values == null || values.length < 29) {
+                return empty();
+            }
+            int index = 0;
+            long ingressMessageCount = values[index++];
+            long coreQueueDepth = values[index++];
+            long coreQueueDepthMax = values[index++];
+            long coreQueueDropCount = values[index++];
+            long ffiQueueDepth = values[index++];
+            long ffiQueueDepthMax = values[index++];
+            long ffiQueueDropCount = values[index++];
+            long evalCount = values[index++];
+            long evalErrorCount = values[index++];
+            StageLatencySnapshot evalTotal = readStage(evalCount, values, index);
+            index += 2;
+            StageLatencySnapshot topicMatch = readStageWithCount(values, index);
+            index += 3;
+            StageLatencySnapshot payloadDecode = readStageWithCount(values, index);
+            index += 3;
+            StageLatencySnapshot msgIrBuild = readStageWithCount(values, index);
+            index += 3;
+            StageLatencySnapshot fastWhere = readStageWithCount(values, index);
+            index += 3;
+            StageLatencySnapshot predicate = readStageWithCount(values, index);
+            index += 3;
+            StageLatencySnapshot projection = readStageWithCount(values, index);
+            return new MetricsSnapshot(
+                ingressMessageCount,
+                coreQueueDepth,
+                coreQueueDepthMax,
+                coreQueueDropCount,
+                ffiQueueDepth,
+                ffiQueueDepthMax,
+                ffiQueueDropCount,
+                evalCount,
+                evalErrorCount,
+                evalTotal,
+                topicMatch,
+                payloadDecode,
+                msgIrBuild,
+                fastWhere,
+                predicate,
+                projection
+            );
+        }
+
+        private static StageLatencySnapshot readStageWithCount(long[] values, int offset) {
+            return new StageLatencySnapshot(
+                values[offset],
+                values[offset + 1],
+                values[offset + 2]
+            );
+        }
+
+        private static StageLatencySnapshot readStage(long count, long[] values, int offset) {
+            return new StageLatencySnapshot(
+                count,
+                values[offset],
+                values[offset + 1]
+            );
         }
     }
 
@@ -360,9 +494,9 @@ public final class BifroRE implements AutoCloseable {
 
     public MetricsSnapshot metrics() {
         if (handle == 0) {
-            return new MetricsSnapshot(0, 0, 0, 0);
+            return MetricsSnapshot.empty();
         }
-        return nativeMetricsSnapshot(handle);
+        return MetricsSnapshot.from(nativeMetricsSnapshotValues(handle));
     }
 
     public long callbackDroppedCount() {
@@ -757,7 +891,7 @@ public final class BifroRE implements AutoCloseable {
     private static native long nativeRegisterLogHandler(LogHandler handler);
     private static native void nativeFreeLogHandler(long cbHandle);
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);
-    private static native MetricsSnapshot nativeMetricsSnapshot(long handle);
+    private static native long[] nativeMetricsSnapshotValues(long handle);
     private static native int nativeSetPollBatchLimit(long handle, int limit);
     private static native RuleMetadata[] nativeGetRuleMetadataTable(long handle);
 }
