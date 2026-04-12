@@ -10,8 +10,9 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::Path;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, Once, OnceLock, RwLock};
+use std::sync::{Once, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -265,10 +266,13 @@ fn close_notify_pipe(fd: c_int) {
 
 #[repr(C)]
 pub struct BifroRE {
-    inner: Mutex<RuleEngine>,
+    inner: Option<RuleEngine>,
+    metrics: Arc<bifrore_embed_core::metrics::EvalMetrics>,
+    rule_metadata: Vec<RuleMetadata>,
+    topic_filters: Vec<String>,
     adapter: Option<MqttAdapterHandle>,
     core_queue_tx: Option<flume::Sender<IncomingDelivery>>,
-    core_worker: Option<JoinHandle<()>>,
+    core_worker: Option<JoinHandle<RuleEngine>>,
     eval_result_tx: Option<flume::Sender<EvalResultRecord>>,
     eval_result_rx: Option<flume::Receiver<EvalResultRecord>>,
     notify_read_fd: c_int,
@@ -641,13 +645,19 @@ pub extern "C" fn bre_create_engine(
     if rule_engine.load_rules_from_json(config_path).is_err() {
         return ptr::null_mut();
     }
+    let metrics = rule_engine.metrics_handle();
+    let rule_metadata = rule_engine.rule_metadata();
+    let topic_filters = rule_engine.topic_filters();
 
     let (notify_read_fd, notify_write_fd) = match notify_mode {
         BifroRENotifyMode::Poll => (-1, -1),
         BifroRENotifyMode::PushNotify => create_notify_pipe().unwrap_or((-1, -1)),
     };
     let engine = BifroRE {
-        inner: Mutex::new(rule_engine),
+        inner: Some(rule_engine),
+        metrics,
+        rule_metadata,
+        topic_filters,
         adapter: None,
         core_queue_tx: None,
         core_worker: None,
@@ -740,10 +750,7 @@ pub extern "C" fn bre_metrics_snapshot(
         return -1;
     }
     let engine_ref = unsafe { &*engine };
-    let eval_snapshot = {
-        let guard = engine_ref.inner.lock().unwrap();
-        guard.metrics().snapshot()
-    };
+    let eval_snapshot = engine_ref.metrics.snapshot();
     let ffi_snapshot = engine_ref.ffi_metrics.snapshot();
     let snapshot = combine_metrics_snapshot(ffi_snapshot, eval_snapshot);
     unsafe {
@@ -761,9 +768,10 @@ pub extern "C" fn bre_get_rule_metadata_table(
     if engine.is_null() || out_metadata.is_null() || out_len.is_null() {
         return -1;
     }
-    let guard = unsafe { &*engine }.inner.lock().unwrap();
-    let metadata = guard
-        .rule_metadata()
+    let engine_ref = unsafe { &*engine };
+    let metadata = engine_ref
+        .rule_metadata
+        .clone()
         .into_iter()
         .map(to_ffi_rule_metadata)
         .collect::<Vec<_>>();
@@ -787,11 +795,13 @@ pub extern "C" fn bre_set_eval_parallel_threshold(
         return -1;
     }
     let engine = unsafe { &mut *engine };
-    let mut guard = engine.inner.lock().unwrap();
+    let Some(inner) = engine.inner.as_mut() else {
+        return -2;
+    };
     if threshold == 0 {
-        guard.set_eval_parallel_threshold(None);
+        inner.set_eval_parallel_threshold(None);
     } else {
-        guard.set_eval_parallel_threshold(Some(threshold as usize));
+        inner.set_eval_parallel_threshold(Some(threshold as usize));
     }
     0
 }
@@ -933,6 +943,9 @@ pub extern "C" fn bre_start_mqtt(
         config.node_id,
         config.client_count
     );
+    let Some(mut rule_engine) = engine_ref.inner.take() else {
+        return -6;
+    };
 
     let engine_addr = engine as usize;
     let (core_queue_tx, core_queue_rx) =
@@ -947,9 +960,7 @@ pub extern "C" fn bre_start_mqtt(
             let message: &Message = &delivery.message;
             let engine = unsafe { &*engine_ptr };
             engine.ffi_metrics.record_core_queue_dequeued();
-            let mut guard = engine.inner.lock().unwrap();
-            let results = guard.evaluate(message);
-            drop(guard);
+            let results = rule_engine.evaluate(message);
             delivery.ack();
             let mut enqueued_any = false;
             for result in results {
@@ -977,6 +988,7 @@ pub extern "C" fn bre_start_mqtt(
                 maybe_notify_eval_ready(notify_write_fd, &engine.notify_pending);
             }
         }
+        rule_engine
     });
 
     let core_queue_tx_for_handler = core_queue_tx.clone();
@@ -992,17 +1004,16 @@ pub extern "C" fn bre_start_mqtt(
         }
     });
 
-    let topics = {
-        let guard = engine_ref.inner.lock().unwrap();
-        guard.topic_filters()
-    };
+    let topics = engine_ref.topic_filters.clone();
 
     let adapter = match start_mqtt(config, topics, handler) {
         Ok(adapter) => adapter,
         Err(_) => {
             drop(core_queue_tx);
             drop(eval_result_tx);
-            let _ = core_worker.join();
+            if let Ok(rule_engine) = core_worker.join() {
+                engine_ref.inner = Some(rule_engine);
+            }
             return -4;
         }
     };
@@ -1026,7 +1037,9 @@ fn stop_core_worker(engine: &mut BifroRE, drop_receiver: bool) {
     engine.core_queue_tx.take();
     engine.eval_result_tx.take();
     if let Some(worker) = engine.core_worker.take() {
-        let _ = worker.join();
+        if let Ok(rule_engine) = worker.join() {
+            engine.inner = Some(rule_engine);
+        }
     }
     if drop_receiver {
         engine.eval_result_rx.take();
