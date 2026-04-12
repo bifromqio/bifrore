@@ -35,11 +35,6 @@ public final class BifroREMetricsView {
         return current().evalMaxNanos;
     }
 
-    public double evalAvgNanos() {
-        ViewSnapshot current = current();
-        return current.evalCount == 0 ? 0.0 : (double) current.evalTotalNanos / current.evalCount;
-    }
-
     public double ingressMessageCount() {
         return current().ingressMessageCount;
     }

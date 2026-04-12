@@ -114,10 +114,6 @@ public final class BifroRE implements AutoCloseable {
                 this.totalNanos = totalNanos;
                 this.maxNanos = maxNanos;
             }
-
-            public long avgNanos() {
-                return count == 0 ? 0L : totalNanos / count;
-            }
         }
 
         public final long ingressMessageCount;
