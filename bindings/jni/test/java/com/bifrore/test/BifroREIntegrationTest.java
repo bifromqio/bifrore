@@ -208,6 +208,8 @@ final class BifroREIntegrationTest {
         return new BifroREOptions()
             .host("127.0.0.1")
             .port(1883)
+            .username("dev")
+            .password("dev")
             .ruleJsonPath(rulePath)
             .clientIdsPath(clientIdsDir.resolve("client_ids.txt").toString())
             .groupName(groupName)

@@ -7,6 +7,8 @@ public final class BifroREOptions {
     public String nodeId;
     public int clientCount = 1;
     public boolean multiNci = false;
+    public String username;
+    public String password;
     public int payloadFormat = BifroRE.PAYLOAD_JSON;
     public String clientIdsPath = "./client_ids";
     public String protobufDescriptorSetPath;
@@ -46,6 +48,16 @@ public final class BifroREOptions {
 
     public BifroREOptions multiNci(boolean multiNci) {
         this.multiNci = multiNci;
+        return this;
+    }
+
+    public BifroREOptions username(String username) {
+        this.username = username;
+        return this;
+    }
+
+    public BifroREOptions password(String password) {
+        this.password = password;
         return this;
     }
 

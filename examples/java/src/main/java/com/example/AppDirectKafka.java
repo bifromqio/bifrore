@@ -40,6 +40,8 @@ public final class AppDirectKafka {
             new BifroREOptions()
                 .host("127.0.0.1")
                 .port(1883)
+                .username("dev")
+                .password("dev")
                 .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
                 .callbackQueueCapacity(1024)
                 .pollBatchLimit(64)
