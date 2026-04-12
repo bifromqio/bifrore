@@ -11,40 +11,7 @@ static int FETCH_RC_QUEUE[4];
 static size_t FETCH_QUEUE_LEN = 0;
 static size_t FETCH_QUEUE_INDEX = 0;
 
-void *bre_create_with_config(const char *path) {
-    (void)path;
-    return NULL;
-}
-
-void *bre_create_with_config_and_payload_format(const char *path, int payload_format) {
-    (void)path;
-    (void)payload_format;
-    return NULL;
-}
-
-void *bre_create_with_config_and_payload_format_and_client_ids_path(
-    const char *path,
-    int payload_format,
-    const char *client_ids_path) {
-    (void)path;
-    (void)payload_format;
-    (void)client_ids_path;
-    return NULL;
-}
-
-void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
-    const char *path,
-    int payload_format,
-    const char *client_ids_path,
-    int notify_mode) {
-    (void)path;
-    (void)payload_format;
-    (void)client_ids_path;
-    (void)notify_mode;
-    return NULL;
-}
-
-void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+void *bre_create_engine(
     const char *path,
     int payload_format,
     const char *client_ids_path,
@@ -83,9 +50,7 @@ int bre_start_mqtt(
     jboolean ordered,
     const char *ordered_prefix,
     uint16_t keep_alive_secs,
-    jboolean multi_nci,
-    void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
-    void *user_data) {
+    jboolean multi_nci) {
     (void)engine;
     (void)host;
     (void)port;
@@ -100,8 +65,6 @@ int bre_start_mqtt(
     (void)ordered_prefix;
     (void)keep_alive_secs;
     (void)multi_nci;
-    (void)callback;
-    (void)user_data;
     return 0;
 }
 
