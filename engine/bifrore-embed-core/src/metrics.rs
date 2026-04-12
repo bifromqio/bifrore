@@ -120,16 +120,6 @@ pub struct LatencyMetricsSnapshot {
     pub max_nanos: u64,
 }
 
-impl LatencyMetricsSnapshot {
-    pub fn avg_nanos(&self) -> Option<u64> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.total_nanos / self.count)
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EvalMetricsSnapshot {
     pub eval_count: u64,
@@ -141,10 +131,4 @@ pub struct EvalMetricsSnapshot {
     pub predicate: LatencyMetricsSnapshot,
     pub projection: LatencyMetricsSnapshot,
     pub eval_total: LatencyMetricsSnapshot,
-}
-
-impl EvalMetricsSnapshot {
-    pub fn avg_nanos(&self) -> Option<u64> {
-        self.eval_total.avg_nanos()
-    }
 }
