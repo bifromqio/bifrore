@@ -260,6 +260,8 @@ public final class BifroRE implements AutoCloseable {
     private final String nodeId;
     private final int clientCount;
     private final boolean multiNci;
+    private final String username;
+    private final String password;
     private final String clientIdsPath;
     private final int callbackQueueCapacity;
     private final int directPollSlotCount;
@@ -291,6 +293,8 @@ public final class BifroRE implements AutoCloseable {
             options.nodeId,
             options.clientCount,
             options.multiNci,
+            options.username,
+            options.password,
             options.payloadFormat,
             options.clientIdsPath,
             options.protobufDescriptorSetPath,
@@ -312,6 +316,8 @@ public final class BifroRE implements AutoCloseable {
         String nodeId,
         int clientCount,
         boolean multiNci,
+        String username,
+        String password,
         int payloadFormat,
         String clientIdsPath,
         String protobufDescriptorSetPath,
@@ -333,6 +339,8 @@ public final class BifroRE implements AutoCloseable {
         this.nodeId = nodeId;
         this.clientCount = clientCount;
         this.multiNci = multiNci;
+        this.username = username;
+        this.password = password;
         this.callbackQueueCapacity = Math.max(1, callbackQueueCapacity);
         this.directPollSlotCount = Math.max(1, directPollSlotCount);
         this.directPayloadBufferBytes = Math.max(1, directPayloadBufferBytes);
@@ -400,8 +408,8 @@ public final class BifroRE implements AutoCloseable {
             port,
             nodeId,
             clientCount,
-            null,
-            null,
+            username,
+            password,
             cleanStart,
             sessionExpiryInterval,
             groupName,

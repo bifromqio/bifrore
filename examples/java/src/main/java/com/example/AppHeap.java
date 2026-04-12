@@ -14,6 +14,8 @@ public final class AppHeap {
             new BifroREOptions()
                 .host("127.0.0.1")
                 .port(1883)
+                .username("dev")
+                .password("dev")
                 .callbackQueueCapacity(1024)
                 .pollBatchLimit(64)
                 .ruleJsonPath(ExampleSupport.extractRuleResource())
