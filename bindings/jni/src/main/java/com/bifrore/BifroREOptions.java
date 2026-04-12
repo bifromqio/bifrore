@@ -17,6 +17,7 @@ public final class BifroREOptions {
     public int pollBatchLimit = 64;
     public int directPollSlotCount = 4;
     public int directPayloadBufferBytes = 1024 * 1024;
+    public boolean detailedLatencyMetrics = false;
     public boolean cleanStart = true;
     public int sessionExpiryInterval = 3600;
     public String groupName = "bifrore-group";
@@ -98,6 +99,11 @@ public final class BifroREOptions {
 
     public BifroREOptions directPayloadBufferBytes(int directPayloadBufferBytes) {
         this.directPayloadBufferBytes = directPayloadBufferBytes;
+        return this;
+    }
+
+    public BifroREOptions detailedLatencyMetrics(boolean detailedLatencyMetrics) {
+        this.detailedLatencyMetrics = detailedLatencyMetrics;
         return this;
     }
 

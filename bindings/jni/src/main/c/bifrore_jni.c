@@ -94,6 +94,7 @@ extern int bre_metrics_snapshot(
     void *engine,
     struct BifroREMetricsSnapshot *out_snapshot);
 extern int bre_set_poll_batch_limit(void *engine, uint32_t limit);
+extern int bre_set_detailed_latency_metrics(void *engine, jboolean enabled);
 
 struct LogCallbackCtx {
     JavaVM *jvm;
@@ -831,6 +832,19 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetPollBatchLimit(
         return -1;
     }
     return bre_set_poll_batch_limit((void *)handle, (uint32_t)limit);
+}
+
+JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetDetailedLatencyMetrics(
+    JNIEnv *env,
+    jclass cls,
+    jlong handle,
+    jboolean enabled) {
+    (void)env;
+    (void)cls;
+    if (handle == 0) {
+        return -1;
+    }
+    return bre_set_detailed_latency_metrics((void *)handle, enabled);
 }
 
 JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTable(

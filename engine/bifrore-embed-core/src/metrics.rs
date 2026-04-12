@@ -69,11 +69,24 @@ impl LatencyMetrics {
 pub struct EvalMetrics {
     eval_count: AtomicU64,
     eval_error_count: AtomicU64,
+    detailed_latency_enabled: AtomicU64,
     stages: [LatencyMetrics; LatencyStage::COUNT],
 }
 
 impl EvalMetrics {
+    pub fn set_detailed_latency_enabled(&self, enabled: bool) {
+        self.detailed_latency_enabled
+            .store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    pub fn detailed_latency_enabled(&self) -> bool {
+        self.detailed_latency_enabled.load(Ordering::Relaxed) != 0
+    }
+
     pub fn record_stage(&self, stage: LatencyStage, duration_nanos: u64) {
+        if !self.detailed_latency_enabled() && !matches!(stage, LatencyStage::EvalTotal) {
+            return;
+        }
         self.stages[stage.index()].record(duration_nanos);
     }
 
