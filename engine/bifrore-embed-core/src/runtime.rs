@@ -135,7 +135,6 @@ impl RuleEngine {
     }
 
     pub fn evaluate(&mut self, message: &Message) -> Vec<RuleEvaluation> {
-        let mut results = Vec::new();
         let topic_match_start = Instant::now();
         let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
         self.metrics.record_stage(
@@ -143,7 +142,7 @@ impl RuleEngine {
             topic_match_start.elapsed().as_nanos() as u64,
         );
         if matched_rule_indexes.is_empty() {
-            return results;
+            return Vec::new();
         }
 
         let required_fields = collect_required_fields(&self.rules, &matched_rule_indexes);
@@ -166,9 +165,37 @@ impl RuleEngine {
                     self.payload_decoder,
                     err
                 );
-                return results;
+                return Vec::new();
             }
         };
+        self.evaluate_with_payload_for_matched_rules(message, &payload_obj, &matched_rule_indexes)
+    }
+
+    #[doc(hidden)]
+    pub fn evaluate_with_decoded_payload(
+        &mut self,
+        message: &Message,
+        payload_obj: &MsgIr,
+    ) -> Vec<RuleEvaluation> {
+        let topic_match_start = Instant::now();
+        let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
+        self.metrics.record_stage(
+            LatencyStage::TopicMatch,
+            topic_match_start.elapsed().as_nanos() as u64,
+        );
+        if matched_rule_indexes.is_empty() {
+            return Vec::new();
+        }
+        self.evaluate_with_payload_for_matched_rules(message, payload_obj, &matched_rule_indexes)
+    }
+
+    fn evaluate_with_payload_for_matched_rules(
+        &self,
+        message: &Message,
+        payload_obj: &MsgIr,
+        matched_rule_indexes: &[usize],
+    ) -> Vec<RuleEvaluation> {
+        let mut results = Vec::new();
         let topic_parts_storage = if matched_rules_require_topic_parts(&self.rules, &matched_rule_indexes) {
             Some(message.topic.split('/').collect::<Vec<_>>())
         } else {
