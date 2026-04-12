@@ -142,6 +142,12 @@ int bre_set_poll_batch_limit(void *engine, uint32_t limit) {
     return 0;
 }
 
+int bre_set_detailed_latency_metrics(void *engine, jboolean enabled) {
+    (void)engine;
+    (void)enabled;
+    return 0;
+}
+
 static struct BifroPackedEvalResults make_results(
     const uint32_t *rule_indices,
     const uint32_t *payload_lengths,

@@ -279,6 +279,7 @@ pub struct BifroRE {
     notify_write_fd: c_int,
     notify_pending: AtomicBool,
     poll_batch_limit: usize,
+    detailed_latency_metrics: bool,
     client_ids_path: String,
     active_client_ids: Vec<String>,
     ffi_metrics: FfiMetrics,
@@ -667,6 +668,7 @@ pub extern "C" fn bre_create_engine(
         notify_write_fd,
         notify_pending: AtomicBool::new(false),
         poll_batch_limit: DEFAULT_POLL_BATCH_SIZE,
+        detailed_latency_metrics: false,
         client_ids_path,
         active_client_ids: Vec::new(),
         ffi_metrics: FfiMetrics::default(),
@@ -820,6 +822,20 @@ pub extern "C" fn bre_set_poll_batch_limit(
     } else {
         limit as usize
     };
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn bre_set_detailed_latency_metrics(
+    engine: *mut BifroRE,
+    enabled: bool,
+) -> c_int {
+    if engine.is_null() {
+        return -1;
+    }
+    let engine = unsafe { &mut *engine };
+    engine.detailed_latency_metrics = enabled;
+    engine.metrics.set_detailed_latency_enabled(enabled);
     0
 }
 

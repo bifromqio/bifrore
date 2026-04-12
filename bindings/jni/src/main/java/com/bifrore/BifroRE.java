@@ -266,6 +266,7 @@ public final class BifroRE implements AutoCloseable {
     private final int callbackQueueCapacity;
     private final int directPollSlotCount;
     private final int directPayloadBufferBytes;
+    private final boolean detailedLatencyMetrics;
     private final boolean cleanStart;
     private final int sessionExpiryInterval;
     private final String groupName;
@@ -303,6 +304,7 @@ public final class BifroRE implements AutoCloseable {
             options.pollBatchLimit,
             options.directPollSlotCount,
             options.directPayloadBufferBytes,
+            options.detailedLatencyMetrics,
             options.cleanStart,
             options.sessionExpiryInterval,
             options.groupName
@@ -326,6 +328,7 @@ public final class BifroRE implements AutoCloseable {
         int pollBatchLimit,
         int directPollSlotCount,
         int directPayloadBufferBytes,
+        boolean detailedLatencyMetrics,
         boolean cleanStart,
         int sessionExpiryInterval,
         String groupName
@@ -344,6 +347,7 @@ public final class BifroRE implements AutoCloseable {
         this.callbackQueueCapacity = Math.max(1, callbackQueueCapacity);
         this.directPollSlotCount = Math.max(1, directPollSlotCount);
         this.directPayloadBufferBytes = Math.max(1, directPayloadBufferBytes);
+        this.detailedLatencyMetrics = detailedLatencyMetrics;
         this.cleanStart = cleanStart;
         this.sessionExpiryInterval = Math.max(0, sessionExpiryInterval);
         this.groupName =
@@ -365,6 +369,11 @@ public final class BifroRE implements AutoCloseable {
             nativeDestroy(this.handle);
             this.handle = 0;
             throw new IllegalStateException("Failed to configure poll batch limit");
+        }
+        if (nativeSetDetailedLatencyMetrics(this.handle, this.detailedLatencyMetrics) != 0) {
+            nativeDestroy(this.handle);
+            this.handle = 0;
+            throw new IllegalStateException("Failed to configure detailed latency metrics");
         }
         RuleMetadata[] metadataTable = nativeGetRuleMetadataTable(this.handle);
         if (metadataTable == null) {
@@ -897,5 +906,6 @@ public final class BifroRE implements AutoCloseable {
     private static native int nativeSetLogCallback(long cbHandle, int minLevel);
     private static native long[] nativeMetricsSnapshotValues(long handle);
     private static native int nativeSetPollBatchLimit(long handle, int limit);
+    private static native int nativeSetDetailedLatencyMetrics(long handle, boolean enabled);
     private static native RuleMetadata[] nativeGetRuleMetadataTable(long handle);
 }

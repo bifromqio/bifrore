@@ -617,6 +617,11 @@ mod tests {
         assert_eq!(snapshot.eval_count, 1);
         assert_eq!(snapshot.eval_error_count, 0);
         assert!(snapshot.eval_total.total_nanos > 0);
+        assert_eq!(snapshot.topic_match.count, 0);
+
+        engine.metrics().set_detailed_latency_enabled(true);
+        let _ = engine.evaluate(&message);
+        let snapshot = engine.metrics().snapshot();
         assert!(snapshot.topic_match.count > 0);
     }
 
