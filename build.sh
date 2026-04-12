@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [java|jni|jni-test|python|all|bench|bench-diff]"
+  echo "Usage: ./build.sh [java|jni|jni-test|python|all|bench|bench-diff] [benchmark_name]"
   exit 1
 }
 
@@ -15,6 +15,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 TARGET="$1"
+BENCH_FILTER="${2:-}"
 
 OS_NAME="$(uname -s)"
 case "$OS_NAME" in
@@ -214,7 +215,11 @@ EOF
 
 run_bench() {
   echo "Running benchmarks..."
-  (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core)
+  if [[ -n "$BENCH_FILTER" ]]; then
+    (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench -- "$BENCH_FILTER")
+  else
+    (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core)
+  fi
 }
 
 run_bench_diff() {

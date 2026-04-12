@@ -1,4 +1,8 @@
 use bifrore_embed_core::message::Message;
+use bifrore_embed_core::msg_ir::CompiledPayloadField;
+use bifrore_embed_core::payload::{
+    decode_payload_ir_with_decoder_and_plan_and_metrics, PayloadDecodePlan, PayloadDecoder,
+};
 use bifrore_embed_core::runtime::RuleEngine;
 use bifrore_embed_core::rule::RuleDefinition;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
@@ -234,16 +238,74 @@ fn parse_protobuf_typed_bytes(payload: &[u8]) -> bool {
 }
 
 fn bench_evaluate(c: &mut Criterion) {
+    let decode_fields = [
+        CompiledPayloadField::from_key("temp"),
+        CompiledPayloadField::from_key("hum"),
+    ];
+    let decode_field_refs = [&decode_fields[0], &decode_fields[1]];
+
+    let mut single_rule_engine = build_engine(1);
+    let single_rule_messages: Vec<Message> = (0..100)
+        .map(|idx| {
+            let payload = serde_json::json!({
+                "temp": 30 + (idx % 3),
+                "hum": 40 + (idx % 5),
+            });
+            Message::new(
+                "sensors/room1/temp",
+                serde_json::to_vec(&payload).unwrap(),
+            )
+        })
+        .collect();
+
+    c.bench_function("rule_eval_100_messages_1_rule_json", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for message in &single_rule_messages {
+                total += single_rule_engine.evaluate(black_box(message)).len();
+            }
+            assert_eq!(total, 100);
+        })
+    });
+
     let mut all_match_engine = build_engine(100);
     let all_match_payload = serde_json::json!({"temp": 30, "hum": 40});
-    let all_match_message = Message::new(
-        "sensors/room1/temp",
-        serde_json::to_vec(&all_match_payload).unwrap(),
-    );
+    let all_match_payload_bytes = serde_json::to_vec(&all_match_payload).unwrap();
+    let all_match_message = Message::new("sensors/room1/temp", all_match_payload_bytes.clone());
+    let all_match_msg_ir = decode_payload_ir_with_decoder_and_plan_and_metrics(
+        &all_match_payload_bytes,
+        &PayloadDecoder::Json,
+        PayloadDecodePlan::Sparse(&decode_field_refs),
+        None,
+    )
+    .expect("decode sparse json");
 
     c.bench_function("rule_eval_100_all_match_json", |b| {
         b.iter(|| {
             let results = all_match_engine.evaluate(&all_match_message);
+            assert_eq!(results.len(), 100);
+        })
+    });
+
+    c.bench_function("msg_ir_build_sparse_temp_hum_json", |b| {
+        b.iter(|| {
+            let ir = decode_payload_ir_with_decoder_and_plan_and_metrics(
+                black_box(&all_match_payload_bytes),
+                &PayloadDecoder::Json,
+                PayloadDecodePlan::Sparse(&decode_field_refs),
+                None,
+            )
+            .expect("decode sparse json");
+            black_box(ir);
+        })
+    });
+
+    c.bench_function("rule_exec_100_all_match_predecoded_json", |b| {
+        b.iter(|| {
+            let results = all_match_engine.evaluate_with_decoded_payload(
+                black_box(&all_match_message),
+                black_box(&all_match_msg_ir),
+            );
             assert_eq!(results.len(), 100);
         })
     });
