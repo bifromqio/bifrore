@@ -280,13 +280,6 @@ pub struct BifroRE {
     ffi_metrics: FfiMetrics,
 }
 
-pub type BifroEvalCallback = extern "C" fn(
-    user_data: *mut c_void,
-    rule_index: u16,
-    payload: *const u8,
-    payload_len: size_t,
-);
-
 #[derive(Debug)]
 struct EvalResultRecord {
     rule_index: u16,
@@ -574,67 +567,7 @@ fn free_rule_metadata_inner(metadata_ref: &mut BifroRuleMetadata) {
 }
 
 #[no_mangle]
-pub extern "C" fn bre_create_with_config(config_path: *const c_char) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
-        config_path,
-        BifroREPayloadFormat::Json as c_int,
-        ptr::null(),
-        BifroRENotifyMode::Poll as c_int,
-        ptr::null(),
-        ptr::null(),
-    )
-}
-
-#[no_mangle]
-pub extern "C" fn bre_create_with_config_and_payload_format(
-    config_path: *const c_char,
-    payload_format: c_int,
-) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
-        config_path,
-        payload_format,
-        ptr::null(),
-        BifroRENotifyMode::Poll as c_int,
-        ptr::null(),
-        ptr::null(),
-    )
-}
-
-#[no_mangle]
-pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path(
-    config_path: *const c_char,
-    payload_format: c_int,
-    client_ids_path: *const c_char,
-) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
-        config_path,
-        payload_format,
-        client_ids_path,
-        BifroRENotifyMode::Poll as c_int,
-        ptr::null(),
-        ptr::null(),
-    )
-}
-
-#[no_mangle]
-pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
-    config_path: *const c_char,
-    payload_format: c_int,
-    client_ids_path: *const c_char,
-    notify_mode: c_int,
-) -> *mut BifroRE {
-    bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
-        config_path,
-        payload_format,
-        client_ids_path,
-        notify_mode,
-        ptr::null(),
-        ptr::null(),
-    )
-}
-
-#[no_mangle]
-pub extern "C" fn bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+pub extern "C" fn bre_create_engine(
     config_path: *const c_char,
     payload_format: c_int,
     client_ids_path: *const c_char,
@@ -896,8 +829,6 @@ pub extern "C" fn bre_start_mqtt(
     ordered_prefix: *const c_char,
     keep_alive_secs: u16,
     multi_nci: bool,
-    _callback: Option<BifroEvalCallback>,
-    _user_data: *mut c_void,
 ) -> c_int {
     if engine.is_null()
         || host.is_null()

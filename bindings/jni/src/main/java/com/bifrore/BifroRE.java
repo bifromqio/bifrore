@@ -342,7 +342,7 @@ public final class BifroRE implements AutoCloseable {
             (groupName == null || groupName.isBlank()) ? "bifrore-group" : groupName;
         this.clientIdsPath =
             (clientIdsPath == null || clientIdsPath.isBlank()) ? "./client_ids" : clientIdsPath;
-        this.handle = nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
+        this.handle = nativeCreateEngine(
             ruleJsonPath,
             payloadFormat,
             this.clientIdsPath,
@@ -408,8 +408,7 @@ public final class BifroRE implements AutoCloseable {
             false,
             "",
             30,
-            multiNci,
-            0
+            multiNci
         );
         if (rc == 0) {
             mqttStarted = true;
@@ -850,9 +849,7 @@ public final class BifroRE implements AutoCloseable {
         );
     }
 
-    private static native long nativeCreateWithConfig(String path);
-    private static native long nativeCreateWithConfigAndPayloadFormat(String path, int payloadFormat);
-    private static native long nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
+    private static native long nativeCreateEngine(
         String path,
         int payloadFormat,
         String clientIdsPath,
@@ -876,8 +873,7 @@ public final class BifroRE implements AutoCloseable {
         boolean ordered,
         String orderedPrefix,
         int keepAliveSecs,
-        boolean multiNci,
-        long cbHandle
+        boolean multiNci
     );
     private static native PollBatch nativePollResultsBatch(long handle, int timeoutMillis);
     private static native int nativePollResultsBatchDirect(

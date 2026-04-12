@@ -23,6 +23,40 @@ class _RuleMetadata(ctypes.Structure):
         ("destinations_len", c_size_t),
     ]
 
+
+class _MetricsSnapshot(ctypes.Structure):
+    _fields_ = [
+        ("ingress_message_count", ctypes.c_uint64),
+        ("core_queue_depth", ctypes.c_uint64),
+        ("core_queue_depth_max", ctypes.c_uint64),
+        ("core_queue_drop_count", ctypes.c_uint64),
+        ("ffi_queue_depth", ctypes.c_uint64),
+        ("ffi_queue_depth_max", ctypes.c_uint64),
+        ("ffi_queue_drop_count", ctypes.c_uint64),
+        ("eval_count", ctypes.c_uint64),
+        ("eval_error_count", ctypes.c_uint64),
+        ("eval_total_total_nanos", ctypes.c_uint64),
+        ("eval_total_max_nanos", ctypes.c_uint64),
+        ("topic_match_count", ctypes.c_uint64),
+        ("topic_match_total_nanos", ctypes.c_uint64),
+        ("topic_match_max_nanos", ctypes.c_uint64),
+        ("payload_decode_count", ctypes.c_uint64),
+        ("payload_decode_total_nanos", ctypes.c_uint64),
+        ("payload_decode_max_nanos", ctypes.c_uint64),
+        ("msg_ir_build_count", ctypes.c_uint64),
+        ("msg_ir_build_total_nanos", ctypes.c_uint64),
+        ("msg_ir_build_max_nanos", ctypes.c_uint64),
+        ("fast_where_count", ctypes.c_uint64),
+        ("fast_where_total_nanos", ctypes.c_uint64),
+        ("fast_where_max_nanos", ctypes.c_uint64),
+        ("predicate_count", ctypes.c_uint64),
+        ("predicate_total_nanos", ctypes.c_uint64),
+        ("predicate_max_nanos", ctypes.c_uint64),
+        ("projection_count", ctypes.c_uint64),
+        ("projection_total_nanos", ctypes.c_uint64),
+        ("projection_max_nanos", ctypes.c_uint64),
+    ]
+
 class BifroRE:
     PAYLOAD_JSON = 1
     PAYLOAD_PROTOBUF = 2
@@ -54,7 +88,7 @@ class BifroRE:
         lib_path, rule_path = self._resolve_paths(lib_path_or_rule_path, rule_path)
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
         self._setup_signatures()
-        self.handle = self.lib.bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+        self.handle = self.lib.bre_create_engine(
             rule_path.encode("utf-8"),
             payload_format,
             client_ids_path.encode("utf-8") if client_ids_path else None,
@@ -107,18 +141,7 @@ class BifroRE:
         return candidate
 
     def _setup_signatures(self):
-        self.lib.bre_create_with_config.argtypes = [c_char_p]
-        self.lib.bre_create_with_config.restype = c_void_p
-        self.lib.bre_create_with_config_and_payload_format.argtypes = [c_char_p, c_int]
-        self.lib.bre_create_with_config_and_payload_format.restype = c_void_p
-        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path.argtypes = [
-            c_char_p,
-            c_int,
-            c_char_p,
-            c_int,
-        ]
-        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path.restype = c_void_p
-        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema.argtypes = [
+        self.lib.bre_create_engine.argtypes = [
             c_char_p,
             c_int,
             c_char_p,
@@ -126,7 +149,7 @@ class BifroRE:
             c_char_p,
             c_char_p,
         ]
-        self.lib.bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema.restype = c_void_p
+        self.lib.bre_create_engine.restype = c_void_p
         self.lib.bre_destroy.argtypes = [c_void_p]
         self.lib.bre_start_mqtt.argtypes = [
             c_void_p,
@@ -143,8 +166,6 @@ class BifroRE:
             c_char_p,
             c_uint16,
             c_bool,
-            c_void_p,
-            c_void_p,
         ]
         self.lib.bre_start_mqtt.restype = c_int
         self.lib.bre_get_notify_fd.argtypes = [c_void_p]
@@ -167,10 +188,7 @@ class BifroRE:
         self.lib.bre_free_rule_metadata_table.restype = None
         self.lib.bre_metrics_snapshot.argtypes = [
             c_void_p,
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint64),
+            ctypes.POINTER(_MetricsSnapshot),
         ]
         self.lib.bre_metrics_snapshot.restype = c_int
         self.lib.bre_set_log_callback.argtypes = [c_void_p, c_void_p, c_int]
@@ -301,8 +319,6 @@ class BifroRE:
             cfg["ordered_prefix"].encode("utf-8"),
             cfg["keep_alive_secs"],
             cfg["multi_nci"],
-            None,
-            None,
         )
 
     def _attach_notify_reader(self):
@@ -379,24 +395,25 @@ class BifroRE:
             await self._queue.put(None)
 
     def metrics(self):
-        eval_count = ctypes.c_uint64()
-        eval_error_count = ctypes.c_uint64()
-        eval_total_nanos = ctypes.c_uint64()
-        eval_max_nanos = ctypes.c_uint64()
+        snapshot = _MetricsSnapshot()
         rc = self.lib.bre_metrics_snapshot(
             self.handle,
-            ctypes.byref(eval_count),
-            ctypes.byref(eval_error_count),
-            ctypes.byref(eval_total_nanos),
-            ctypes.byref(eval_max_nanos),
+            ctypes.byref(snapshot),
         )
         if rc != 0:
             return None
         return {
-            "eval_count": eval_count.value,
-            "eval_error_count": eval_error_count.value,
-            "eval_total_nanos": eval_total_nanos.value,
-            "eval_max_nanos": eval_max_nanos.value,
+            "ingress_message_count": snapshot.ingress_message_count,
+            "core_queue_depth": snapshot.core_queue_depth,
+            "core_queue_depth_max": snapshot.core_queue_depth_max,
+            "core_queue_drop_count": snapshot.core_queue_drop_count,
+            "ffi_queue_depth": snapshot.ffi_queue_depth,
+            "ffi_queue_depth_max": snapshot.ffi_queue_depth_max,
+            "ffi_queue_drop_count": snapshot.ffi_queue_drop_count,
+            "eval_count": snapshot.eval_count,
+            "eval_error_count": snapshot.eval_error_count,
+            "eval_total_nanos": snapshot.eval_total_total_nanos,
+            "eval_max_nanos": snapshot.eval_total_max_nanos,
         }
 
     def close(self):

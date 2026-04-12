@@ -52,18 +52,7 @@ struct BifroREMetricsSnapshot {
 };
 
 // FFI functions from Rust cdylib
-extern void *bre_create_with_config(const char *path);
-extern void *bre_create_with_config_and_payload_format(const char *path, int payload_format);
-extern void *bre_create_with_config_and_payload_format_and_client_ids_path(
-    const char *path,
-    int payload_format,
-    const char *client_ids_path);
-extern void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
-    const char *path,
-    int payload_format,
-    const char *client_ids_path,
-    int notify_mode);
-extern void *bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
+extern void *bre_create_engine(
     const char *path,
     int payload_format,
     const char *client_ids_path,
@@ -86,9 +75,7 @@ extern int bre_start_mqtt(
     jboolean ordered,
     const char *ordered_prefix,
     uint16_t keep_alive_secs,
-    jboolean multi_nci,
-    void (*callback)(void *, const char *, const unsigned char *, size_t, const char *),
-    void *user_data);
+    jboolean multi_nci);
 extern int bre_poll_eval_results_packed(
     void *engine,
     uint32_t timeout_millis,
@@ -484,19 +471,7 @@ static void call_java_log_handler(
     }
 }
 
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(
-    JNIEnv *env,
-    jclass cls,
-    jstring path,
-    jint payload_format);
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
-    JNIEnv *env,
-    jclass cls,
-    jstring path,
-    jint payload_format,
-    jstring client_ids_path,
-    jint notify_mode);
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
     JNIEnv *env,
     jclass cls,
     jstring path,
@@ -506,49 +481,7 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     jstring protobuf_descriptor_set_path,
     jstring protobuf_message_name);
 
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfig(JNIEnv *env, jclass cls, jstring path) {
-    return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
-        env, cls, path, 1, NULL, 0);
-}
-
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormat(
-    JNIEnv *env,
-    jclass cls,
-    jstring path,
-    jint payload_format) {
-    return Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
-        env, cls, path, payload_format, NULL, 0);
-}
-
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPath(
-    JNIEnv *env,
-    jclass cls,
-    jstring path,
-    jint payload_format,
-    jstring client_ids_path,
-    jint notify_mode) {
-    (void)cls;
-    if (path == NULL) {
-        return 0;
-    }
-    const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
-    const char *client_ids_path_str = NULL;
-    if (client_ids_path != NULL) {
-        client_ids_path_str = (*env)->GetStringUTFChars(env, client_ids_path, NULL);
-    }
-    void *engine = bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode(
-        path_str,
-        (int)payload_format,
-        client_ids_path_str,
-        (int)notify_mode);
-    (*env)->ReleaseStringUTFChars(env, path, path_str);
-    if (client_ids_path_str != NULL) {
-        (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);
-    }
-    return (jlong)engine;
-}
-
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloadFormatAndClientIdsPathAndProtobufSchema(
+JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
     JNIEnv *env,
     jclass cls,
     jstring path,
@@ -575,14 +508,13 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateWithConfigAndPayloa
     if (protobuf_message_name != NULL) {
         protobuf_message_name_str = (*env)->GetStringUTFChars(env, protobuf_message_name, NULL);
     }
-    void *engine =
-        bre_create_with_config_and_payload_format_and_client_ids_path_and_notify_mode_and_protobuf_schema(
-            path_str,
-            (int)payload_format,
-            client_ids_path_str,
-            (int)notify_mode,
-            protobuf_descriptor_set_path_str,
-            protobuf_message_name_str);
+    void *engine = bre_create_engine(
+        path_str,
+        (int)payload_format,
+        client_ids_path_str,
+        (int)notify_mode,
+        protobuf_descriptor_set_path_str,
+        protobuf_message_name_str);
     (*env)->ReleaseStringUTFChars(env, path, path_str);
     if (client_ids_path_str != NULL) {
         (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);
@@ -631,10 +563,8 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     jboolean ordered,
     jstring ordered_prefix,
     jint keep_alive_secs,
-    jboolean multi_nci,
-    jlong cb_handle) {
+    jboolean multi_nci) {
     (void)cls;
-    (void)cb_handle;
     if (handle == 0 || host == NULL || group_name == NULL || ordered_prefix == NULL) {
         return -1;
     }
@@ -670,9 +600,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
         ordered,
         ordered_prefix_str,
         (uint16_t)keep_alive_secs,
-        multi_nci,
-        NULL,
-        NULL);
+        multi_nci);
 
     (*env)->ReleaseStringUTFChars(env, host, host_str);
     (*env)->ReleaseStringUTFChars(env, group_name, group_name_str);
