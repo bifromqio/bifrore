@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [java|jni|jni-test|python|provision-cli|all|bench|bench-diff]"
+  echo "Usage: ./build.sh [java|jni|jni-test|python|all|bench|bench-diff]"
   exit 1
 }
 
@@ -212,12 +212,6 @@ EOF
   (cd "$wheel_stage" && python3 setup.py bdist_wheel --plat-name "$platform" --dist-dir "$dist_dir")
 }
 
-build_provision_cli() {
-  echo "Building client-id provision CLI..."
-  (cd "$RUST_DIR" && cargo build --release -p bifrore-clientid-management --bin bifrore-clientid-provision)
-  cp "$RUST_DIR/target/release/bifrore-clientid-provision" "$BUILD_DIR/"
-}
-
 run_bench() {
   echo "Running benchmarks..."
   (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core)
@@ -334,15 +328,11 @@ case "$TARGET" in
     build_rust
     build_python
     ;;
-  provision-cli)
-    build_provision_cli
-    ;;
   all)
     build_rust
     build_jni
     build_java_jar
     build_python
-    build_provision_cli
     ;;
   bench)
     run_bench

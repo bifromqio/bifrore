@@ -85,8 +85,7 @@ Build the artifacts:
 ./build.sh jni     # raw Rust cdylib + JNI bridge
 ./build.sh java    # platform jar with bundled native libraries
 ./build.sh python  # platform wheel with bundled native library
-./build.sh provision-cli # client-id provisioning CLI
-./build.sh all     # java + python + provision-cli (+ raw native libs)
+./build.sh all     # java + python (+ raw native libs)
 ./build.sh bench   # run runtime benchmarks
 ./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
 ```
@@ -109,7 +108,6 @@ Artifacts are placed under `build/`:
 - `libbifrore_jni.(so|dylib)` (JNI)
 - `bifrore-java.jar`
 - `bifrore-0.1.0-*.whl`
-- `bifrore-clientid-provision` (client-id provisioning CLI)
 
 The jar name is stable because your local macOS build and CI Linux build are separate outputs. The
 wheel keeps the standard platform tag because Python wheel filenames are platform-specific by
@@ -129,34 +127,9 @@ Runtime behavior:
 This is intentional: persistent MQTT sessions are mapped to client IDs, so session continuity is
 more important than treating `client_count` as a stateless scaling knob.
 
-If you need broker-specific client-id placement, provision the file before starting BifroRE. The
-runtime itself stays decoupled from broker bucket logic and remains broker-neutral.
-
-The provisioning logic lives in the separate `engine/bifrore-clientid-management` module rather
-than the BifroRE runtime modules. This keeps broker-specific control-plane logic out of
-`bifrore-embed-core` and `bifrore-embed-ffi`.
-
-Build the provisioning CLI:
-
-```bash
-./build.sh provision-cli
-```
-
-Run it:
-
-```bash
-./build/bifrore-clientid-provision <user_id> <node_id> <client_count> <output_path>
-```
-
-The provisioning CLI implements the current reverse-hash strategy as a co-design for BifroMQ,
-whose bucket is:
-
-```java
-private static byte bucket(String inboxId) {
-    int hash = inboxId.hashCode();
-    return (byte) ((hash ^ (hash >>> 16)) & 0xFF);
-}
-```
+If you need broker-specific client-id placement, provision the file before starting BifroRE.
+That control-plane logic is intentionally kept out of this open-source tree. The runtime remains
+broker-neutral and simply consumes a client-id file when provided.
 
 with:
 
