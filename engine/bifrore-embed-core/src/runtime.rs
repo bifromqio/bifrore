@@ -18,6 +18,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 const DEFAULT_TOPIC_CACHE_CAPACITY: usize = 4096;
@@ -29,7 +30,7 @@ pub struct RuleEngine {
     rules: Vec<Option<CompiledRule>>,
     rule_index_by_id: HashMap<String, usize>,
     matcher: TopicTrie,
-    metrics: EvalMetrics,
+    metrics: Arc<EvalMetrics>,
     payload_decoder: PayloadDecoder,
     topic_match_cache: TopicMatchCache,
     eval_parallel_threshold: usize,
@@ -82,7 +83,7 @@ impl RuleEngine {
             rules: Vec::new(),
             rule_index_by_id: HashMap::new(),
             matcher: TopicTrie::default(),
-            metrics: EvalMetrics::default(),
+            metrics: Arc::new(EvalMetrics::default()),
             payload_decoder,
             topic_match_cache: TopicMatchCache::new(topic_cache_capacity),
             eval_parallel_threshold: DEFAULT_EVAL_PARALLEL_THRESHOLD,
@@ -91,7 +92,11 @@ impl RuleEngine {
     }
 
     pub fn metrics(&self) -> &EvalMetrics {
-        &self.metrics
+        self.metrics.as_ref()
+    }
+
+    pub fn metrics_handle(&self) -> Arc<EvalMetrics> {
+        Arc::clone(&self.metrics)
     }
 
     pub fn set_eval_parallel_threshold(&mut self, threshold: Option<usize>) {
