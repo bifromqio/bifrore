@@ -123,9 +123,10 @@ public final class BifroRE implements AutoCloseable {
         public final long ffiQueueDepth;
         public final long ffiQueueDepthMax;
         public final long ffiQueueDropCount;
+        public final StageLatencySnapshot messagePipeline;
         public final long evalCount;
         public final long evalErrorCount;
-        public final StageLatencySnapshot evalTotal;
+        public final StageLatencySnapshot exec;
         public final StageLatencySnapshot topicMatch;
         public final StageLatencySnapshot payloadDecode;
         public final StageLatencySnapshot msgIrBuild;
@@ -141,9 +142,10 @@ public final class BifroRE implements AutoCloseable {
             long ffiQueueDepth,
             long ffiQueueDepthMax,
             long ffiQueueDropCount,
+            StageLatencySnapshot messagePipeline,
             long evalCount,
             long evalErrorCount,
-            StageLatencySnapshot evalTotal,
+            StageLatencySnapshot exec,
             StageLatencySnapshot topicMatch,
             StageLatencySnapshot payloadDecode,
             StageLatencySnapshot msgIrBuild,
@@ -158,9 +160,10 @@ public final class BifroRE implements AutoCloseable {
             this.ffiQueueDepth = ffiQueueDepth;
             this.ffiQueueDepthMax = ffiQueueDepthMax;
             this.ffiQueueDropCount = ffiQueueDropCount;
+            this.messagePipeline = messagePipeline;
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
-            this.evalTotal = evalTotal;
+            this.exec = exec;
             this.topicMatch = topicMatch;
             this.payloadDecode = payloadDecode;
             this.msgIrBuild = msgIrBuild;
@@ -172,7 +175,7 @@ public final class BifroRE implements AutoCloseable {
         static MetricsSnapshot empty() {
             StageLatencySnapshot emptyStage = new StageLatencySnapshot(0, 0, 0);
             return new MetricsSnapshot(
-                0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, emptyStage, 0, 0,
                 emptyStage,
                 emptyStage,
                 emptyStage,
@@ -184,7 +187,7 @@ public final class BifroRE implements AutoCloseable {
         }
 
         static MetricsSnapshot from(long[] values) {
-            if (values == null || values.length < 29) {
+            if (values == null || values.length < 33) {
                 return empty();
             }
             int index = 0;
@@ -195,10 +198,12 @@ public final class BifroRE implements AutoCloseable {
             long ffiQueueDepth = values[index++];
             long ffiQueueDepthMax = values[index++];
             long ffiQueueDropCount = values[index++];
+            StageLatencySnapshot messagePipeline = readStageWithCount(values, index);
+            index += 3;
             long evalCount = values[index++];
             long evalErrorCount = values[index++];
-            StageLatencySnapshot evalTotal = readStage(evalCount, values, index);
-            index += 2;
+            StageLatencySnapshot exec = readStageWithCount(values, index);
+            index += 3;
             StageLatencySnapshot topicMatch = readStageWithCount(values, index);
             index += 3;
             StageLatencySnapshot payloadDecode = readStageWithCount(values, index);
@@ -218,9 +223,10 @@ public final class BifroRE implements AutoCloseable {
                 ffiQueueDepth,
                 ffiQueueDepthMax,
                 ffiQueueDropCount,
+                messagePipeline,
                 evalCount,
                 evalErrorCount,
-                evalTotal,
+                exec,
                 topicMatch,
                 payloadDecode,
                 msgIrBuild,
@@ -238,13 +244,6 @@ public final class BifroRE implements AutoCloseable {
             );
         }
 
-        private static StageLatencySnapshot readStage(long count, long[] values, int offset) {
-            return new StageLatencySnapshot(
-                count,
-                values[offset],
-                values[offset + 1]
-            );
-        }
     }
 
     private long handle;

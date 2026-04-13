@@ -27,12 +27,20 @@ public final class BifroREMetricsView {
         return current().evalErrorCount;
     }
 
-    public double evalTotalNanos() {
-        return current().evalTotalNanos;
+    public double messagePipelineTotalNanos() {
+        return current().messagePipelineTotalNanos;
     }
 
-    public double evalMaxNanos() {
-        return current().evalMaxNanos;
+    public double messagePipelineMaxNanos() {
+        return current().messagePipelineMaxNanos;
+    }
+
+    public double execTotalNanos() {
+        return current().execTotalNanos;
+    }
+
+    public double execMaxNanos() {
+        return current().execMaxNanos;
     }
 
     public double ingressMessageCount() {
@@ -104,8 +112,10 @@ public final class BifroREMetricsView {
     private static final class ViewSnapshot {
         final long evalCount;
         final long evalErrorCount;
-        final long evalTotalNanos;
-        final long evalMaxNanos;
+        final long messagePipelineTotalNanos;
+        final long messagePipelineMaxNanos;
+        final long execTotalNanos;
+        final long execMaxNanos;
         final long ingressMessageCount;
         final long coreQueueDepth;
         final long coreQueueDepthMax;
@@ -122,8 +132,10 @@ public final class BifroREMetricsView {
         private ViewSnapshot(
             long evalCount,
             long evalErrorCount,
-            long evalTotalNanos,
-            long evalMaxNanos,
+            long messagePipelineTotalNanos,
+            long messagePipelineMaxNanos,
+            long execTotalNanos,
+            long execMaxNanos,
             long ingressMessageCount,
             long coreQueueDepth,
             long coreQueueDepthMax,
@@ -139,8 +151,10 @@ public final class BifroREMetricsView {
         ) {
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
-            this.evalTotalNanos = evalTotalNanos;
-            this.evalMaxNanos = evalMaxNanos;
+            this.messagePipelineTotalNanos = messagePipelineTotalNanos;
+            this.messagePipelineMaxNanos = messagePipelineMaxNanos;
+            this.execTotalNanos = execTotalNanos;
+            this.execMaxNanos = execMaxNanos;
             this.ingressMessageCount = ingressMessageCount;
             this.coreQueueDepth = coreQueueDepth;
             this.coreQueueDepthMax = coreQueueDepthMax;
@@ -156,7 +170,7 @@ public final class BifroREMetricsView {
         }
 
         static ViewSnapshot empty() {
-            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
@@ -164,8 +178,10 @@ public final class BifroREMetricsView {
             return new ViewSnapshot(
                 snapshot.evalCount,
                 snapshot.evalErrorCount,
-                snapshot.evalTotal.totalNanos,
-                snapshot.evalTotal.maxNanos,
+                snapshot.messagePipeline.totalNanos,
+                snapshot.messagePipeline.maxNanos,
+                snapshot.exec.totalNanos,
+                snapshot.exec.maxNanos,
                 snapshot.ingressMessageCount,
                 snapshot.coreQueueDepth,
                 snapshot.coreQueueDepthMax,
