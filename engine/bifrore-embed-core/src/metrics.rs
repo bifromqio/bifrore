@@ -133,11 +133,6 @@ impl EvalMetrics {
     }
 
     #[inline(always)]
-    pub fn should_measure_stage(&self, stage: LatencyStage) -> bool {
-        matches!(stage, LatencyStage::EvalTotal) || self.detailed_latency_enabled()
-    }
-
-    #[inline(always)]
     pub fn start_stage(&self) -> StageTimer {
         (self.stage_recorder.start)()
     }
