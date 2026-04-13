@@ -19,7 +19,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 const DEFAULT_TOPIC_CACHE_CAPACITY: usize = 4096;
 const DEFAULT_EVAL_PARALLEL_THRESHOLD: usize = 64;
@@ -257,7 +256,7 @@ impl RuleEngine {
                 .collect::<Vec<_>>()
         };
         for attempt in attempts {
-            self.metrics.record_eval(attempt.duration_nanos, attempt.success);
+            self.metrics.record_eval(attempt.success);
             if let Some(evaluation) = attempt.evaluation {
                 log::trace!("evaluation={:?}", evaluation);
                 results.push(evaluation);
@@ -337,7 +336,6 @@ struct RuleFile {
 }
 
 struct EvalAttempt {
-    duration_nanos: u64,
     success: bool,
     evaluation: Option<RuleEvaluation>,
 }
@@ -351,7 +349,7 @@ fn evaluate_single_rule(
     metrics: &EvalMetrics,
 ) -> Option<EvalAttempt> {
     let rule = rules.get(rule_index).and_then(|slot| slot.as_ref())?;
-    let start = Instant::now();
+    let exec_timer = metrics.start_stage();
     let evaluated = evaluate_rule_with_payload_and_topic_parts(
         rule,
         message,
@@ -359,14 +357,13 @@ fn evaluate_single_rule(
         topic_parts,
         metrics,
     );
-    let duration_nanos = start.elapsed().as_nanos() as u64;
+    metrics.finish_stage(LatencyStage::Exec, exec_timer);
     let success = evaluated.is_some();
     let evaluation = evaluated.map(|evaluated_message| RuleEvaluation {
         rule_index,
         message: evaluated_message,
     });
     Some(EvalAttempt {
-        duration_nanos,
         success,
         evaluation,
     })
@@ -660,7 +657,6 @@ mod tests {
         let snapshot = engine.metrics().snapshot();
         assert_eq!(snapshot.eval_count, 1);
         assert_eq!(snapshot.eval_error_count, 0);
-        assert!(snapshot.eval_total.total_nanos > 0);
         assert_eq!(snapshot.topic_match.count, 0);
 
         engine.set_detailed_latency_metrics(true);

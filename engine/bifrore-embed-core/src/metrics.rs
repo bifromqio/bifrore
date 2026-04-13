@@ -9,7 +9,7 @@ pub enum LatencyStage {
     FastWhere = 3,
     Predicate = 4,
     Projection = 5,
-    EvalTotal = 6,
+    Exec = 6,
 }
 
 impl LatencyStage {
@@ -142,12 +142,11 @@ impl EvalMetrics {
         (self.stage_recorder.finish)(&self.stages[stage.index()], timer);
     }
 
-    pub fn record_eval(&self, duration_nanos: u64, success: bool) {
+    pub fn record_eval(&self, success: bool) {
         self.eval_count.fetch_add(1, Ordering::Relaxed);
         if !success {
             self.eval_error_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.stages[LatencyStage::EvalTotal.index()].record(duration_nanos);
     }
 
     pub fn snapshot(&self) -> EvalMetricsSnapshot {
@@ -160,7 +159,7 @@ impl EvalMetrics {
             fast_where: self.stages[LatencyStage::FastWhere.index()].snapshot(),
             predicate: self.stages[LatencyStage::Predicate.index()].snapshot(),
             projection: self.stages[LatencyStage::Projection.index()].snapshot(),
-            eval_total: self.stages[LatencyStage::EvalTotal.index()].snapshot(),
+            exec: self.stages[LatencyStage::Exec.index()].snapshot(),
         }
     }
 }
@@ -188,5 +187,5 @@ pub struct EvalMetricsSnapshot {
     pub fast_where: LatencyMetricsSnapshot,
     pub predicate: LatencyMetricsSnapshot,
     pub projection: LatencyMetricsSnapshot,
-    pub eval_total: LatencyMetricsSnapshot,
+    pub exec: LatencyMetricsSnapshot,
 }

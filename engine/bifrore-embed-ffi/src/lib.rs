@@ -300,6 +300,9 @@ struct FfiMetrics {
     ffi_queue_depth: std::sync::atomic::AtomicU64,
     ffi_queue_depth_max: std::sync::atomic::AtomicU64,
     ffi_queue_drop_count: std::sync::atomic::AtomicU64,
+    message_pipeline_count: std::sync::atomic::AtomicU64,
+    message_pipeline_total_nanos: std::sync::atomic::AtomicU64,
+    message_pipeline_max_nanos: std::sync::atomic::AtomicU64,
 }
 
 impl FfiMetrics {
@@ -335,6 +338,13 @@ impl FfiMetrics {
         self.ffi_queue_drop_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn record_message_pipeline(&self, duration_nanos: u64) {
+        self.message_pipeline_count.fetch_add(1, Ordering::Relaxed);
+        self.message_pipeline_total_nanos
+            .fetch_add(duration_nanos, Ordering::Relaxed);
+        update_max_atomic(&self.message_pipeline_max_nanos, duration_nanos);
+    }
+
     fn snapshot(&self) -> FfiMetricsSnapshot {
         FfiMetricsSnapshot {
             ingress_message_count: self.ingress_message_count.load(Ordering::Relaxed),
@@ -344,6 +354,9 @@ impl FfiMetrics {
             ffi_queue_depth: self.ffi_queue_depth.load(Ordering::Relaxed),
             ffi_queue_depth_max: self.ffi_queue_depth_max.load(Ordering::Relaxed),
             ffi_queue_drop_count: self.ffi_queue_drop_count.load(Ordering::Relaxed),
+            message_pipeline_count: self.message_pipeline_count.load(Ordering::Relaxed),
+            message_pipeline_total_nanos: self.message_pipeline_total_nanos.load(Ordering::Relaxed),
+            message_pipeline_max_nanos: self.message_pipeline_max_nanos.load(Ordering::Relaxed),
         }
     }
 }
@@ -357,6 +370,9 @@ struct FfiMetricsSnapshot {
     ffi_queue_depth: u64,
     ffi_queue_depth_max: u64,
     ffi_queue_drop_count: u64,
+    message_pipeline_count: u64,
+    message_pipeline_total_nanos: u64,
+    message_pipeline_max_nanos: u64,
 }
 
 #[repr(C)]
@@ -368,10 +384,14 @@ pub struct BifroREMetricsSnapshot {
     pub ffi_queue_depth: u64,
     pub ffi_queue_depth_max: u64,
     pub ffi_queue_drop_count: u64,
+    pub message_pipeline_count: u64,
+    pub message_pipeline_total_nanos: u64,
+    pub message_pipeline_max_nanos: u64,
     pub eval_count: u64,
     pub eval_error_count: u64,
-    pub eval_total_total_nanos: u64,
-    pub eval_total_max_nanos: u64,
+    pub exec_count: u64,
+    pub exec_total_nanos: u64,
+    pub exec_max_nanos: u64,
     pub topic_match_count: u64,
     pub topic_match_total_nanos: u64,
     pub topic_match_max_nanos: u64,
@@ -425,10 +445,14 @@ fn combine_metrics_snapshot(
         ffi_queue_depth: ffi.ffi_queue_depth,
         ffi_queue_depth_max: ffi.ffi_queue_depth_max,
         ffi_queue_drop_count: ffi.ffi_queue_drop_count,
+        message_pipeline_count: ffi.message_pipeline_count,
+        message_pipeline_total_nanos: ffi.message_pipeline_total_nanos,
+        message_pipeline_max_nanos: ffi.message_pipeline_max_nanos,
         eval_count: eval.eval_count,
         eval_error_count: eval.eval_error_count,
-        eval_total_total_nanos: eval.eval_total.total_nanos,
-        eval_total_max_nanos: eval.eval_total.max_nanos,
+        exec_count: 0,
+        exec_total_nanos: 0,
+        exec_max_nanos: 0,
         topic_match_count: 0,
         topic_match_total_nanos: 0,
         topic_match_max_nanos: 0,
@@ -448,6 +472,12 @@ fn combine_metrics_snapshot(
         projection_total_nanos: 0,
         projection_max_nanos: 0,
     };
+    write_latency_snapshot(
+        &mut snapshot.exec_count,
+        &mut snapshot.exec_total_nanos,
+        &mut snapshot.exec_max_nanos,
+        eval.exec,
+    );
     write_latency_snapshot(
         &mut snapshot.topic_match_count,
         &mut snapshot.topic_match_total_nanos,
@@ -977,6 +1007,7 @@ pub extern "C" fn bre_start_mqtt(
     let core_worker = std::thread::spawn(move || {
         let engine_ptr = engine_addr as *mut BifroRE;
         while let Ok(delivery) = core_queue_rx.recv() {
+            let pipeline_start = std::time::Instant::now();
             let message: &Message = &delivery.message;
             let engine = unsafe { &*engine_ptr };
             engine.ffi_metrics.record_core_queue_dequeued();
@@ -1007,6 +1038,9 @@ pub extern "C" fn bre_start_mqtt(
             if enqueued_any {
                 maybe_notify_eval_ready(notify_write_fd, &engine.notify_pending);
             }
+            engine
+                .ffi_metrics
+                .record_message_pipeline(pipeline_start.elapsed().as_nanos() as u64);
         }
         rule_engine
     });
