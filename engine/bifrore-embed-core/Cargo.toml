@@ -30,5 +30,13 @@ tempfile = "3.9"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
-name = "runtime_bench"
+name = "bench_e2e"
+harness = false
+
+[[bench]]
+name = "bench_parse"
+harness = false
+
+[[bench]]
+name = "bench_pipeline"
 harness = false

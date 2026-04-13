@@ -216,7 +216,7 @@ EOF
 run_bench() {
   echo "Running benchmarks..."
   if [[ -n "$BENCH_FILTER" ]]; then
-    (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core --bench runtime_bench -- "$BENCH_FILTER")
+    (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core -- "$BENCH_FILTER")
   else
     (cd "$RUST_DIR" && cargo bench -p bifrore-embed-core)
   fi

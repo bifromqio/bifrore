@@ -173,7 +173,11 @@ impl RuleEngine {
                 return Vec::new();
             }
         };
-        self.evaluate_with_payload_for_matched_rules(message, &payload_obj, &matched_rule_indexes)
+        self.evaluate_matched_rules_with_decoded_payload(
+            message,
+            &payload_obj,
+            &matched_rule_indexes,
+        )
     }
 
     #[doc(hidden)]
@@ -189,10 +193,15 @@ impl RuleEngine {
         if matched_rule_indexes.is_empty() {
             return Vec::new();
         }
-        self.evaluate_with_payload_for_matched_rules(message, payload_obj, &matched_rule_indexes)
+        self.evaluate_matched_rules_with_decoded_payload(
+            message,
+            payload_obj,
+            &matched_rule_indexes,
+        )
     }
 
-    fn evaluate_with_payload_for_matched_rules(
+    #[doc(hidden)]
+    pub fn evaluate_matched_rules_with_decoded_payload(
         &self,
         message: &Message,
         payload_obj: &MsgIr,
@@ -255,6 +264,11 @@ impl RuleEngine {
             }
         }
         results
+    }
+
+    #[doc(hidden)]
+    pub fn match_rule_indexes_for_bench(&mut self, topic: &str) -> Vec<usize> {
+        self.match_rule_indexes_with_cache(topic)
     }
 
     pub fn topic_filters(&self) -> Vec<String> {
