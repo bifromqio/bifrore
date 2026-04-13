@@ -83,7 +83,7 @@ impl RuleEngine {
             rules: Vec::new(),
             rule_index_by_id: HashMap::new(),
             matcher: TopicTrie::default(),
-            metrics: Arc::new(EvalMetrics::default()),
+            metrics: Arc::new(EvalMetrics::new(false)),
             payload_decoder,
             topic_match_cache: TopicMatchCache::new(topic_cache_capacity),
             eval_parallel_threshold: DEFAULT_EVAL_PARALLEL_THRESHOLD,
@@ -97,6 +97,13 @@ impl RuleEngine {
 
     pub fn metrics_handle(&self) -> Arc<EvalMetrics> {
         Arc::clone(&self.metrics)
+    }
+
+    pub fn set_detailed_latency_metrics(&mut self, enabled: bool) {
+        if self.metrics.detailed_latency_enabled() == enabled {
+            return;
+        }
+        self.metrics = Arc::new(EvalMetrics::new(enabled));
     }
 
     pub fn set_eval_parallel_threshold(&mut self, threshold: Option<usize>) {
@@ -135,12 +142,10 @@ impl RuleEngine {
     }
 
     pub fn evaluate(&mut self, message: &Message) -> Vec<RuleEvaluation> {
-        let topic_match_start = Instant::now();
+        let topic_match_timer = self.metrics.start_stage();
         let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
-        self.metrics.record_stage(
-            LatencyStage::TopicMatch,
-            topic_match_start.elapsed().as_nanos() as u64,
-        );
+        self.metrics
+            .finish_stage(LatencyStage::TopicMatch, topic_match_timer);
         if matched_rule_indexes.is_empty() {
             return Vec::new();
         }
@@ -177,12 +182,10 @@ impl RuleEngine {
         message: &Message,
         payload_obj: &MsgIr,
     ) -> Vec<RuleEvaluation> {
-        let topic_match_start = Instant::now();
+        let topic_match_timer = self.metrics.start_stage();
         let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
-        self.metrics.record_stage(
-            LatencyStage::TopicMatch,
-            topic_match_start.elapsed().as_nanos() as u64,
-        );
+        self.metrics
+            .finish_stage(LatencyStage::TopicMatch, topic_match_timer);
         if matched_rule_indexes.is_empty() {
             return Vec::new();
         }
@@ -646,7 +649,7 @@ mod tests {
         assert!(snapshot.eval_total.total_nanos > 0);
         assert_eq!(snapshot.topic_match.count, 0);
 
-        engine.metrics().set_detailed_latency_enabled(true);
+        engine.set_detailed_latency_metrics(true);
         let _ = engine.evaluate(&message);
         let snapshot = engine.metrics().snapshot();
         assert!(snapshot.topic_match.count > 0);

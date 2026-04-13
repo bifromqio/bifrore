@@ -635,12 +635,9 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
             rule.fast_path_profile
                 .attempts
                 .fetch_add(1, Ordering::Relaxed);
-            let fast_where_start = std::time::Instant::now();
+            let fast_where_timer = metrics.start_stage();
             let fast_where_result = evaluate_fast_predicate(fast_where, &context);
-            metrics.record_stage(
-                LatencyStage::FastWhere,
-                fast_where_start.elapsed().as_nanos() as u64,
-            );
+            metrics.finish_stage(LatencyStage::FastWhere, fast_where_timer);
             match fast_where_result {
                 Some(true) => {}
                 Some(false) => return None,
@@ -668,12 +665,9 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     }
 
     if let Some(plan) = &rule.where_plan {
-        let predicate_start = std::time::Instant::now();
+        let predicate_timer = metrics.start_stage();
         let predicate_result = evaluate_plan_bool(plan, &context).unwrap_or(false);
-        metrics.record_stage(
-            LatencyStage::Predicate,
-            predicate_start.elapsed().as_nanos() as u64,
-        );
+        metrics.finish_stage(LatencyStage::Predicate, predicate_timer);
         if !predicate_result {
             return None;
         }
@@ -682,17 +676,14 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     match &rule.select_plan {
         SelectPlan::All => Some(message.clone()),
         SelectPlan::Columns(columns) => {
-            let projection_start = std::time::Instant::now();
+            let projection_timer = metrics.start_stage();
             let mut output = serde_json::Map::with_capacity(columns.len());
             for column in columns {
                 let value = evaluate_plan_value(&column.expr, &context).unwrap_or(Value::Null);
                 output.insert(column.alias.clone(), value);
             }
             let new_payload = serde_json::to_vec(&Value::Object(output)).ok()?;
-            metrics.record_stage(
-                LatencyStage::Projection,
-                projection_start.elapsed().as_nanos() as u64,
-            );
+            metrics.finish_stage(LatencyStage::Projection, projection_timer);
             Some(Message::new(&message.topic, new_payload))
         }
     }
