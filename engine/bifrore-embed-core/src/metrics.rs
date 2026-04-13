@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LatencyStage {
@@ -65,29 +66,85 @@ impl LatencyMetrics {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug)]
+pub struct StageTimer(Option<Instant>);
+
+#[derive(Clone, Copy, Debug)]
+struct StageRecorder {
+    start: fn() -> StageTimer,
+    finish: fn(&LatencyMetrics, StageTimer),
+}
+
+fn disabled_stage_start() -> StageTimer {
+    StageTimer(None)
+}
+
+fn disabled_stage_finish(_metrics: &LatencyMetrics, _timer: StageTimer) {}
+
+fn detailed_stage_start() -> StageTimer {
+    StageTimer(Some(Instant::now()))
+}
+
+fn detailed_stage_finish(metrics: &LatencyMetrics, timer: StageTimer) {
+    let start = timer
+        .0
+        .expect("detailed stage timer must carry a start instant");
+    metrics.record(start.elapsed().as_nanos() as u64);
+}
+
+impl StageRecorder {
+    const DISABLED: Self = Self {
+        start: disabled_stage_start,
+        finish: disabled_stage_finish,
+    };
+
+    const DETAILED: Self = Self {
+        start: detailed_stage_start,
+        finish: detailed_stage_finish,
+    };
+}
+
+#[derive(Debug)]
 pub struct EvalMetrics {
     eval_count: AtomicU64,
     eval_error_count: AtomicU64,
-    detailed_latency_enabled: AtomicU64,
+    detailed_latency_enabled: bool,
+    stage_recorder: StageRecorder,
     stages: [LatencyMetrics; LatencyStage::COUNT],
 }
 
 impl EvalMetrics {
-    pub fn set_detailed_latency_enabled(&self, enabled: bool) {
-        self.detailed_latency_enabled
-            .store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
+    pub fn new(detailed_latency_enabled: bool) -> Self {
+        Self {
+            eval_count: AtomicU64::new(0),
+            eval_error_count: AtomicU64::new(0),
+            detailed_latency_enabled,
+            stage_recorder: if detailed_latency_enabled {
+                StageRecorder::DETAILED
+            } else {
+                StageRecorder::DISABLED
+            },
+            stages: std::array::from_fn(|_| LatencyMetrics::default()),
+        }
     }
 
     pub fn detailed_latency_enabled(&self) -> bool {
-        self.detailed_latency_enabled.load(Ordering::Relaxed) != 0
+        self.detailed_latency_enabled
     }
 
-    pub fn record_stage(&self, stage: LatencyStage, duration_nanos: u64) {
-        if !self.detailed_latency_enabled() && !matches!(stage, LatencyStage::EvalTotal) {
-            return;
-        }
-        self.stages[stage.index()].record(duration_nanos);
+    #[inline(always)]
+    pub fn should_measure_stage(&self, stage: LatencyStage) -> bool {
+        matches!(stage, LatencyStage::EvalTotal) || self.detailed_latency_enabled()
+    }
+
+    #[inline(always)]
+    pub fn start_stage(&self) -> StageTimer {
+        (self.stage_recorder.start)()
+    }
+
+    #[inline(always)]
+    pub fn finish_stage(&self, stage: LatencyStage, timer: StageTimer) {
+        (self.stage_recorder.finish)(&self.stages[stage.index()], timer);
     }
 
     pub fn record_eval(&self, duration_nanos: u64, success: bool) {
@@ -95,7 +152,7 @@ impl EvalMetrics {
         if !success {
             self.eval_error_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.record_stage(LatencyStage::EvalTotal, duration_nanos);
+        self.stages[LatencyStage::EvalTotal.index()].record(duration_nanos);
     }
 
     pub fn snapshot(&self) -> EvalMetricsSnapshot {
@@ -110,6 +167,12 @@ impl EvalMetrics {
             projection: self.stages[LatencyStage::Projection.index()].snapshot(),
             eval_total: self.stages[LatencyStage::EvalTotal.index()].snapshot(),
         }
+    }
+}
+
+impl Default for EvalMetrics {
+    fn default() -> Self {
+        Self::new(false)
     }
 }
 

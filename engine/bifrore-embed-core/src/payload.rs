@@ -84,22 +84,22 @@ pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
         .get_message_by_name(message_name)
         .ok_or_else(|| format!("protobuf message not found in descriptor set: {message_name}"))?;
     let decode = move |payload: &[u8], plan: PayloadDecodePlan<'_>, metrics: Option<&EvalMetrics>| {
-        let decode_start = std::time::Instant::now();
+        let decode_timer = metrics.map(|metrics| metrics.start_stage());
         let message =
             DynamicMessage::decode(message_descriptor.clone(), payload).map_err(|err| err.to_string())?;
         if let Some(metrics) = metrics {
-            metrics.record_stage(
+            metrics.finish_stage(
                 LatencyStage::PayloadDecode,
-                decode_start.elapsed().as_nanos() as u64,
+                decode_timer.expect("stage timer present with metrics"),
             );
         }
 
-        let ir_start = std::time::Instant::now();
+        let ir_timer = metrics.map(|metrics| metrics.start_stage());
         let ir = MsgIr::from_protobuf_message_with_decode_plan(&message, plan)?;
         if let Some(metrics) = metrics {
-            metrics.record_stage(
+            metrics.finish_stage(
                 LatencyStage::MsgIrBuild,
-                ir_start.elapsed().as_nanos() as u64,
+                ir_timer.expect("stage timer present with metrics"),
             );
         }
         Ok(ir)
@@ -136,7 +136,7 @@ fn decode_json_ir(
         return Ok(MsgIr::new());
     }
 
-    let decode_start = std::time::Instant::now();
+    let decode_timer = metrics.map(|metrics| metrics.start_stage());
     #[cfg(feature = "simd-json")]
     let parsed: Value = {
         let mut buffer = payload.to_vec();
@@ -146,21 +146,21 @@ fn decode_json_ir(
     #[cfg(not(feature = "simd-json"))]
     let parsed: Value = serde_json::from_slice(payload).map_err(|err| err.to_string())?;
     if let Some(metrics) = metrics {
-        metrics.record_stage(
+        metrics.finish_stage(
             LatencyStage::PayloadDecode,
-            decode_start.elapsed().as_nanos() as u64,
+            decode_timer.expect("stage timer present with metrics"),
         );
     }
 
     let object = parsed
         .as_object()
         .ok_or_else(|| "payload must be a JSON object".to_string())?;
-    let ir_start = std::time::Instant::now();
+    let ir_timer = metrics.map(|metrics| metrics.start_stage());
     let ir = MsgIr::from_json_object_with_decode_plan(object, plan)?;
     if let Some(metrics) = metrics {
-        metrics.record_stage(
+        metrics.finish_stage(
             LatencyStage::MsgIrBuild,
-            ir_start.elapsed().as_nanos() as u64,
+            ir_timer.expect("stage timer present with metrics"),
         );
     }
     Ok(ir)

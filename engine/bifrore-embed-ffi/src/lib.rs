@@ -834,8 +834,12 @@ pub extern "C" fn bre_set_detailed_latency_metrics(
         return -1;
     }
     let engine = unsafe { &mut *engine };
+    let Some(rule_engine) = engine.inner.as_mut() else {
+        return -2;
+    };
     engine.detailed_latency_metrics = enabled;
-    engine.metrics.set_detailed_latency_enabled(enabled);
+    rule_engine.set_detailed_latency_metrics(enabled);
+    engine.metrics = rule_engine.metrics_handle();
     0
 }
 
