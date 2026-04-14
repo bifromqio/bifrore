@@ -18,6 +18,10 @@ use std::sync::{Once, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod status;
+
+use status::*;
+
 const DEFAULT_POLL_BATCH_SIZE: usize = 256;
 const DEFAULT_CLIENT_IDS_PATH: &str = "./client_ids";
 
@@ -732,17 +736,17 @@ pub extern "C" fn bre_destroy(engine: *mut BifroRE) {
 #[no_mangle]
 pub extern "C" fn bre_disconnect(engine: *mut BifroRE) -> c_int {
     if engine.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine = unsafe { &mut *engine };
     disconnect_engine(engine);
-    0
+    BRE_OK
 }
 
 #[no_mangle]
 pub extern "C" fn bre_get_notify_fd(engine: *const BifroRE) -> c_int {
     if engine.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine = unsafe { &*engine };
     engine.notify_read_fd
@@ -761,7 +765,7 @@ pub extern "C" fn bre_set_log_callback(
         3 => BifroRELogLevel::Info,
         4 => BifroRELogLevel::Debug,
         5 => BifroRELogLevel::Trace,
-        _ => return -1,
+        _ => return BRE_ERR_INVALID_ARGUMENT,
     };
 
     let mut state = logger_state().write().unwrap();
@@ -769,7 +773,7 @@ pub extern "C" fn bre_set_log_callback(
     state.user_data_addr = user_data as usize;
     state.min_level = min_level;
     log::info!("log callback updated; level={}", min_level as c_int);
-    0
+    BRE_OK
 }
 
 #[no_mangle]
@@ -778,7 +782,7 @@ pub extern "C" fn bre_metrics_snapshot(
     out_snapshot: *mut BifroREMetricsSnapshot,
 ) -> c_int {
     if engine.is_null() || out_snapshot.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine_ref = unsafe { &*engine };
     let eval_snapshot = engine_ref.metrics.snapshot();
@@ -787,7 +791,7 @@ pub extern "C" fn bre_metrics_snapshot(
     unsafe {
         ptr::write(out_snapshot, snapshot);
     }
-    0
+    BRE_OK
 }
 
 #[no_mangle]
@@ -797,7 +801,7 @@ pub extern "C" fn bre_get_rule_metadata_table(
     out_len: *mut size_t,
 ) -> c_int {
     if engine.is_null() || out_metadata.is_null() || out_len.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine_ref = unsafe { &*engine };
     let metadata = engine_ref
@@ -814,7 +818,7 @@ pub extern "C" fn bre_get_rule_metadata_table(
         *out_metadata = ptr;
         *out_len = len;
     }
-    0
+    BRE_OK
 }
 
 #[no_mangle]
@@ -823,18 +827,18 @@ pub extern "C" fn bre_set_eval_parallel_threshold(
     threshold: u32,
 ) -> c_int {
     if engine.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine = unsafe { &mut *engine };
     let Some(inner) = engine.inner.as_mut() else {
-        return -2;
+        return BRE_ERR_INVALID_STATE;
     };
     if threshold == 0 {
         inner.set_eval_parallel_threshold(None);
     } else {
         inner.set_eval_parallel_threshold(Some(threshold as usize));
     }
-    0
+    BRE_OK
 }
 
 #[no_mangle]
@@ -843,7 +847,7 @@ pub extern "C" fn bre_set_poll_batch_limit(
     limit: u32,
 ) -> c_int {
     if engine.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine = unsafe { &mut *engine };
     engine.poll_batch_limit = if limit == 0 {
@@ -851,7 +855,7 @@ pub extern "C" fn bre_set_poll_batch_limit(
     } else {
         limit as usize
     };
-    0
+    BRE_OK
 }
 
 #[no_mangle]
@@ -860,16 +864,16 @@ pub extern "C" fn bre_set_detailed_latency_metrics(
     enabled: bool,
 ) -> c_int {
     if engine.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine = unsafe { &mut *engine };
     let Some(rule_engine) = engine.inner.as_mut() else {
-        return -2;
+        return BRE_ERR_INVALID_STATE;
     };
     engine.detailed_latency_metrics = enabled;
     rule_engine.set_detailed_latency_metrics(enabled);
     engine.metrics = rule_engine.metrics_handle();
-    0
+    BRE_OK
 }
 
 #[no_mangle]
@@ -894,11 +898,11 @@ pub extern "C" fn bre_start_mqtt(
         || group_name.is_null()
         || ordered_prefix.is_null()
     {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine_ref = unsafe { &mut *engine };
     if engine_ref.adapter.is_some() {
-        return -5;
+        return BRE_ERR_ALREADY_STARTED;
     }
 
     let host = unsafe { CStr::from_ptr(host) };
@@ -906,15 +910,15 @@ pub extern "C" fn bre_start_mqtt(
     let ordered_prefix = unsafe { CStr::from_ptr(ordered_prefix) };
     let host = match host.to_str() {
         Ok(val) => val.to_string(),
-        Err(_) => return -3,
+        Err(_) => return BRE_ERR_OPERATION_FAILED,
     };
     let group_name = match group_name.to_str() {
         Ok(val) => val.to_string(),
-        Err(_) => return -3,
+        Err(_) => return BRE_ERR_OPERATION_FAILED,
     };
     let ordered_prefix = match ordered_prefix.to_str() {
         Ok(val) => val.to_string(),
-        Err(_) => return -3,
+        Err(_) => return BRE_ERR_OPERATION_FAILED,
     };
 
     let username = if username.is_null() {
@@ -993,7 +997,7 @@ pub extern "C" fn bre_start_mqtt(
         config.client_count
     );
     let Some(mut rule_engine) = engine_ref.inner.take() else {
-        return -6;
+        return BRE_ERR_WORKER_UNAVAILABLE;
     };
 
     let engine_addr = engine as usize;
@@ -1067,7 +1071,7 @@ pub extern "C" fn bre_start_mqtt(
             if let Ok(rule_engine) = core_worker.join() {
                 engine_ref.inner = Some(rule_engine);
             }
-            return -4;
+            return BRE_ERR_START_FAILED;
         }
     };
     engine_ref.adapter = Some(adapter);
@@ -1075,7 +1079,7 @@ pub extern "C" fn bre_start_mqtt(
     engine_ref.core_worker = Some(core_worker);
     engine_ref.eval_result_tx = Some(eval_result_tx);
     engine_ref.eval_result_rx = Some(eval_result_rx);
-    0
+    BRE_OK
 }
 
 fn disconnect_engine(engine: &mut BifroRE) {
@@ -1106,7 +1110,7 @@ pub extern "C" fn bre_poll_eval_results_packed(
     out_results: *mut BifroPackedEvalResults,
 ) -> c_int {
     if engine.is_null() || out_results.is_null() {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     unsafe {
         *out_results = BifroPackedEvalResults {
@@ -1121,7 +1125,7 @@ pub extern "C" fn bre_poll_eval_results_packed(
 
     let engine = unsafe { &mut *engine };
     let Some(receiver) = engine.eval_result_rx.as_ref() else {
-        return -2;
+        return BRE_ERR_INVALID_STATE;
     };
     let max_results = engine.poll_batch_limit.max(1);
 
@@ -1133,20 +1137,20 @@ pub extern "C" fn bre_poll_eval_results_packed(
                 if !receiver.is_empty() {
                     maybe_notify_eval_ready(engine.notify_write_fd, &engine.notify_pending);
                 }
-                return 0;
+                return BRE_OK;
             }
-            Err(flume::TryRecvError::Disconnected) => return -3,
+            Err(flume::TryRecvError::Disconnected) => return BRE_ERR_OPERATION_FAILED,
         }
     } else if timeout_millis == u32::MAX {
         match receiver.recv() {
             Ok(value) => value,
-            Err(_) => return -3,
+            Err(_) => return BRE_ERR_OPERATION_FAILED,
         }
     } else {
         match receiver.recv_timeout(Duration::from_millis(timeout_millis as u64)) {
             Ok(value) => value,
-            Err(flume::RecvTimeoutError::Timeout) => return 0,
-            Err(flume::RecvTimeoutError::Disconnected) => return -3,
+            Err(flume::RecvTimeoutError::Timeout) => return BRE_OK,
+            Err(flume::RecvTimeoutError::Disconnected) => return BRE_ERR_OPERATION_FAILED,
         }
     };
 
@@ -1205,7 +1209,7 @@ pub extern "C" fn bre_poll_eval_results_packed(
     std::mem::forget(payload_offsets);
     std::mem::forget(payload_lengths);
     std::mem::forget(payload_data);
-    1
+    BRE_POLL_RESULT_READY
 }
 
 #[no_mangle]
