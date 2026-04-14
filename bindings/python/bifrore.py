@@ -4,6 +4,16 @@ import json
 import os
 from ctypes import c_bool, c_char_p, c_int, c_size_t, c_uint16, c_uint32, c_void_p
 
+BRE_OK = 0
+BRE_POLL_RESULT_READY = 1
+
+BRE_ERR_INVALID_ARGUMENT = -1
+BRE_ERR_INVALID_STATE = -2
+BRE_ERR_OPERATION_FAILED = -3
+BRE_ERR_START_FAILED = -4
+BRE_ERR_ALREADY_STARTED = -5
+BRE_ERR_WORKER_UNAVAILABLE = -6
+
 
 class _PackedEvalResults(ctypes.Structure):
     _fields_ = [
@@ -33,10 +43,14 @@ class _MetricsSnapshot(ctypes.Structure):
         ("ffi_queue_depth", ctypes.c_uint64),
         ("ffi_queue_depth_max", ctypes.c_uint64),
         ("ffi_queue_drop_count", ctypes.c_uint64),
+        ("message_pipeline_count", ctypes.c_uint64),
+        ("message_pipeline_total_nanos", ctypes.c_uint64),
+        ("message_pipeline_max_nanos", ctypes.c_uint64),
         ("eval_count", ctypes.c_uint64),
         ("eval_error_count", ctypes.c_uint64),
-        ("eval_total_total_nanos", ctypes.c_uint64),
-        ("eval_total_max_nanos", ctypes.c_uint64),
+        ("exec_count", ctypes.c_uint64),
+        ("exec_total_nanos", ctypes.c_uint64),
+        ("exec_max_nanos", ctypes.c_uint64),
         ("topic_match_count", ctypes.c_uint64),
         ("topic_match_total_nanos", ctypes.c_uint64),
         ("topic_match_max_nanos", ctypes.c_uint64),
@@ -202,8 +216,8 @@ class BifroRE:
             ctypes.byref(out_metadata),
             ctypes.byref(out_len),
         )
-        if rc != 0:
-            raise RuntimeError("Failed to load rule metadata table")
+        if rc != BRE_OK:
+            raise RuntimeError(f"Failed to load rule metadata table, error code: {rc}")
         metadata = {}
         try:
             for idx in range(out_len.value):
@@ -244,7 +258,7 @@ class BifroRE:
             self._queue = asyncio.Queue()
         if not self._mqtt_started:
             rc = self._start_mqtt()
-            if rc != 0:
+            if rc != BRE_OK:
                 raise RuntimeError(f"Failed to start MQTT, error code: {rc}")
             self._mqtt_started = True
         self._attach_notify_reader()
@@ -327,7 +341,7 @@ class BifroRE:
         if self._loop is None:
             raise RuntimeError("Event loop is not initialized")
         self._notify_fd = self.lib.bre_get_notify_fd(self.handle)
-        if self._notify_fd < 0:
+        if self._notify_fd == BRE_ERR_INVALID_ARGUMENT:
             raise RuntimeError("Failed to acquire notify fd from engine")
         self._loop.add_reader(self._notify_fd, self._on_notify_fd_ready)
         self._reader_attached = True
@@ -366,7 +380,7 @@ class BifroRE:
             0,
             ctypes.byref(out_results),
         )
-        if rc != 1 or out_results.len == 0:
+        if rc != BRE_POLL_RESULT_READY or out_results.len == 0:
             return
         try:
             payload_blob = (
@@ -400,7 +414,7 @@ class BifroRE:
             self.handle,
             ctypes.byref(snapshot),
         )
-        if rc != 0:
+        if rc != BRE_OK:
             return None
         return {
             "ingress_message_count": snapshot.ingress_message_count,
@@ -410,10 +424,14 @@ class BifroRE:
             "ffi_queue_depth": snapshot.ffi_queue_depth,
             "ffi_queue_depth_max": snapshot.ffi_queue_depth_max,
             "ffi_queue_drop_count": snapshot.ffi_queue_drop_count,
+            "message_pipeline_count": snapshot.message_pipeline_count,
+            "message_pipeline_total_nanos": snapshot.message_pipeline_total_nanos,
+            "message_pipeline_max_nanos": snapshot.message_pipeline_max_nanos,
             "eval_count": snapshot.eval_count,
             "eval_error_count": snapshot.eval_error_count,
-            "eval_total_nanos": snapshot.eval_total_total_nanos,
-            "eval_max_nanos": snapshot.eval_total_max_nanos,
+            "exec_count": snapshot.exec_count,
+            "exec_total_nanos": snapshot.exec_total_nanos,
+            "exec_max_nanos": snapshot.exec_max_nanos,
         }
 
     def close(self):

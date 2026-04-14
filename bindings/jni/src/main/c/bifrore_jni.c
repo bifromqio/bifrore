@@ -131,6 +131,17 @@ static const size_t DIRECT_MERGE_PAYLOAD_DEN = 4;
 static const size_t DIRECT_MERGE_HEADER_NUM = 1;
 static const size_t DIRECT_MERGE_HEADER_DEN = 4;
 
+static const int BRE_OK = 0;
+static const int BRE_POLL_RESULT_READY = 1;
+static const int BRE_ERR_INVALID_ARGUMENT = -1;
+static const int BRE_ERR_INVALID_STATE = -2;
+static const int BRE_ERR_OPERATION_FAILED = -3;
+static const int BRE_ERR_START_FAILED = -4;
+static const int BRE_ERR_ALREADY_STARTED = -5;
+
+static const int JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL = -4;
+static const int JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL = -5;
+
 static struct DirectPendingBatch *find_pending_batch(void) {
     if (DIRECT_PENDING_ACTIVE) {
         return &DIRECT_PENDING;
@@ -204,14 +215,14 @@ static int copy_batch_to_direct_buffers(
     size_t *copied_messages,
     size_t *copied_payload_bytes) {
     if (*next_index >= results->len) {
-        return 0;
+        return BRE_OK;
     }
     if (header_capacity_records == 0) {
-        return -4;
+        return JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL;
     }
     size_t first_length = (size_t)results->payload_lengths[*next_index];
     if (*emitted == 0 && *payload_offset == 0 && first_length > payload_capacity_bytes) {
-        return -5;
+        return JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL;
     }
 
     while (*next_index < results->len && *emitted < header_capacity_records) {
@@ -240,7 +251,7 @@ static int copy_batch_to_direct_buffers(
             *copied_payload_bytes += payload_length;
         }
     }
-    return 0;
+    return BRE_OK;
 }
 
 static int poll_results_batch_direct_core(
@@ -273,7 +284,7 @@ static int poll_results_batch_direct_core(
             &copied_messages,
             &copied_payload_bytes
         );
-        if (rc < 0) {
+        if (rc < BRE_OK) {
             return rc;
         }
         pending->remaining_messages -= copied_messages;
@@ -300,7 +311,7 @@ static int poll_results_batch_direct_core(
                     &copied_messages,
                     &copied_payload_bytes
                 );
-                if (rc < 0 && emitted == 0) {
+                if (rc < BRE_OK && emitted == 0) {
                     bre_free_packed_eval_results(&fetched);
                     return rc;
                 }
@@ -318,7 +329,7 @@ static int poll_results_batch_direct_core(
 
     struct BifroPackedEvalResults fetched = {0};
     int rc = bre_poll_eval_results_packed(engine, timeout_millis, &fetched);
-    if (rc <= 0 || fetched.len == 0) {
+    if (rc <= BRE_OK || fetched.len == 0) {
         if (fetched.len > 0) {
             bre_free_packed_eval_results(&fetched);
         }
@@ -342,14 +353,14 @@ static int poll_results_batch_direct_core(
         &copied_messages,
         &copied_payload_bytes
     );
-    if (rc < 0) {
+    if (rc < BRE_OK) {
         bre_free_packed_eval_results(&fetched);
         return rc;
     }
     if (fetched_index < fetched.len) {
         if (store_pending_batch_with_index(&fetched, fetched_index) == NULL) {
             bre_free_packed_eval_results(&fetched);
-            return -1;
+            return BRE_ERR_INVALID_ARGUMENT;
         }
     } else {
         bre_free_packed_eval_results(&fetched);
@@ -547,7 +558,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeDisconnect(JNIEnv *env, jc
     (void)env;
     (void)cls;
     if (handle == 0) {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     return bre_disconnect((void *)handle);
 }
@@ -571,7 +582,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     jboolean multi_nci) {
     (void)cls;
     if (handle == 0 || host == NULL || group_name == NULL || ordered_prefix == NULL) {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
 
     const char *host_str = (*env)->GetStringUTFChars(env, host, NULL);
@@ -639,7 +650,7 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
         (void *)handle,
         (uint32_t)timeout_millis,
         &results);
-    if (rc <= 0 || results.len == 0) {
+    if (rc <= BRE_OK || results.len == 0) {
         return NULL;
     }
     if (!ensure_jni_cache(env)) {
@@ -713,13 +724,13 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
     jint payload_capacity_bytes) {
     (void)cls;
     if (handle == 0 || header_buffer == NULL || payload_buffer == NULL) {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
 
     uint32_t *header_ptr = (uint32_t *)(*env)->GetDirectBufferAddress(env, header_buffer);
     unsigned char *payload_ptr = (unsigned char *)(*env)->GetDirectBufferAddress(env, payload_buffer);
     if (header_ptr == NULL || payload_ptr == NULL || header_capacity_ints <= 0 || payload_capacity_bytes <= 0) {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     size_t header_capacity_records = (size_t)header_capacity_ints / 3;
     return poll_results_batch_direct_core(
@@ -837,7 +848,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetPollBatchLimit(
     (void)env;
     (void)cls;
     if (handle == 0) {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     return bre_set_poll_batch_limit((void *)handle, (uint32_t)limit);
 }
@@ -850,7 +861,7 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetDetailedLatencyMetrics(
     (void)env;
     (void)cls;
     if (handle == 0) {
-        return -1;
+        return BRE_ERR_INVALID_ARGUMENT;
     }
     return bre_set_detailed_latency_metrics((void *)handle, enabled);
 }

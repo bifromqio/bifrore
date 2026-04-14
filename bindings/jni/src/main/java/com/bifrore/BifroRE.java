@@ -44,6 +44,17 @@ public final class BifroRE implements AutoCloseable {
     public static final int PAYLOAD_JSON = 1;
     public static final int PAYLOAD_PROTOBUF = 2;
     private static final int NOTIFY_MODE_POLL = 0;
+    public static final int BRE_OK = 0;
+    public static final int BRE_POLL_RESULT_READY = 1;
+    public static final int BRE_ERR_INVALID_ARGUMENT = -1;
+    public static final int BRE_ERR_INVALID_STATE = -2;
+    public static final int BRE_ERR_OPERATION_FAILED = -3;
+    public static final int BRE_ERR_START_FAILED = -4;
+    public static final int BRE_ERR_ALREADY_STARTED = -5;
+    public static final int BRE_ERR_WORKER_UNAVAILABLE = -6;
+
+    private static final int JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL = -4;
+    private static final int JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL = -5;
 
     public interface MessageHandler {
         void onMessage(int ruleIndex, byte[] payloadBlob, int offset, int length, RuleMetadata metadata);
@@ -360,12 +371,12 @@ public final class BifroRE implements AutoCloseable {
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
         }
-        if (nativeSetPollBatchLimit(this.handle, Math.max(1, pollBatchLimit)) != 0) {
+        if (nativeSetPollBatchLimit(this.handle, Math.max(1, pollBatchLimit)) != BRE_OK) {
             nativeDestroy(this.handle);
             this.handle = 0;
             throw new IllegalStateException("Failed to configure poll batch limit");
         }
-        if (nativeSetDetailedLatencyMetrics(this.handle, this.detailedLatencyMetrics) != 0) {
+        if (nativeSetDetailedLatencyMetrics(this.handle, this.detailedLatencyMetrics) != BRE_OK) {
             nativeDestroy(this.handle);
             this.handle = 0;
             throw new IllegalStateException("Failed to configure detailed latency metrics");
@@ -404,7 +415,7 @@ public final class BifroRE implements AutoCloseable {
 
     public synchronized int start() {
         if (mqttStarted) {
-            return 0;
+            return BRE_OK;
         }
         int rc = nativeStartMqtt(
             handle,
@@ -422,7 +433,7 @@ public final class BifroRE implements AutoCloseable {
             30,
             multiNci
         );
-        if (rc == 0) {
+        if (rc == BRE_OK) {
             mqttStarted = true;
             ensurePollerRunning();
         }
@@ -435,10 +446,10 @@ public final class BifroRE implements AutoCloseable {
 
     public synchronized int disconnect() {
         if (handle == 0) {
-            return -1;
+            return BRE_ERR_INVALID_ARGUMENT;
         }
         if (!mqttStarted && !disconnecting) {
-            return 0;
+            return BRE_OK;
         }
         disconnecting = true;
         mqttStarted = false;
@@ -498,7 +509,7 @@ public final class BifroRE implements AutoCloseable {
             handler.onLog(level, target, message, timestampMillis, threadId, modulePath, file, line));
         logCallbackHandle = nativeRegisterLogHandler(wrapped);
         if (logCallbackHandle == 0) {
-            return -1;
+            return BRE_ERR_INVALID_ARGUMENT;
         }
         return nativeSetLogCallback(logCallbackHandle, minLevel);
     }
@@ -653,20 +664,20 @@ public final class BifroRE implements AutoCloseable {
             slot.payloadBuffer,
             slot.payloadCapacityBytes
         );
-        if (count == -3) {
+        if (count == BRE_ERR_OPERATION_FAILED) {
             releaseDirectSlot(slot);
             return false;
         }
-        if (count <= 0) {
-            if (count == -5) {
+        if (count <= BRE_OK) {
+            if (count == JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL) {
                 LOGGER.warning(
                     "BifroRE direct payload buffer is too small for the next message; increase directPayloadBufferBytes"
                 );
-            } else if (count == -4) {
+            } else if (count == JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL) {
                 LOGGER.warning("BifroRE direct header buffer is too small; increase pollBatchLimit or header sizing");
             }
             releaseDirectSlot(slot);
-            return count >= 0;
+            return count >= BRE_OK;
         }
 
         slot.messageCount = count;
