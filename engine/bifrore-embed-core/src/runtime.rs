@@ -1,10 +1,8 @@
 use crate::message::Message;
 use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::msg_ir::MsgIr;
-use crate::payload::{
-    dynamic_protobuf_decoder_from_descriptor_set_bytes,
-    dynamic_protobuf_decoder_from_descriptor_set_file,
-};
+#[cfg(test)]
+use crate::payload::dynamic_protobuf_decoder_from_descriptor_set_bytes;
 use crate::payload::{
     decode_payload_ir_with_decoder_and_plan_and_metrics, PayloadDecodePlan, PayloadDecoder,
     PayloadFormat,
@@ -38,43 +36,16 @@ pub struct RuleEngine {
 
 impl Default for RuleEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new(PayloadDecoder::from_format(PayloadFormat::Json))
     }
 }
 
 impl RuleEngine {
-    pub fn new() -> Self {
-        Self::with_json()
+    pub fn new(payload_decoder: PayloadDecoder) -> Self {
+        Self::new_with_cache_capacity(payload_decoder, DEFAULT_TOPIC_CACHE_CAPACITY)
     }
 
-    pub fn with_json() -> Self {
-        Self::with_payload_decoder(PayloadDecoder::from_format(PayloadFormat::Json))
-    }
-
-    pub fn with_protobuf_descriptor_set_file<P: AsRef<Path>>(
-        descriptor_set_path: P,
-        message_name: &str,
-    ) -> Result<Self, String> {
-        let decoder =
-            dynamic_protobuf_decoder_from_descriptor_set_file(descriptor_set_path, message_name)?;
-        Ok(Self::with_payload_decoder(decoder))
-    }
-
-    pub fn with_protobuf_descriptor_set_bytes(
-        descriptor_set: &[u8],
-        message_name: &str,
-    ) -> Result<Self, String> {
-        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(descriptor_set, message_name)?;
-        Ok(Self::with_payload_decoder(decoder))
-    }
-
-    #[doc(hidden)]
-    pub fn with_payload_decoder(payload_decoder: PayloadDecoder) -> Self {
-        Self::with_payload_decoder_and_cache_capacity(payload_decoder, DEFAULT_TOPIC_CACHE_CAPACITY)
-    }
-
-    #[doc(hidden)]
-    pub fn with_payload_decoder_and_cache_capacity(
+    fn new_with_cache_capacity(
         payload_decoder: PayloadDecoder,
         topic_cache_capacity: usize,
     ) -> Self {
@@ -633,7 +604,7 @@ mod tests {
         let temp = tempfile::NamedTempFile::new().expect("tempfile");
         fs::write(temp.path(), json).expect("write");
 
-        let mut engine = RuleEngine::new();
+        let mut engine = RuleEngine::default();
         let count = engine.load_rules_from_json(temp.path()).expect("load rules");
         assert_eq!(count, 1);
         assert_eq!(engine.rules.len(), 1);
@@ -641,7 +612,7 @@ mod tests {
 
     #[test]
     fn evaluate_records_metrics() {
-        let mut engine = RuleEngine::new();
+        let mut engine = RuleEngine::default();
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from data".to_string(),
@@ -667,7 +638,7 @@ mod tests {
 
     #[test]
     fn trie_matches_wildcards() {
-        let mut engine = RuleEngine::new();
+        let mut engine = RuleEngine::default();
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/+/temp".to_string(),
@@ -689,7 +660,7 @@ mod tests {
 
     #[test]
     fn trie_removes_rules_incrementally() {
-        let mut engine = RuleEngine::new();
+        let mut engine = RuleEngine::default();
         let rule_id = engine
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/+/temp".to_string(),
@@ -709,11 +680,12 @@ mod tests {
 
     #[test]
     fn evaluate_with_schema_based_protobuf_predicates_and_projection() {
-        let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
             include_bytes!("../testdata/bifrore_test.desc"),
             "bifrore.test.TypedRuntimePayload",
         )
-        .expect("protobuf engine");
+        .expect("protobuf decoder");
+        let mut engine = RuleEngine::new(decoder);
         engine
             .add_rule(RuleDefinition {
                 expression: "select device as d from data where temp >= 20 and online = true"
@@ -738,11 +710,12 @@ mod tests {
 
     #[test]
     fn evaluate_with_schema_based_protobuf_invalid_payload_is_dropped() {
-        let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
             include_bytes!("../testdata/bifrore_test.desc"),
             "bifrore.test.TypedRuntimePayload",
         )
-        .expect("protobuf engine");
+        .expect("protobuf decoder");
+        let mut engine = RuleEngine::new(decoder);
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from data where temp > 10".to_string(),
@@ -757,11 +730,12 @@ mod tests {
 
     #[test]
     fn evaluate_with_schema_based_protobuf_decoder() {
-        let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
             include_bytes!("../testdata/bifrore_test.desc"),
             "bifrore.test.TypedRuntimePayload",
         )
-        .expect("protobuf engine");
+        .expect("protobuf decoder");
+        let mut engine = RuleEngine::new(decoder);
         engine
             .add_rule(RuleDefinition {
                 expression: "select device as d from data where temp > 20".to_string(),
@@ -785,7 +759,7 @@ mod tests {
 
     #[test]
     fn topic_match_cache_reuses_entries() {
-        let mut engine = RuleEngine::with_payload_decoder_and_cache_capacity(PayloadDecoder::Json, 8);
+        let mut engine = RuleEngine::new_with_cache_capacity(PayloadDecoder::Json, 8);
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/+/temp".to_string(),
@@ -809,7 +783,7 @@ mod tests {
 
     #[test]
     fn topic_match_cache_evicts_least_used_entry() {
-        let mut engine = RuleEngine::with_payload_decoder_and_cache_capacity(PayloadDecoder::Json, 2);
+        let mut engine = RuleEngine::new_with_cache_capacity(PayloadDecoder::Json, 2);
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/#".to_string(),

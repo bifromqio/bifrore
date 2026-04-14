@@ -49,26 +49,7 @@ pub struct TypedPayload {
 }
 
 pub fn build_engine(rule_count: usize) -> RuleEngine {
-    let mut engine = RuleEngine::new();
-    for idx in 0..rule_count {
-        let expression = format!(
-            "select (temp + {idx}) * 2 as t from sensors/+/temp where temp > 20 and hum < 80"
-        );
-        engine
-            .add_rule(RuleDefinition {
-                expression,
-                destinations: vec!["dest".to_string()],
-            })
-            .expect("add rule");
-    }
-    engine
-}
-
-pub fn build_engine_with_cache_capacity(rule_count: usize, cache_capacity: usize) -> RuleEngine {
-    let mut engine = RuleEngine::with_payload_decoder_and_cache_capacity(
-        bifrore_embed_core::payload::PayloadDecoder::Json,
-        cache_capacity,
-    );
+    let mut engine = RuleEngine::default();
     for idx in 0..rule_count {
         let expression = format!(
             "select (temp + {idx}) * 2 as t from sensors/+/temp where temp > 20 and hum < 80"
@@ -87,7 +68,7 @@ pub fn build_engine_with_expr(
     rule_count: usize,
     expr_builder: impl Fn(usize) -> String,
 ) -> RuleEngine {
-    let mut engine = RuleEngine::new();
+    let mut engine = RuleEngine::default();
     for idx in 0..rule_count {
         engine
             .add_rule(RuleDefinition {
@@ -100,11 +81,12 @@ pub fn build_engine_with_expr(
 }
 
 pub fn build_protobuf_engine(rule_count: usize) -> RuleEngine {
-    let mut engine = RuleEngine::with_protobuf_descriptor_set_bytes(
+    let decoder = bifrore_embed_core::payload::dynamic_protobuf_decoder_from_descriptor_set_bytes(
         include_bytes!("../../testdata/bifrore_test.desc"),
         "bifrore.test.EvalPayload",
     )
-    .expect("protobuf engine");
+    .expect("protobuf decoder");
+    let mut engine = RuleEngine::new(decoder);
     for idx in 0..rule_count {
         let expression = format!(
             "select (temp + {idx}) * 2 as t from sensors/+/temp where temp > 20 and hum < 80"
