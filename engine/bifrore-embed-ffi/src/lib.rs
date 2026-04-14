@@ -3,7 +3,9 @@ use bifrore_embed_core::metrics::{EvalMetricsSnapshot, LatencyMetricsSnapshot};
 use bifrore_embed_core::mqtt::{
     start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
 };
-use bifrore_embed_core::payload::PayloadFormat;
+use bifrore_embed_core::payload::{
+    dynamic_protobuf_decoder_from_descriptor_set_file, PayloadFormat,
+};
 use bifrore_embed_core::runtime::{RuleEngine, RuleMetadata};
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::{CStr, CString};
@@ -655,11 +657,8 @@ pub extern "C" fn bre_create_engine(
             Ok(value) if !value.trim().is_empty() => value.trim(),
             _ => return ptr::null_mut(),
         };
-        match RuleEngine::with_protobuf_descriptor_set_file(
-            descriptor_path,
-            message_name,
-        ) {
-            Ok(engine) => engine,
+        match dynamic_protobuf_decoder_from_descriptor_set_file(descriptor_path, message_name) {
+            Ok(decoder) => RuleEngine::new(decoder),
             Err(err) => {
                 log::warn!(
                     "failed to initialize protobuf decoder descriptor_set={} message={} error={}",
@@ -671,7 +670,7 @@ pub extern "C" fn bre_create_engine(
             }
         }
     } else {
-        RuleEngine::with_json()
+        RuleEngine::default()
     };
     if rule_engine.load_rules_from_json(config_path).is_err() {
         return ptr::null_mut();

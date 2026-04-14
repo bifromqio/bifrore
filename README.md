@@ -167,12 +167,14 @@ The release contract is:
 Rust embed usage:
 
 ```rust
+use bifrore_embed_core::payload::dynamic_protobuf_decoder_from_descriptor_set_file;
 use bifrore_embed_core::runtime::RuleEngine;
 
-let engine = RuleEngine::with_protobuf_descriptor_set_file(
+let decoder = dynamic_protobuf_decoder_from_descriptor_set_file(
     "/path/to/schema.desc",
     "example.telemetry.Envelope",
-) ?;
+)?;
+let engine = RuleEngine::new(decoder);
 ```
 
 The old implicit `google.protobuf.Struct` decoding path is not supported.

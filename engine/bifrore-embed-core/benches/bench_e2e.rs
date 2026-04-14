@@ -4,8 +4,7 @@ use bifrore_embed_core::message::Message;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use common::{
-    build_engine, build_engine_with_cache_capacity, build_engine_with_expr,
-    build_protobuf_engine, build_protobuf_message,
+    build_engine, build_engine_with_expr, build_protobuf_engine, build_protobuf_message,
 };
 
 fn bench_e2e(c: &mut Criterion) {
@@ -104,31 +103,6 @@ fn bench_e2e(c: &mut Criterion) {
         b.iter(|| {
             let results = protobuf_engine.evaluate(&protobuf_message);
             assert_eq!(results.len(), 100);
-        })
-    });
-
-    let mut repeat_cache_on_engine = build_engine_with_cache_capacity(100, 4096);
-    let mut repeat_cache_off_engine = build_engine_with_cache_capacity(100, 0);
-    let repeat_message =
-        Message::new("sensors/room1/temp", serde_json::to_vec(&all_match_payload).unwrap());
-
-    c.bench_function("rule_eval_100x_repeated_same_topic_cache_on_json", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for _ in 0..100 {
-                total += repeat_cache_on_engine.evaluate(&repeat_message).len();
-            }
-            assert_eq!(total, 100 * 100);
-        })
-    });
-
-    c.bench_function("rule_eval_100x_repeated_same_topic_cache_off_json", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for _ in 0..100 {
-                total += repeat_cache_off_engine.evaluate(&repeat_message).len();
-            }
-            assert_eq!(total, 100 * 100);
         })
     });
 }
