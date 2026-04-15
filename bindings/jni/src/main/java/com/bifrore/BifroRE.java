@@ -95,6 +95,16 @@ public final class BifroRE implements AutoCloseable {
         }
     }
 
+    static final class PollResult {
+        final int code;
+        final PollBatch batch;
+
+        PollResult(int code, PollBatch batch) {
+            this.code = code;
+            this.batch = batch;
+        }
+    }
+
     static final class PollSlot {
         final ByteBuffer headerBuffer;
         final int headerCapacityInts;
@@ -613,11 +623,15 @@ public final class BifroRE implements AutoCloseable {
     }
 
     private boolean pollHeapBatch(MessageHandler handler, Executor executor) {
-        PollBatch batch = nativePollResultsBatch(handle, -1);
-        if (batch == null) {
+        PollResult result = nativePollResultsBatch(handle, -1);
+        if (result == null) {
             return false;
         }
-        if (batch.ruleIndexes.length == 0) {
+        if (result.code < BRE_OK) {
+            return false;
+        }
+        PollBatch batch = result.batch;
+        if (batch == null || batch.ruleIndexes.length == 0) {
             return true;
         }
         if (handler == null || executor == null) {
@@ -901,7 +915,7 @@ public final class BifroRE implements AutoCloseable {
         int keepAliveSecs,
         boolean multiNci
     );
-    private static native PollBatch nativePollResultsBatch(long handle, int timeoutMillis);
+    private static native PollResult nativePollResultsBatch(long handle, int timeoutMillis);
     private static native int nativePollResultsBatchDirect(
         long handle,
         int timeoutMillis,
