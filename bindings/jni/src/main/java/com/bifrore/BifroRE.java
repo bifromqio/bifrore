@@ -82,15 +82,11 @@ public final class BifroRE implements AutoCloseable {
     }
 
     static final class PollBatch {
-        final int[] ruleIndexes;
-        final int[] payloadOffsets;
-        final int[] payloadLengths;
+        final int[] headerTriples;
         final byte[] payloadData;
 
-        PollBatch(int[] ruleIndexes, int[] payloadOffsets, int[] payloadLengths, byte[] payloadData) {
-            this.ruleIndexes = ruleIndexes;
-            this.payloadOffsets = payloadOffsets;
-            this.payloadLengths = payloadLengths;
+        PollBatch(int[] headerTriples, byte[] payloadData) {
+            this.headerTriples = headerTriples;
             this.payloadData = payloadData;
         }
     }
@@ -631,16 +627,18 @@ public final class BifroRE implements AutoCloseable {
             return false;
         }
         PollBatch batch = result.batch;
-        if (batch == null || batch.ruleIndexes.length == 0) {
+        if (batch == null || batch.headerTriples.length == 0) {
             return true;
         }
         if (handler == null || executor == null) {
             return true;
         }
-        for (int i = 0; i < batch.ruleIndexes.length; i++) {
-            int ruleIndex = batch.ruleIndexes[i];
-            int payloadOffset = batch.payloadOffsets[i];
-            int payloadLength = batch.payloadLengths[i];
+        int stride = batch.headerTriples.length / 3;
+        for (int i = 0; i < stride; i++) {
+            int base = i * 3;
+            int ruleIndex = batch.headerTriples[base];
+            int payloadOffset = batch.headerTriples[base + 1];
+            int payloadLength = batch.headerTriples[base + 2];
             RuleMetadata metadata = metadataFor(ruleIndex);
             Runnable task = () -> {
                 try {
