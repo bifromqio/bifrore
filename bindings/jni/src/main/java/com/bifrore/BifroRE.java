@@ -60,6 +60,7 @@ public final class BifroRE implements AutoCloseable {
         void onMessage(int ruleIndex, byte[] payloadBlob, int offset, int length, RuleMetadata metadata);
     }
 
+    @Experimental("Async direct callback API is unstable and may change in future releases.")
     public interface AsyncDirectMessageHandler {
         CompletionStage<?> onMessage(
             int ruleIndex,
@@ -460,7 +461,7 @@ public final class BifroRE implements AutoCloseable {
         onNext(handler, null);
     }
 
-    public synchronized void onNext(MessageHandler handler, Executor executor) {
+    public void onNext(MessageHandler handler, Executor executor) {
         this.nextHandler = handler;
         this.nextAsyncDirectHandler = null;
         this.nextExecutor = executor != null ? executor : defaultMessageExecutor;
@@ -469,11 +470,13 @@ public final class BifroRE implements AutoCloseable {
         }
     }
 
+    @Experimental("Async direct callback API is unstable and may change in future releases.")
     public void onNextAsyncDirect(AsyncDirectMessageHandler handler) {
         onNextAsyncDirect(handler, null);
     }
 
-    public synchronized void onNextAsyncDirect(AsyncDirectMessageHandler handler, Executor executor) {
+    @Experimental("Async direct callback API is unstable and may change in future releases.")
+    public void onNextAsyncDirect(AsyncDirectMessageHandler handler, Executor executor) {
         this.nextAsyncDirectHandler = handler;
         this.nextHandler = null;
         this.nextExecutor = executor != null ? executor : defaultMessageExecutor;
