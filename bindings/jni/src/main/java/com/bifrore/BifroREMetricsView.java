@@ -107,6 +107,10 @@ public final class BifroREMetricsView {
         return current().heapPollMessageCount;
     }
 
+    public double heapPollPayloadBytes() {
+        return current().heapPollPayloadBytes;
+    }
+
     public double heapPollNoDataCount() {
         return current().heapPollNoDataCount;
     }
@@ -160,6 +164,7 @@ public final class BifroREMetricsView {
         final long heapPollOperationFailedCount;
         final long heapPollUnknownErrorCount;
         final long heapPollMessageCount;
+        final long heapPollPayloadBytes;
         final long heapPollNoDataCount;
         final long shutdownDroppedCount;
         final long pollerTimeoutPendingCount;
@@ -187,6 +192,7 @@ public final class BifroREMetricsView {
             long heapPollOperationFailedCount,
             long heapPollUnknownErrorCount,
             long heapPollMessageCount,
+            long heapPollPayloadBytes,
             long heapPollNoDataCount,
             long shutdownDroppedCount,
             long pollerTimeoutPendingCount
@@ -213,13 +219,14 @@ public final class BifroREMetricsView {
             this.heapPollOperationFailedCount = heapPollOperationFailedCount;
             this.heapPollUnknownErrorCount = heapPollUnknownErrorCount;
             this.heapPollMessageCount = heapPollMessageCount;
+            this.heapPollPayloadBytes = heapPollPayloadBytes;
             this.heapPollNoDataCount = heapPollNoDataCount;
             this.shutdownDroppedCount = shutdownDroppedCount;
             this.pollerTimeoutPendingCount = pollerTimeoutPendingCount;
         }
 
         static ViewSnapshot empty() {
-            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
@@ -247,6 +254,7 @@ public final class BifroREMetricsView {
                 engine.heapPollOperationFailedCount(),
                 engine.heapPollUnknownErrorCount(),
                 engine.heapPollMessageCount(),
+                engine.heapPollPayloadBytes(),
                 engine.heapPollNoDataCount(),
                 engine.shutdownDroppedCount(),
                 engine.pollerTimeoutPendingCount()

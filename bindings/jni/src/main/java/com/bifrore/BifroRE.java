@@ -23,6 +23,8 @@ public final class BifroRE implements AutoCloseable {
     private static final long EXECUTOR_SHUTDOWN_TIMEOUT_MILLIS = 5000L;
     private static final long DROP_WARN_EVERY = 100L;
     private static final long DIRECT_SLOT_WAIT_MILLIS = 100L;
+    private static final long RETRYABLE_POLL_BACKOFF_INITIAL_MILLIS = 10L;
+    private static final long RETRYABLE_POLL_BACKOFF_MAX_MILLIS = 250L;
 
     static {
         NativeLibraryLoader.load();
@@ -118,6 +120,12 @@ public final class BifroRE implements AutoCloseable {
                 .order(ByteOrder.nativeOrder());
             this.messageCount = 0;
         }
+    }
+
+    private enum PollLoopAction {
+        CONTINUE,
+        BACKOFF,
+        STOP
     }
 
     public static final class MetricsSnapshot {
@@ -292,6 +300,7 @@ public final class BifroRE implements AutoCloseable {
     private volatile long heapPollOperationFailedCount;
     private volatile long heapPollUnknownErrorCount;
     private volatile long heapPollNoDataCount;
+    private volatile long heapPollPayloadBytes;
     private final AtomicLong pollerTimeoutPendingCount;
     private final AtomicLong shutdownDroppedCount;
     private volatile boolean mqttStarted;
@@ -409,6 +418,7 @@ public final class BifroRE implements AutoCloseable {
         this.heapPollOperationFailedCount = 0L;
         this.heapPollUnknownErrorCount = 0L;
         this.heapPollNoDataCount = 0L;
+        this.heapPollPayloadBytes = 0L;
         this.pollerTimeoutPendingCount = new AtomicLong();
         this.shutdownDroppedCount = new AtomicLong();
         this.defaultMessageExecutor = createDefaultMessageExecutor(this.callbackQueueCapacity);
@@ -575,6 +585,10 @@ public final class BifroRE implements AutoCloseable {
         return heapPollNoDataCount;
     }
 
+    public long heapPollPayloadBytes() {
+        return heapPollPayloadBytes;
+    }
+
     public long shutdownDroppedCount() {
         return shutdownDroppedCount.get();
     }
@@ -593,16 +607,28 @@ public final class BifroRE implements AutoCloseable {
         }
         pollRunning = true;
         pollThread = new Thread(() -> {
+            long retryablePollBackoffMillis = 0L;
             while (pollRunning && handle != 0) {
                 AsyncDirectMessageHandler asyncDirectHandler = nextAsyncDirectHandler;
+                PollLoopAction action;
                 if (asyncDirectHandler != null) {
-                    if (!pollDirectBatch(asyncDirectHandler, nextExecutor)) {
+                    action = pollDirectBatch(asyncDirectHandler, nextExecutor);
+                    if (action == PollLoopAction.STOP) {
                         break;
                     }
-                    continue;
+                } else {
+                    action = pollHeapBatch(nextHandler, nextExecutor);
+                    if (action == PollLoopAction.STOP) {
+                        break;
+                    }
                 }
-                if (!pollHeapBatch(nextHandler, nextExecutor)) {
-                    break;
+                if (action == PollLoopAction.BACKOFF) {
+                    retryablePollBackoffMillis = nextRetryablePollBackoffMillis(retryablePollBackoffMillis);
+                    if (!sleepRetryablePollBackoff(retryablePollBackoffMillis)) {
+                        break;
+                    }
+                } else {
+                    retryablePollBackoffMillis = 0L;
                 }
             }
             pollRunning = false;
@@ -666,6 +692,23 @@ public final class BifroRE implements AutoCloseable {
         return code == BRE_ERR_INVALID_ARGUMENT || code == BRE_ERR_INVALID_STATE;
     }
 
+    private static long nextRetryablePollBackoffMillis(long currentBackoffMillis) {
+        if (currentBackoffMillis <= 0L) {
+            return RETRYABLE_POLL_BACKOFF_INITIAL_MILLIS;
+        }
+        return Math.min(RETRYABLE_POLL_BACKOFF_MAX_MILLIS, currentBackoffMillis * 2L);
+    }
+
+    private boolean sleepRetryablePollBackoff(long backoffMillis) {
+        try {
+            Thread.sleep(backoffMillis);
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
     private void recordHeapPollErrorCode(int code) {
         heapPollErrorCount += 1;
         if (code == BRE_ERR_INVALID_ARGUMENT) {
@@ -679,28 +722,42 @@ public final class BifroRE implements AutoCloseable {
         }
     }
 
-    private boolean pollHeapBatch(MessageHandler handler, Executor executor) {
+    private PollLoopAction pollHeapBatch(MessageHandler handler, Executor executor) {
         if (handler == null) {
-            return true;
+            return PollLoopAction.CONTINUE;
         }
         PollResult result = nativePollResultsBatch(handle, -1);
         if (result.code < BRE_OK) {
             recordHeapPollErrorCode(result.code);
-            return !shouldStopPollerForHeapCode(result.code);
+            return shouldStopPollerForHeapCode(result.code) ? PollLoopAction.STOP : PollLoopAction.BACKOFF;
         }
         PollBatch batch = result.batch;
         if (batch == null || batch.headerTriples.length == 0) {
             heapPollNoDataCount += 1;
-            return true;
+            return PollLoopAction.CONTINUE;
         }
         int messageCount = batch.headerTriples.length / 3;
         heapPollMessageCount += messageCount;
+        heapPollPayloadBytes += batch.payloadData.length;
+        dispatchHeapBatch(batch, ruleMetadataTable, handler, executor);
+        return PollLoopAction.CONTINUE;
+    }
+
+    static void dispatchHeapBatch(
+        PollBatch batch,
+        RuleMetadata[] ruleMetadataTable,
+        MessageHandler handler,
+        Executor executor
+    ) {
+        int messageCount = batch.headerTriples.length / 3;
         for (int i = 0; i < messageCount; i++) {
             int base = i * 3;
             int ruleIndex = batch.headerTriples[base];
             int payloadOffset = batch.headerTriples[base + 1];
             int payloadLength = batch.headerTriples[base + 2];
-            RuleMetadata metadata = metadataFor(ruleIndex);
+            RuleMetadata metadata = ruleIndex >= 0 && ruleIndex < ruleMetadataTable.length
+                ? ruleMetadataTable[ruleIndex]
+                : null;
             Runnable task = () -> {
                 handler.onMessage(
                     ruleIndex,
@@ -716,16 +773,15 @@ public final class BifroRE implements AutoCloseable {
                 // rejection is already logged and counted by the default executor handler
             }
         }
-        return true;
     }
 
-    private boolean pollDirectBatch(AsyncDirectMessageHandler handler, Executor executor) {
+    private PollLoopAction pollDirectBatch(AsyncDirectMessageHandler handler, Executor executor) {
         if (executor == null) {
-            return true;
+            return PollLoopAction.CONTINUE;
         }
         PollSlot slot = acquireDirectSlot();
         if (slot == null) {
-            return true;
+            return PollLoopAction.CONTINUE;
         }
         int count = nativePollResultsBatchDirect(
             handle,
@@ -737,11 +793,11 @@ public final class BifroRE implements AutoCloseable {
         );
         if (count == BRE_ERR_INVALID_ARGUMENT || count == BRE_ERR_INVALID_STATE) {
             releaseDirectSlot(slot);
-            return false;
+            return PollLoopAction.STOP;
         }
         if (count == BRE_ERR_OPERATION_FAILED) {
             releaseDirectSlot(slot);
-            return true;
+            return PollLoopAction.BACKOFF;
         }
         if (count <= BRE_OK) {
             if (count == JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL) {
@@ -752,7 +808,7 @@ public final class BifroRE implements AutoCloseable {
                 LOGGER.warning("BifroRE direct header buffer is too small; increase pollBatchLimit or header sizing");
             }
             releaseDirectSlot(slot);
-            return count >= BRE_OK;
+            return count >= BRE_OK ? PollLoopAction.CONTINUE : PollLoopAction.BACKOFF;
         }
 
         slot.messageCount = count;
@@ -797,7 +853,7 @@ public final class BifroRE implements AutoCloseable {
                 releaseDirectSlotRef(slot);
             }
         }
-        return true;
+        return PollLoopAction.CONTINUE;
     }
 
     private PollSlot acquireDirectSlot() {
