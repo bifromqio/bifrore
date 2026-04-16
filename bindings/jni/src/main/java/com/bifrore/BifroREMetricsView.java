@@ -87,6 +87,22 @@ public final class BifroREMetricsView {
         return current().heapPollErrorCount;
     }
 
+    public double heapPollInvalidArgumentCount() {
+        return current().heapPollInvalidArgumentCount;
+    }
+
+    public double heapPollInvalidStateCount() {
+        return current().heapPollInvalidStateCount;
+    }
+
+    public double heapPollOperationFailedCount() {
+        return current().heapPollOperationFailedCount;
+    }
+
+    public double heapPollUnknownErrorCount() {
+        return current().heapPollUnknownErrorCount;
+    }
+
     public double heapPollMessageCount() {
         return current().heapPollMessageCount;
     }
@@ -139,6 +155,10 @@ public final class BifroREMetricsView {
         final long callbackPendingCount;
         final long callbackQueueDepth;
         final long heapPollErrorCount;
+        final long heapPollInvalidArgumentCount;
+        final long heapPollInvalidStateCount;
+        final long heapPollOperationFailedCount;
+        final long heapPollUnknownErrorCount;
         final long heapPollMessageCount;
         final long heapPollNoDataCount;
         final long shutdownDroppedCount;
@@ -162,6 +182,10 @@ public final class BifroREMetricsView {
             long callbackPendingCount,
             long callbackQueueDepth,
             long heapPollErrorCount,
+            long heapPollInvalidArgumentCount,
+            long heapPollInvalidStateCount,
+            long heapPollOperationFailedCount,
+            long heapPollUnknownErrorCount,
             long heapPollMessageCount,
             long heapPollNoDataCount,
             long shutdownDroppedCount,
@@ -184,6 +208,10 @@ public final class BifroREMetricsView {
             this.callbackPendingCount = callbackPendingCount;
             this.callbackQueueDepth = callbackQueueDepth;
             this.heapPollErrorCount = heapPollErrorCount;
+            this.heapPollInvalidArgumentCount = heapPollInvalidArgumentCount;
+            this.heapPollInvalidStateCount = heapPollInvalidStateCount;
+            this.heapPollOperationFailedCount = heapPollOperationFailedCount;
+            this.heapPollUnknownErrorCount = heapPollUnknownErrorCount;
             this.heapPollMessageCount = heapPollMessageCount;
             this.heapPollNoDataCount = heapPollNoDataCount;
             this.shutdownDroppedCount = shutdownDroppedCount;
@@ -191,7 +219,7 @@ public final class BifroREMetricsView {
         }
 
         static ViewSnapshot empty() {
-            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
@@ -214,6 +242,10 @@ public final class BifroREMetricsView {
                 engine.callbackPendingCount(),
                 engine.callbackQueueDepth(),
                 engine.heapPollErrorCount(),
+                engine.heapPollInvalidArgumentCount(),
+                engine.heapPollInvalidStateCount(),
+                engine.heapPollOperationFailedCount(),
+                engine.heapPollUnknownErrorCount(),
                 engine.heapPollMessageCount(),
                 engine.heapPollNoDataCount(),
                 engine.shutdownDroppedCount(),
