@@ -285,9 +285,10 @@ public final class BifroRE implements AutoCloseable {
     private final String groupName;
     private final RuleMetadata[] ruleMetadataTable;
     private final ArrayBlockingQueue<PollSlot> freeDirectSlots;
-    private final AtomicLong callbackSubmittedCount;
-    private final AtomicLong callbackCompletedCount;
     private final AtomicLong callbackDroppedCount;
+    private volatile long heapPollMessageCount;
+    private volatile long heapPollErrorCount;
+    private volatile long heapPollNoDataCount;
     private final AtomicLong pollerTimeoutPendingCount;
     private final AtomicLong shutdownDroppedCount;
     private volatile boolean mqttStarted;
@@ -397,9 +398,10 @@ public final class BifroRE implements AutoCloseable {
         this.ruleMetadataTable = metadataTable;
         this.freeDirectSlots = createDirectSlotPool(this.directPollSlotCount, Math.max(1, pollBatchLimit), this.directPayloadBufferBytes);
         this.logCallbackHandle = 0;
-        this.callbackSubmittedCount = new AtomicLong();
-        this.callbackCompletedCount = new AtomicLong();
         this.callbackDroppedCount = new AtomicLong();
+        this.heapPollMessageCount = 0L;
+        this.heapPollErrorCount = 0L;
+        this.heapPollNoDataCount = 0L;
         this.pollerTimeoutPendingCount = new AtomicLong();
         this.shutdownDroppedCount = new AtomicLong();
         this.defaultMessageExecutor = createDefaultMessageExecutor(this.callbackQueueCapacity);
@@ -542,6 +544,18 @@ public final class BifroRE implements AutoCloseable {
         return defaultMessageExecutor.getQueue().size();
     }
 
+    public long heapPollErrorCount() {
+        return heapPollErrorCount;
+    }
+
+    public long heapPollMessageCount() {
+        return heapPollMessageCount;
+    }
+
+    public long heapPollNoDataCount() {
+        return heapPollNoDataCount;
+    }
+
     public long shutdownDroppedCount() {
         return shutdownDroppedCount.get();
     }
@@ -615,47 +629,42 @@ public final class BifroRE implements AutoCloseable {
     }
 
     private long pendingCallbackCount() {
-        return Math.max(0L, callbackSubmittedCount.get() - callbackCompletedCount.get());
+        return Math.max(0L, defaultMessageExecutor.getTaskCount() - defaultMessageExecutor.getCompletedTaskCount());
     }
 
     private boolean pollHeapBatch(MessageHandler handler, Executor executor) {
         PollResult result = nativePollResultsBatch(handle, -1);
-        if (result == null) {
-            return false;
-        }
         if (result.code < BRE_OK) {
+            heapPollErrorCount += 1;
             return false;
         }
         PollBatch batch = result.batch;
         if (batch == null || batch.headerTriples.length == 0) {
+            heapPollNoDataCount += 1;
             return true;
         }
         if (handler == null || executor == null) {
             return true;
         }
-        int stride = batch.headerTriples.length / 3;
-        for (int i = 0; i < stride; i++) {
+        int messageCount = batch.headerTriples.length / 3;
+        heapPollMessageCount += messageCount;
+        for (int i = 0; i < messageCount; i++) {
             int base = i * 3;
             int ruleIndex = batch.headerTriples[base];
             int payloadOffset = batch.headerTriples[base + 1];
             int payloadLength = batch.headerTriples[base + 2];
             RuleMetadata metadata = metadataFor(ruleIndex);
             Runnable task = () -> {
-                try {
-                    handler.onMessage(
-                        ruleIndex,
-                        batch.payloadData,
-                        payloadOffset,
-                        payloadLength,
-                        metadata
-                    );
-                } finally {
-                    callbackCompletedCount.incrementAndGet();
-                }
+                handler.onMessage(
+                    ruleIndex,
+                    batch.payloadData,
+                    payloadOffset,
+                    payloadLength,
+                    metadata
+                );
             };
             try {
                 executor.execute(task);
-                callbackSubmittedCount.incrementAndGet();
             } catch (RejectedExecutionException ignored) {
                 // rejection is already logged and counted by the default executor handler
             }
@@ -717,17 +726,14 @@ public final class BifroRE implements AutoCloseable {
                         metadata
                     );
                 } catch (Throwable error) {
-                    callbackCompletedCount.incrementAndGet();
                     releaseDirectSlotRef(slot);
                     throw error;
                 }
                 if (stage == null) {
-                    callbackCompletedCount.incrementAndGet();
                     releaseDirectSlotRef(slot);
                     return;
                 }
                 stage.whenComplete((ignored, error) -> {
-                    callbackCompletedCount.incrementAndGet();
                     releaseDirectSlotRef(slot);
                     if (error != null) {
                         LOGGER.warning("BifroRE async direct handler completed exceptionally: " + error);
@@ -736,7 +742,6 @@ public final class BifroRE implements AutoCloseable {
             };
             try {
                 executor.execute(task);
-                callbackSubmittedCount.incrementAndGet();
             } catch (RejectedExecutionException ignored) {
                 releaseDirectSlotRef(slot);
             }
