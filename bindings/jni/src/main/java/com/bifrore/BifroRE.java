@@ -45,7 +45,6 @@ public final class BifroRE implements AutoCloseable {
     public static final int PAYLOAD_PROTOBUF = 2;
     private static final int NOTIFY_MODE_POLL = 0;
     public static final int BRE_OK = 0;
-    public static final int BRE_POLL_RESULT_READY = 1;
     public static final int BRE_ERR_INVALID_ARGUMENT = -1;
     public static final int BRE_ERR_INVALID_STATE = -2;
     public static final int BRE_ERR_OPERATION_FAILED = -3;
@@ -288,6 +287,10 @@ public final class BifroRE implements AutoCloseable {
     private final AtomicLong callbackDroppedCount;
     private volatile long heapPollMessageCount;
     private volatile long heapPollErrorCount;
+    private volatile long heapPollInvalidArgumentCount;
+    private volatile long heapPollInvalidStateCount;
+    private volatile long heapPollOperationFailedCount;
+    private volatile long heapPollUnknownErrorCount;
     private volatile long heapPollNoDataCount;
     private final AtomicLong pollerTimeoutPendingCount;
     private final AtomicLong shutdownDroppedCount;
@@ -401,6 +404,10 @@ public final class BifroRE implements AutoCloseable {
         this.callbackDroppedCount = new AtomicLong();
         this.heapPollMessageCount = 0L;
         this.heapPollErrorCount = 0L;
+        this.heapPollInvalidArgumentCount = 0L;
+        this.heapPollInvalidStateCount = 0L;
+        this.heapPollOperationFailedCount = 0L;
+        this.heapPollUnknownErrorCount = 0L;
         this.heapPollNoDataCount = 0L;
         this.pollerTimeoutPendingCount = new AtomicLong();
         this.shutdownDroppedCount = new AtomicLong();
@@ -544,6 +551,22 @@ public final class BifroRE implements AutoCloseable {
         return heapPollErrorCount;
     }
 
+    public long heapPollInvalidArgumentCount() {
+        return heapPollInvalidArgumentCount;
+    }
+
+    public long heapPollInvalidStateCount() {
+        return heapPollInvalidStateCount;
+    }
+
+    public long heapPollOperationFailedCount() {
+        return heapPollOperationFailedCount;
+    }
+
+    public long heapPollUnknownErrorCount() {
+        return heapPollUnknownErrorCount;
+    }
+
     public long heapPollMessageCount() {
         return heapPollMessageCount;
     }
@@ -639,14 +662,31 @@ public final class BifroRE implements AutoCloseable {
         return Math.max(0L, defaultMessageExecutor.getTaskCount() - defaultMessageExecutor.getCompletedTaskCount());
     }
 
+    private boolean shouldStopPollerForHeapCode(int code) {
+        return code == BRE_ERR_INVALID_ARGUMENT || code == BRE_ERR_INVALID_STATE;
+    }
+
+    private void recordHeapPollErrorCode(int code) {
+        heapPollErrorCount += 1;
+        if (code == BRE_ERR_INVALID_ARGUMENT) {
+            heapPollInvalidArgumentCount += 1;
+        } else if (code == BRE_ERR_INVALID_STATE) {
+            heapPollInvalidStateCount += 1;
+        } else if (code == BRE_ERR_OPERATION_FAILED) {
+            heapPollOperationFailedCount += 1;
+        } else {
+            heapPollUnknownErrorCount += 1;
+        }
+    }
+
     private boolean pollHeapBatch(MessageHandler handler, Executor executor) {
         if (handler == null) {
             return true;
         }
         PollResult result = nativePollResultsBatch(handle, -1);
         if (result.code < BRE_OK) {
-            heapPollErrorCount += 1;
-            return false;
+            recordHeapPollErrorCode(result.code);
+            return !shouldStopPollerForHeapCode(result.code);
         }
         PollBatch batch = result.batch;
         if (batch == null || batch.headerTriples.length == 0) {
@@ -695,9 +735,13 @@ public final class BifroRE implements AutoCloseable {
             slot.payloadBuffer,
             slot.payloadCapacityBytes
         );
-        if (count == BRE_ERR_OPERATION_FAILED) {
+        if (count == BRE_ERR_INVALID_ARGUMENT || count == BRE_ERR_INVALID_STATE) {
             releaseDirectSlot(slot);
             return false;
+        }
+        if (count == BRE_ERR_OPERATION_FAILED) {
+            releaseDirectSlot(slot);
+            return true;
         }
         if (count <= BRE_OK) {
             if (count == JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL) {
