@@ -83,6 +83,18 @@ public final class BifroREMetricsView {
         return current().callbackQueueDepth;
     }
 
+    public double heapPollErrorCount() {
+        return current().heapPollErrorCount;
+    }
+
+    public double heapPollMessageCount() {
+        return current().heapPollMessageCount;
+    }
+
+    public double heapPollNoDataCount() {
+        return current().heapPollNoDataCount;
+    }
+
     public double shutdownDroppedCount() {
         return current().shutdownDroppedCount;
     }
@@ -126,6 +138,9 @@ public final class BifroREMetricsView {
         final long callbackDroppedCount;
         final long callbackPendingCount;
         final long callbackQueueDepth;
+        final long heapPollErrorCount;
+        final long heapPollMessageCount;
+        final long heapPollNoDataCount;
         final long shutdownDroppedCount;
         final long pollerTimeoutPendingCount;
 
@@ -146,6 +161,9 @@ public final class BifroREMetricsView {
             long callbackDroppedCount,
             long callbackPendingCount,
             long callbackQueueDepth,
+            long heapPollErrorCount,
+            long heapPollMessageCount,
+            long heapPollNoDataCount,
             long shutdownDroppedCount,
             long pollerTimeoutPendingCount
         ) {
@@ -165,12 +183,15 @@ public final class BifroREMetricsView {
             this.callbackDroppedCount = callbackDroppedCount;
             this.callbackPendingCount = callbackPendingCount;
             this.callbackQueueDepth = callbackQueueDepth;
+            this.heapPollErrorCount = heapPollErrorCount;
+            this.heapPollMessageCount = heapPollMessageCount;
+            this.heapPollNoDataCount = heapPollNoDataCount;
             this.shutdownDroppedCount = shutdownDroppedCount;
             this.pollerTimeoutPendingCount = pollerTimeoutPendingCount;
         }
 
         static ViewSnapshot empty() {
-            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
@@ -192,6 +213,9 @@ public final class BifroREMetricsView {
                 engine.callbackDroppedCount(),
                 engine.callbackPendingCount(),
                 engine.callbackQueueDepth(),
+                engine.heapPollErrorCount(),
+                engine.heapPollMessageCount(),
+                engine.heapPollNoDataCount(),
                 engine.shutdownDroppedCount(),
                 engine.pollerTimeoutPendingCount()
             );
