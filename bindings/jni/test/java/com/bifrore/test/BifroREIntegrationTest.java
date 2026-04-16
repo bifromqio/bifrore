@@ -119,11 +119,15 @@ final class BifroREIntegrationTest {
 
         try (BifroRE engine = new BifroRE(
             baseOptions(rulePath, clientIdsDir, "itest-protobuf-" + UUID.randomUUID())
-                .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
-                .protobufDescriptorSetPath(descriptorPath)
-                .protobufMessageName("example.telemetry.Envelope")
-                .directPollSlotCount(2)
-                .directPayloadBufferBytes(1024 * 256)
+                .ffi(ffi -> ffi
+                    .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
+                    .protobufDescriptorSetPath(descriptorPath)
+                    .protobufMessageName("example.telemetry.Envelope")
+                )
+                .jvm(jvm -> jvm
+                    .directPollSlotCount(2)
+                    .directPayloadBufferBytes(1024 * 256)
+                )
         )) {
             engine.onNextAsyncDirect((ruleIndex, payloadBuffer, offset, length, metadata) -> {
                 try {
@@ -175,8 +179,10 @@ final class BifroREIntegrationTest {
 
         try (BifroRE engine = new BifroRE(
             baseOptions(rulePath, clientIdsDir, groupName)
-                .cleanStart(false)
-                .sessionExpiryInterval(3600)
+                .mqtt(mqtt -> mqtt
+                    .cleanStart(false)
+                    .sessionExpiryInterval(3600)
+                )
         )) {
             CountDownLatch latch = new CountDownLatch(2);
             AtomicInteger callbackCount = new AtomicInteger();

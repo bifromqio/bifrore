@@ -6,7 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
 
 usage() {
-  echo "Usage: ./build.sh [java|jni|jni-test|python|all|bench|bench-diff] [benchmark_name]"
+  echo "Usage: ./build.sh [java|jni|jni-test|java-bench|python|all|bench|bench-diff] [args]"
   exit 1
 }
 
@@ -16,6 +16,7 @@ fi
 
 TARGET="$1"
 BENCH_FILTER="${2:-}"
+EXTRA_ARGS=("${@:2}")
 
 OS_NAME="$(uname -s)"
 case "$OS_NAME" in
@@ -318,6 +319,27 @@ if (protobufNames.length === 0) {
 ' "$serde_dir" "$simd_dir"
 }
 
+run_java_bench() {
+  echo "Running Java JMH benchmarks..."
+  local maven_repo_local="$ROOT_DIR/.m2-bench"
+  local classpath_file="$BUILD_DIR/java-bench-classpath.txt"
+  local test_classes_dir="$ROOT_DIR/bindings/jni/test/target/test-classes"
+  mkdir -p "$maven_repo_local"
+  mvn -q org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
+    -Dmaven.repo.local="$maven_repo_local" \
+    -Dfile="$BUILD_DIR/bifrore-java.jar" \
+    -DgroupId=com.bifrore \
+    -DartifactId=bifrore-java \
+    -Dversion=0.1.0 \
+    -Dpackaging=jar
+  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -f bindings/jni/test/pom.xml -DskipTests test-compile)
+  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -f bindings/jni/test/pom.xml \
+    org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+    -Dmdep.outputFile="$classpath_file" \
+    -DincludeScope=test)
+  java -cp "$test_classes_dir:$(cat "$classpath_file")" org.openjdk.jmh.Main "${EXTRA_ARGS[@]}"
+}
+
 case "$TARGET" in
   jni)
     build_rust
@@ -330,6 +352,12 @@ case "$TARGET" in
     build_rust
     build_jni
     build_java_jar
+    ;;
+  java-bench)
+    build_rust
+    build_jni
+    build_java_jar
+    run_java_bench
     ;;
   python)
     build_rust

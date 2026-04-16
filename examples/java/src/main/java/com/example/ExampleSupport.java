@@ -62,12 +62,16 @@ final class ExampleSupport {
         BifroREMetricsView metrics = new BifroREMetricsView(engine);
         Gauge.builder("bifrore_eval_count", metrics, BifroREMetricsView::evalCount).register(registry);
         Gauge.builder("bifrore_eval_error_count", metrics, BifroREMetricsView::evalErrorCount).register(registry);
-        Gauge.builder("bifrore_eval_total_nanos", metrics, BifroREMetricsView::evalTotalNanos).register(registry);
-        Gauge.builder("bifrore_eval_max_nanos", metrics, BifroREMetricsView::evalMaxNanos).register(registry);
-        Gauge.builder("bifrore_eval_avg_nanos", metrics, BifroREMetricsView::evalAvgNanos).register(registry);
+        Gauge.builder("bifrore_message_pipeline_total_nanos", metrics, BifroREMetricsView::messagePipelineTotalNanos).register(registry);
+        Gauge.builder("bifrore_message_pipeline_max_nanos", metrics, BifroREMetricsView::messagePipelineMaxNanos).register(registry);
+        Gauge.builder("bifrore_exec_total_nanos", metrics, BifroREMetricsView::execTotalNanos).register(registry);
+        Gauge.builder("bifrore_exec_max_nanos", metrics, BifroREMetricsView::execMaxNanos).register(registry);
         Gauge.builder("bifrore_callback_dropped_count", metrics, BifroREMetricsView::callbackDroppedCount).register(registry);
         Gauge.builder("bifrore_callback_pending_count", metrics, BifroREMetricsView::callbackPendingCount).register(registry);
         Gauge.builder("bifrore_callback_queue_depth", metrics, BifroREMetricsView::callbackQueueDepth).register(registry);
+        Gauge.builder("bifrore_heap_poll_message_count", metrics, BifroREMetricsView::heapPollMessageCount).register(registry);
+        Gauge.builder("bifrore_heap_poll_payload_bytes", metrics, BifroREMetricsView::heapPollPayloadBytes).register(registry);
+        Gauge.builder("bifrore_heap_poll_error_count", metrics, BifroREMetricsView::heapPollErrorCount).register(registry);
         Gauge.builder("bifrore_poller_timeout_pending_count", metrics, BifroREMetricsView::pollerTimeoutPendingCount).register(registry);
         Gauge.builder("bifrore_shutdown_dropped_count", metrics, BifroREMetricsView::shutdownDroppedCount).register(registry);
     }
