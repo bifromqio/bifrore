@@ -1,374 +1,9 @@
-#include <jni.h>
-#include <pthread.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
+#include "bifrore_jni_common.h"
 
-struct BifroPackedEvalResults {
-    uint32_t *rule_indices;
-    uint32_t *payload_offsets;
-    uint32_t *payload_lengths;
-    unsigned char *payload_data;
-    size_t len;
-    size_t payload_data_len;
-};
-
-struct BifroRuleMetadata {
-    uint16_t rule_index;
-    char **destinations;
-    size_t destinations_len;
-};
-
-struct BifroREMetricsSnapshot {
-    uint64_t ingress_message_count;
-    uint64_t core_queue_depth;
-    uint64_t core_queue_depth_max;
-    uint64_t core_queue_drop_count;
-    uint64_t ffi_queue_depth;
-    uint64_t ffi_queue_depth_max;
-    uint64_t ffi_queue_drop_count;
-    uint64_t message_pipeline_count;
-    uint64_t message_pipeline_total_nanos;
-    uint64_t message_pipeline_max_nanos;
-    uint64_t eval_count;
-    uint64_t eval_error_count;
-    uint64_t exec_count;
-    uint64_t exec_total_nanos;
-    uint64_t exec_max_nanos;
-    uint64_t topic_match_count;
-    uint64_t topic_match_total_nanos;
-    uint64_t topic_match_max_nanos;
-    uint64_t payload_decode_count;
-    uint64_t payload_decode_total_nanos;
-    uint64_t payload_decode_max_nanos;
-    uint64_t msg_ir_build_count;
-    uint64_t msg_ir_build_total_nanos;
-    uint64_t msg_ir_build_max_nanos;
-    uint64_t fast_where_count;
-    uint64_t fast_where_total_nanos;
-    uint64_t fast_where_max_nanos;
-    uint64_t predicate_count;
-    uint64_t predicate_total_nanos;
-    uint64_t predicate_max_nanos;
-    uint64_t projection_count;
-    uint64_t projection_total_nanos;
-    uint64_t projection_max_nanos;
-};
-
-// FFI functions from Rust cdylib
-extern void *bre_create_engine(
-    const char *path,
-    int payload_format,
-    const char *client_ids_path,
-    int notify_mode,
-    const char *protobuf_descriptor_set_path,
-    const char *protobuf_message_name);
-extern void bre_destroy(void *engine);
-extern int bre_disconnect(void *engine);
-extern int bre_start_mqtt(
-    void *engine,
-    const char *host,
-    uint16_t port,
-    const char *node_id,
-    uint16_t client_count,
-    const char *username,
-    const char *password,
-    jboolean clean_start,
-    uint32_t session_expiry_interval,
-    const char *group_name,
-    jboolean ordered,
-    const char *ordered_prefix,
-    uint16_t keep_alive_secs,
-    jboolean multi_nci);
-extern int bre_poll_eval_results_packed(
-    void *engine,
-    uint32_t timeout_millis,
-    struct BifroPackedEvalResults *out_results);
-extern void bre_free_packed_eval_results(struct BifroPackedEvalResults *results);
-extern int bre_get_rule_metadata_table(
-    void *engine,
-    struct BifroRuleMetadata **out_metadata,
-    size_t *out_len);
-extern void bre_free_rule_metadata_table(struct BifroRuleMetadata *metadata, size_t len);
-extern int bre_set_log_callback(
-    void (*callback)(void *, int, const char *, const char *, uint64_t, const char *, const char *, const char *, uint32_t),
-    void *user_data,
-    int min_level);
-extern int bre_metrics_snapshot(
-    void *engine,
-    struct BifroREMetricsSnapshot *out_snapshot);
-extern int bre_set_poll_batch_limit(void *engine, uint32_t limit);
-extern int bre_set_detailed_latency_metrics(void *engine, jboolean enabled);
-
-struct LogCallbackCtx {
-    JavaVM *jvm;
-    jobject handler;
-    jmethodID on_log;
-};
-
-struct JniClassCache {
-    jclass poll_result_cls;
-    jmethodID poll_result_ctor;
-    jclass poll_batch_cls;
-    jmethodID poll_batch_ctor;
-    jclass rule_metadata_cls;
-    jmethodID rule_metadata_ctor;
-};
-
-struct DirectPendingBatch {
-    struct BifroPackedEvalResults results;
-    size_t next_index;
-    size_t remaining_messages;
-    size_t remaining_payload_bytes;
-};
-
-static struct JniClassCache JNI_CACHE = {0};
-static JavaVM *JNI_CACHE_JVM = NULL;
-static pthread_once_t JNI_CACHE_ONCE = PTHREAD_ONCE_INIT;
-static int JNI_CACHE_INIT_OK = 0;
-static struct DirectPendingBatch DIRECT_PENDING = {0};
-static int DIRECT_PENDING_ACTIVE = 0;
-static const size_t DIRECT_MERGE_PAYLOAD_NUM = 1;
-static const size_t DIRECT_MERGE_PAYLOAD_DEN = 4;
-static const size_t DIRECT_MERGE_HEADER_NUM = 1;
-static const size_t DIRECT_MERGE_HEADER_DEN = 4;
-
-static const int BRE_OK = 0;
-static const int BRE_POLL_RESULT_READY = 1;
-static const int BRE_ERR_INVALID_ARGUMENT = -1;
-static const int BRE_ERR_INVALID_STATE = -2;
-static const int BRE_ERR_OPERATION_FAILED = -3;
-static const int BRE_ERR_START_FAILED = -4;
-static const int BRE_ERR_ALREADY_STARTED = -5;
-
-static const int JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL = -4;
-static const int JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL = -5;
-
-static struct DirectPendingBatch *find_pending_batch(void) {
-    if (DIRECT_PENDING_ACTIVE) {
-        return &DIRECT_PENDING;
-    }
-    return NULL;
-}
-
-static void clear_pending_batch(void) {
-    if (DIRECT_PENDING_ACTIVE) {
-        bre_free_packed_eval_results(&DIRECT_PENDING.results);
-        memset(&DIRECT_PENDING, 0, sizeof(DIRECT_PENDING));
-        DIRECT_PENDING_ACTIVE = 0;
-    }
-}
-
-static struct DirectPendingBatch *store_pending_batch(
-    struct BifroPackedEvalResults *results) {
-    clear_pending_batch();
-    DIRECT_PENDING.results = *results;
-    DIRECT_PENDING.next_index = 0;
-    DIRECT_PENDING.remaining_messages = results->len;
-    DIRECT_PENDING.remaining_payload_bytes = results->payload_data_len;
-    DIRECT_PENDING_ACTIVE = 1;
-    results->rule_indices = NULL;
-    results->payload_offsets = NULL;
-    results->payload_lengths = NULL;
-    results->payload_data = NULL;
-    results->len = 0;
-    results->payload_data_len = 0;
-    return &DIRECT_PENDING;
-}
-
-static struct DirectPendingBatch *store_pending_batch_with_index(
-    struct BifroPackedEvalResults *results,
-    size_t next_index) {
-    clear_pending_batch();
-    DIRECT_PENDING.results = *results;
-    DIRECT_PENDING.next_index = next_index;
-    DIRECT_PENDING.remaining_messages = next_index >= results->len ? 0 : results->len - next_index;
-    DIRECT_PENDING.remaining_payload_bytes = next_index >= results->len
-        ? 0
-        : results->payload_data_len - (size_t)results->payload_offsets[next_index];
-    DIRECT_PENDING_ACTIVE = 1;
-    results->rule_indices = NULL;
-    results->payload_offsets = NULL;
-    results->payload_lengths = NULL;
-    results->payload_data = NULL;
-    results->len = 0;
-    results->payload_data_len = 0;
-    return &DIRECT_PENDING;
-}
-
-static int should_merge_pending_batch(
-    const struct DirectPendingBatch *batch,
-    size_t header_capacity_records,
-    size_t payload_capacity_bytes) {
-    return batch->remaining_messages > 0
-        && batch->remaining_payload_bytes * DIRECT_MERGE_PAYLOAD_DEN < payload_capacity_bytes * DIRECT_MERGE_PAYLOAD_NUM
-        && batch->remaining_messages * DIRECT_MERGE_HEADER_DEN < header_capacity_records * DIRECT_MERGE_HEADER_NUM;
-}
-
-static int copy_batch_to_direct_buffers(
-    const struct BifroPackedEvalResults *results,
-    size_t *next_index,
-    uint32_t *header_ptr,
-    size_t header_capacity_records,
-    unsigned char *payload_ptr,
-    size_t payload_capacity_bytes,
-    size_t *emitted,
-    size_t *payload_offset,
-    size_t *copied_messages,
-    size_t *copied_payload_bytes) {
-    if (*next_index >= results->len) {
-        return BRE_OK;
-    }
-    if (header_capacity_records == 0) {
-        return JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL;
-    }
-    size_t first_length = (size_t)results->payload_lengths[*next_index];
-    if (*emitted == 0 && *payload_offset == 0 && first_length > payload_capacity_bytes) {
-        return JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL;
-    }
-
-    while (*next_index < results->len && *emitted < header_capacity_records) {
-        size_t idx = *next_index;
-        size_t payload_length = (size_t)results->payload_lengths[idx];
-        if (*payload_offset + payload_length > payload_capacity_bytes) {
-            break;
-        }
-        header_ptr[*emitted * 3] = results->rule_indices[idx];
-        header_ptr[*emitted * 3 + 1] = (uint32_t)(*payload_offset);
-        header_ptr[*emitted * 3 + 2] = results->payload_lengths[idx];
-        if (payload_length > 0) {
-            memcpy(
-                payload_ptr + *payload_offset,
-                results->payload_data + results->payload_offsets[idx],
-                payload_length
-            );
-        }
-        *payload_offset += payload_length;
-        *emitted += 1;
-        *next_index += 1;
-        if (copied_messages != NULL) {
-            *copied_messages += 1;
-        }
-        if (copied_payload_bytes != NULL) {
-            *copied_payload_bytes += payload_length;
-        }
-    }
-    return BRE_OK;
-}
-
-static int poll_results_batch_direct_core(
-    void *engine,
-    uint32_t timeout_millis,
-    uint32_t *header_ptr,
-    size_t header_capacity_records,
-    unsigned char *payload_ptr,
-    size_t payload_capacity_bytes) {
-    struct DirectPendingBatch *pending = find_pending_batch();
-    if (pending != NULL) {
-        int merge_pending = should_merge_pending_batch(
-            pending,
-            header_capacity_records,
-            payload_capacity_bytes
-        );
-        size_t emitted = 0;
-        size_t payload_offset = 0;
-        size_t copied_messages = 0;
-        size_t copied_payload_bytes = 0;
-        int rc = copy_batch_to_direct_buffers(
-            &pending->results,
-            &pending->next_index,
-            header_ptr,
-            header_capacity_records,
-            payload_ptr,
-            payload_capacity_bytes,
-            &emitted,
-            &payload_offset,
-            &copied_messages,
-            &copied_payload_bytes
-        );
-        if (rc < BRE_OK) {
-            return rc;
-        }
-        pending->remaining_messages -= copied_messages;
-        pending->remaining_payload_bytes -= copied_payload_bytes;
-        if (pending->next_index >= pending->results.len) {
-            clear_pending_batch();
-        }
-        if (merge_pending && emitted < header_capacity_records && payload_offset < payload_capacity_bytes) {
-            struct BifroPackedEvalResults fetched = {0};
-            int fetch_rc = bre_poll_eval_results_packed(engine, 0, &fetched);
-            if (fetch_rc > 0 && fetched.len > 0) {
-                size_t fetched_index = 0;
-                copied_messages = 0;
-                copied_payload_bytes = 0;
-                rc = copy_batch_to_direct_buffers(
-                    &fetched,
-                    &fetched_index,
-                    header_ptr,
-                    header_capacity_records,
-                    payload_ptr,
-                    payload_capacity_bytes,
-                    &emitted,
-                    &payload_offset,
-                    &copied_messages,
-                    &copied_payload_bytes
-                );
-                if (rc < BRE_OK && emitted == 0) {
-                    bre_free_packed_eval_results(&fetched);
-                    return rc;
-                }
-                if (fetched_index < fetched.len) {
-                    store_pending_batch_with_index(&fetched, fetched_index);
-                } else {
-                    bre_free_packed_eval_results(&fetched);
-                }
-            } else if (fetched.len > 0) {
-                bre_free_packed_eval_results(&fetched);
-            }
-        }
-        return (int)emitted;
-    }
-
-    struct BifroPackedEvalResults fetched = {0};
-    int rc = bre_poll_eval_results_packed(engine, timeout_millis, &fetched);
-    if (rc < BRE_OK || fetched.len == 0) {
-        if (fetched.len > 0) {
-            bre_free_packed_eval_results(&fetched);
-        }
-        return rc;
-    }
-
-    size_t fetched_index = 0;
-    size_t emitted = 0;
-    size_t payload_offset = 0;
-    size_t copied_messages = 0;
-    size_t copied_payload_bytes = 0;
-    rc = copy_batch_to_direct_buffers(
-        &fetched,
-        &fetched_index,
-        header_ptr,
-        header_capacity_records,
-        payload_ptr,
-        payload_capacity_bytes,
-        &emitted,
-        &payload_offset,
-        &copied_messages,
-        &copied_payload_bytes
-    );
-    if (rc < BRE_OK) {
-        bre_free_packed_eval_results(&fetched);
-        return rc;
-    }
-    if (fetched_index < fetched.len) {
-        if (store_pending_batch_with_index(&fetched, fetched_index) == NULL) {
-            bre_free_packed_eval_results(&fetched);
-            return BRE_ERR_INVALID_ARGUMENT;
-        }
-    } else {
-        bre_free_packed_eval_results(&fetched);
-    }
-    return (int)emitted;
-}
+struct JniClassCache JNI_CACHE = {0};
+JavaVM *JNI_CACHE_JVM = NULL;
+pthread_once_t JNI_CACHE_ONCE = PTHREAD_ONCE_INIT;
+int JNI_CACHE_INIT_OK = 0;
 
 static void init_jni_cache_once(void) {
     if (JNI_CACHE_JVM == NULL) {
@@ -440,7 +75,7 @@ static void init_jni_cache_once(void) {
     JNI_CACHE_INIT_OK = 1;
 }
 
-static int ensure_jni_cache(JNIEnv *env) {
+int ensure_jni_cache(JNIEnv *env) {
     if (JNI_CACHE_INIT_OK) {
         return 1;
     }
@@ -507,16 +142,6 @@ static void call_java_log_handler(
         (*env)->DeleteLocalRef(env, file_str);
     }
 }
-
-JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
-    JNIEnv *env,
-    jclass cls,
-    jstring path,
-    jint payload_format,
-    jstring client_ids_path,
-    jint notify_mode,
-    jstring protobuf_descriptor_set_path,
-    jstring protobuf_message_name);
 
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
     JNIEnv *env,
@@ -656,153 +281,6 @@ JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeStartMqtt(
     return rc;
 }
 
-JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
-    JNIEnv *env,
-    jclass cls,
-    jlong handle,
-    jint timeout_millis) {
-    (void)cls;
-    if (!ensure_jni_cache(env)) {
-        return NULL;
-    }
-    if (handle == 0) {
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_INVALID_ARGUMENT,
-            NULL
-        );
-    }
-
-    struct BifroPackedEvalResults results = {0};
-    int rc = bre_poll_eval_results_packed(
-        (void *)handle,
-        (uint32_t)timeout_millis,
-        &results);
-    if (rc < BRE_OK || results.len == 0) {
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)rc,
-            NULL
-        );
-    }
-    if (results.len > (size_t)INT32_MAX || results.payload_data_len > (size_t)INT32_MAX) {
-        bre_free_packed_eval_results(&results);
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_OPERATION_FAILED,
-            NULL
-        );
-    }
-
-    size_t header_len = results.len * 3;
-    jintArray header_triples = (*env)->NewIntArray(env, (jsize)header_len);
-    jbyteArray payload_data = (*env)->NewByteArray(env, (jsize)results.payload_data_len);
-    if (header_triples == NULL || payload_data == NULL) {
-        if (header_triples != NULL) {
-            (*env)->DeleteLocalRef(env, header_triples);
-        }
-        if (payload_data != NULL) {
-            (*env)->DeleteLocalRef(env, payload_data);
-        }
-        bre_free_packed_eval_results(&results);
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_OPERATION_FAILED,
-            NULL
-        );
-    }
-    jint *header_values = (jint *)malloc(sizeof(jint) * header_len);
-    if (header_values == NULL) {
-        (*env)->DeleteLocalRef(env, header_triples);
-        (*env)->DeleteLocalRef(env, payload_data);
-        bre_free_packed_eval_results(&results);
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_OPERATION_FAILED,
-            NULL
-        );
-    }
-    for (size_t idx = 0; idx < results.len; idx++) {
-        size_t base = idx * 3;
-        header_values[base] = (jint)results.rule_indices[idx];
-        header_values[base + 1] = (jint)results.payload_offsets[idx];
-        header_values[base + 2] = (jint)results.payload_lengths[idx];
-    }
-    (*env)->SetIntArrayRegion(env, header_triples, 0, (jsize)header_len, header_values);
-    free(header_values);
-    if (results.payload_data_len > 0) {
-        (*env)->SetByteArrayRegion(
-            env,
-            payload_data,
-            0,
-            (jsize)results.payload_data_len,
-            (const jbyte *)results.payload_data
-        );
-    }
-
-    jobject batch = (*env)->NewObject(
-        env,
-        JNI_CACHE.poll_batch_cls,
-        JNI_CACHE.poll_batch_ctor,
-        header_triples,
-        payload_data
-    );
-    (*env)->DeleteLocalRef(env, header_triples);
-    (*env)->DeleteLocalRef(env, payload_data);
-    bre_free_packed_eval_results(&results);
-    jobject result = (*env)->NewObject(
-        env,
-        JNI_CACHE.poll_result_cls,
-        JNI_CACHE.poll_result_ctor,
-        (jint)rc,
-        batch
-    );
-    if (batch != NULL) {
-        (*env)->DeleteLocalRef(env, batch);
-    }
-    return result;
-}
-
-JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatchDirect(
-    JNIEnv *env,
-    jclass cls,
-    jlong handle,
-    jint timeout_millis,
-    jobject header_buffer,
-    jint header_capacity_ints,
-    jobject payload_buffer,
-    jint payload_capacity_bytes) {
-    (void)cls;
-    if (handle == 0 || header_buffer == NULL || payload_buffer == NULL) {
-        return BRE_ERR_INVALID_ARGUMENT;
-    }
-
-    uint32_t *header_ptr = (uint32_t *)(*env)->GetDirectBufferAddress(env, header_buffer);
-    unsigned char *payload_ptr = (unsigned char *)(*env)->GetDirectBufferAddress(env, payload_buffer);
-    if (header_ptr == NULL || payload_ptr == NULL || header_capacity_ints <= 0 || payload_capacity_bytes <= 0) {
-        return BRE_ERR_INVALID_ARGUMENT;
-    }
-    size_t header_capacity_records = (size_t)header_capacity_ints / 3;
-    return poll_results_batch_direct_core(
-        (void *)handle,
-        (uint32_t)timeout_millis,
-        header_ptr,
-        header_capacity_records,
-        payload_ptr,
-        (size_t)payload_capacity_bytes
-    );
-}
-
 JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(
     JNIEnv *env,
     jclass cls,
@@ -841,6 +319,36 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeRegisterLogHandler(
     return (jlong)ctx;
 }
 
+JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetLogCallback(
+    JNIEnv *env,
+    jclass cls,
+    jlong callback_handle,
+    jint min_level) {
+    (void)env;
+    (void)cls;
+    struct LogCallbackCtx *ctx = (struct LogCallbackCtx *)callback_handle;
+    return bre_set_log_callback(
+        ctx == NULL ? NULL : call_java_log_handler,
+        ctx,
+        (int)min_level
+    );
+}
+
+JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeFreeLogHandler(
+    JNIEnv *env,
+    jclass cls,
+    jlong callback_handle) {
+    (void)cls;
+    struct LogCallbackCtx *ctx = (struct LogCallbackCtx *)callback_handle;
+    if (ctx == NULL) {
+        return;
+    }
+    if (ctx->handler != NULL) {
+        (*env)->DeleteGlobalRef(env, ctx->handler);
+    }
+    free(ctx);
+}
+
 JNIEXPORT jlongArray JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshotValues(
     JNIEnv *env,
     jclass cls,
@@ -851,9 +359,7 @@ JNIEXPORT jlongArray JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshotValue
     }
 
     struct BifroREMetricsSnapshot snapshot;
-    if (bre_metrics_snapshot(
-            (void *)handle,
-            &snapshot) != 0) {
+    if (bre_metrics_snapshot((void *)handle, &snapshot) != 0) {
         return NULL;
     }
     jlong values[] = {
@@ -983,40 +489,14 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTab
             (jint)record->rule_index,
             destinations
         );
+        if (destinations != NULL) {
+            (*env)->DeleteLocalRef(env, destinations);
+        }
         if (obj != NULL) {
             (*env)->SetObjectArrayElement(env, array, (jsize)i, obj);
             (*env)->DeleteLocalRef(env, obj);
         }
-        if (destinations) {
-            (*env)->DeleteLocalRef(env, destinations);
-        }
     }
-    (*env)->DeleteLocalRef(env, string_cls);
     bre_free_rule_metadata_table(metadata, metadata_len);
     return array;
-}
-
-JNIEXPORT void JNICALL Java_com_bifrore_BifroRE_nativeFreeLogHandler(JNIEnv *env, jclass cls, jlong cb_handle) {
-    (void)cls;
-    if (cb_handle == 0) {
-        return;
-    }
-    struct LogCallbackCtx *ctx = (struct LogCallbackCtx *)cb_handle;
-    if (ctx->handler != NULL) {
-        (*env)->DeleteGlobalRef(env, ctx->handler);
-    }
-    free(ctx);
-}
-
-JNIEXPORT jint JNICALL Java_com_bifrore_BifroRE_nativeSetLogCallback(
-    JNIEnv *env,
-    jclass cls,
-    jlong cb_handle,
-    jint min_level) {
-    (void)env;
-    (void)cls;
-    if (cb_handle == 0) {
-        return bre_set_log_callback(NULL, NULL, (int)min_level);
-    }
-    return bre_set_log_callback(call_java_log_handler, (void *)cb_handle, (int)min_level);
 }
