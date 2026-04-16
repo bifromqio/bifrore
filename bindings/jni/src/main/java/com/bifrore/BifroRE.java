@@ -444,7 +444,7 @@ public final class BifroRE implements AutoCloseable {
         );
         if (rc == BRE_OK) {
             mqttStarted = true;
-            ensurePollerRunning();
+            reconcilePollerRegistration();
         }
         return rc;
     }
@@ -473,9 +473,7 @@ public final class BifroRE implements AutoCloseable {
         this.nextHandler = handler;
         this.nextAsyncDirectHandler = null;
         this.nextExecutor = executor != null ? executor : defaultMessageExecutor;
-        if (handler != null && mqttStarted) {
-            ensurePollerRunning();
-        }
+        reconcilePollerRegistration();
     }
 
     @Experimental("Async direct callback API is unstable and may change in future releases.")
@@ -488,9 +486,7 @@ public final class BifroRE implements AutoCloseable {
         this.nextAsyncDirectHandler = handler;
         this.nextHandler = null;
         this.nextExecutor = executor != null ? executor : defaultMessageExecutor;
-        if (handler != null && mqttStarted) {
-            ensurePollerRunning();
-        }
+        reconcilePollerRegistration();
     }
 
     public int onLog(LogHandler handler, int minLevel) {
@@ -628,11 +624,25 @@ public final class BifroRE implements AutoCloseable {
         }
     }
 
+    private void reconcilePollerRegistration() {
+        if (!mqttStarted) {
+            return;
+        }
+        if (nextHandler != null || nextAsyncDirectHandler != null) {
+            ensurePollerRunning();
+        } else {
+            stopPoller(true);
+        }
+    }
+
     private long pendingCallbackCount() {
         return Math.max(0L, defaultMessageExecutor.getTaskCount() - defaultMessageExecutor.getCompletedTaskCount());
     }
 
     private boolean pollHeapBatch(MessageHandler handler, Executor executor) {
+        if (handler == null) {
+            return true;
+        }
         PollResult result = nativePollResultsBatch(handle, -1);
         if (result.code < BRE_OK) {
             heapPollErrorCount += 1;
@@ -641,9 +651,6 @@ public final class BifroRE implements AutoCloseable {
         PollBatch batch = result.batch;
         if (batch == null || batch.headerTriples.length == 0) {
             heapPollNoDataCount += 1;
-            return true;
-        }
-        if (handler == null || executor == null) {
             return true;
         }
         int messageCount = batch.headerTriples.length / 3;
