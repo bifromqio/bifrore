@@ -112,6 +112,8 @@ build_jni() {
     -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
     -o "$BUILD_DIR/libbifrore_jni.$JNI_LIB_EXT" \
     "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni.c" \
+    "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni_heap_poll.c" \
+    "$ROOT_DIR/bindings/jni/src/main/c/bifrore_jni_direct_poll.c" \
     -L"$BUILD_DIR" -lbifrore_embed \
     $JNI_LDFLAGS
 }

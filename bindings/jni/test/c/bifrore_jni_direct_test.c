@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../../src/main/c/bifrore_jni.c"
+#include "../../src/main/c/bifrore_jni_direct_poll.c"
 
 static struct BifroPackedEvalResults FETCH_QUEUE[4];
 static int FETCH_RC_QUEUE[4];
