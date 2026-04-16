@@ -12,13 +12,19 @@ public final class AppHeap {
     public static void main(String[] args) throws Exception {
         BifroRE engine = new BifroRE(
             new BifroREOptions()
-                .host("127.0.0.1")
-                .port(1883)
-                .username("dev")
-                .password("dev")
-                .callbackQueueCapacity(1024)
-                .pollBatchLimit(64)
-                .ruleJsonPath(ExampleSupport.extractRuleResource())
+                .mqtt(mqtt -> mqtt
+                    .host("127.0.0.1")
+                    .port(1883)
+                    .username("dev")
+                    .password("dev")
+                )
+                .jvm(jvm -> jvm
+                    .callbackQueueCapacity(1024)
+                    .pollBatchLimit(64)
+                )
+                .ffi(ffi -> ffi
+                    .ruleJsonPath(ExampleSupport.extractRuleResource())
+                )
         );
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         HttpServer metricsServer = ExampleSupport.startMetricsServer(registry);

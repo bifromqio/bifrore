@@ -206,15 +206,21 @@ final class BifroREIntegrationTest {
 
     private static BifroREOptions baseOptions(String rulePath, Path clientIdsDir, String groupName) {
         return new BifroREOptions()
-            .host("127.0.0.1")
-            .port(1883)
-            .username("dev")
-            .password("dev")
-            .ruleJsonPath(rulePath)
-            .clientIdsPath(clientIdsDir.resolve("client_ids.txt").toString())
-            .groupName(groupName)
-            .callbackQueueCapacity(64)
-            .pollBatchLimit(16);
+            .mqtt(mqtt -> mqtt
+                .host("127.0.0.1")
+                .port(1883)
+                .username("dev")
+                .password("dev")
+                .groupName(groupName)
+                )
+            .ffi(ffi -> ffi
+                .ruleJsonPath(rulePath)
+                .clientIdsPath(clientIdsDir.resolve("client_ids.txt").toString())
+                )
+            .jvm(jvm -> jvm
+                .callbackQueueCapacity(64)
+                .pollBatchLimit(16)
+            );
     }
 
     private static void publish(String topic, byte[] payload, List<UserProperty> userProperties)

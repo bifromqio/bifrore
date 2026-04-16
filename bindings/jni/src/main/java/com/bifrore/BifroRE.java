@@ -305,26 +305,26 @@ public final class BifroRE implements AutoCloseable {
 
     public BifroRE(BifroREOptions options) {
         this(
-            options.host,
-            options.port,
-            Objects.requireNonNull(options.ruleJsonPath, "ruleJsonPath"),
-            options.nodeId,
-            options.clientCount,
-            options.multiNci,
-            options.username,
-            options.password,
-            options.payloadFormat,
-            options.clientIdsPath,
-            options.protobufDescriptorSetPath,
-            options.protobufMessageName,
-            options.callbackQueueCapacity,
-            options.pollBatchLimit,
-            options.directPollSlotCount,
-            options.directPayloadBufferBytes,
-            options.detailedLatencyMetrics,
-            options.cleanStart,
-            options.sessionExpiryInterval,
-            options.groupName
+            options.mqtt.host,
+            options.mqtt.port,
+            Objects.requireNonNull(options.ffi.ruleJsonPath, "ruleJsonPath"),
+            options.mqtt.nodeId,
+            options.mqtt.clientCount,
+            options.mqtt.multiNci,
+            options.mqtt.username,
+            options.mqtt.password,
+            options.ffi.payloadFormat,
+            options.ffi.clientIdsPath,
+            options.ffi.protobufDescriptorSetPath,
+            options.ffi.protobufMessageName,
+            options.jvm.callbackQueueCapacity,
+            options.jvm.pollBatchLimit,
+            options.jvm.directPollSlotCount,
+            options.jvm.directPayloadBufferBytes,
+            options.ffi.detailedLatencyMetrics,
+            options.mqtt.cleanStart,
+            options.mqtt.sessionExpiryInterval,
+            options.mqtt.groupName
         );
     }
 
