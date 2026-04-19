@@ -43,6 +43,78 @@ public final class BifroREMetricsView {
         return current().execMaxNanos;
     }
 
+    public double topicMatchCount() {
+        return current().topicMatchCount;
+    }
+
+    public double topicMatchTotalNanos() {
+        return current().topicMatchTotalNanos;
+    }
+
+    public double topicMatchMaxNanos() {
+        return current().topicMatchMaxNanos;
+    }
+
+    public double payloadDecodeCount() {
+        return current().payloadDecodeCount;
+    }
+
+    public double payloadDecodeTotalNanos() {
+        return current().payloadDecodeTotalNanos;
+    }
+
+    public double payloadDecodeMaxNanos() {
+        return current().payloadDecodeMaxNanos;
+    }
+
+    public double msgIrBuildCount() {
+        return current().msgIrBuildCount;
+    }
+
+    public double msgIrBuildTotalNanos() {
+        return current().msgIrBuildTotalNanos;
+    }
+
+    public double msgIrBuildMaxNanos() {
+        return current().msgIrBuildMaxNanos;
+    }
+
+    public double fastWhereCount() {
+        return current().fastWhereCount;
+    }
+
+    public double fastWhereTotalNanos() {
+        return current().fastWhereTotalNanos;
+    }
+
+    public double fastWhereMaxNanos() {
+        return current().fastWhereMaxNanos;
+    }
+
+    public double predicateCount() {
+        return current().predicateCount;
+    }
+
+    public double predicateTotalNanos() {
+        return current().predicateTotalNanos;
+    }
+
+    public double predicateMaxNanos() {
+        return current().predicateMaxNanos;
+    }
+
+    public double projectionCount() {
+        return current().projectionCount;
+    }
+
+    public double projectionTotalNanos() {
+        return current().projectionTotalNanos;
+    }
+
+    public double projectionMaxNanos() {
+        return current().projectionMaxNanos;
+    }
+
     public double ingressMessageCount() {
         return current().ingressMessageCount;
     }
@@ -148,6 +220,24 @@ public final class BifroREMetricsView {
         final long messagePipelineMaxNanos;
         final long execTotalNanos;
         final long execMaxNanos;
+        final long topicMatchCount;
+        final long topicMatchTotalNanos;
+        final long topicMatchMaxNanos;
+        final long payloadDecodeCount;
+        final long payloadDecodeTotalNanos;
+        final long payloadDecodeMaxNanos;
+        final long msgIrBuildCount;
+        final long msgIrBuildTotalNanos;
+        final long msgIrBuildMaxNanos;
+        final long fastWhereCount;
+        final long fastWhereTotalNanos;
+        final long fastWhereMaxNanos;
+        final long predicateCount;
+        final long predicateTotalNanos;
+        final long predicateMaxNanos;
+        final long projectionCount;
+        final long projectionTotalNanos;
+        final long projectionMaxNanos;
         final long ingressMessageCount;
         final long coreQueueDepth;
         final long coreQueueDepthMax;
@@ -176,6 +266,24 @@ public final class BifroREMetricsView {
             long messagePipelineMaxNanos,
             long execTotalNanos,
             long execMaxNanos,
+            long topicMatchCount,
+            long topicMatchTotalNanos,
+            long topicMatchMaxNanos,
+            long payloadDecodeCount,
+            long payloadDecodeTotalNanos,
+            long payloadDecodeMaxNanos,
+            long msgIrBuildCount,
+            long msgIrBuildTotalNanos,
+            long msgIrBuildMaxNanos,
+            long fastWhereCount,
+            long fastWhereTotalNanos,
+            long fastWhereMaxNanos,
+            long predicateCount,
+            long predicateTotalNanos,
+            long predicateMaxNanos,
+            long projectionCount,
+            long projectionTotalNanos,
+            long projectionMaxNanos,
             long ingressMessageCount,
             long coreQueueDepth,
             long coreQueueDepthMax,
@@ -203,6 +311,24 @@ public final class BifroREMetricsView {
             this.messagePipelineMaxNanos = messagePipelineMaxNanos;
             this.execTotalNanos = execTotalNanos;
             this.execMaxNanos = execMaxNanos;
+            this.topicMatchCount = topicMatchCount;
+            this.topicMatchTotalNanos = topicMatchTotalNanos;
+            this.topicMatchMaxNanos = topicMatchMaxNanos;
+            this.payloadDecodeCount = payloadDecodeCount;
+            this.payloadDecodeTotalNanos = payloadDecodeTotalNanos;
+            this.payloadDecodeMaxNanos = payloadDecodeMaxNanos;
+            this.msgIrBuildCount = msgIrBuildCount;
+            this.msgIrBuildTotalNanos = msgIrBuildTotalNanos;
+            this.msgIrBuildMaxNanos = msgIrBuildMaxNanos;
+            this.fastWhereCount = fastWhereCount;
+            this.fastWhereTotalNanos = fastWhereTotalNanos;
+            this.fastWhereMaxNanos = fastWhereMaxNanos;
+            this.predicateCount = predicateCount;
+            this.predicateTotalNanos = predicateTotalNanos;
+            this.predicateMaxNanos = predicateMaxNanos;
+            this.projectionCount = projectionCount;
+            this.projectionTotalNanos = projectionTotalNanos;
+            this.projectionMaxNanos = projectionMaxNanos;
             this.ingressMessageCount = ingressMessageCount;
             this.coreQueueDepth = coreQueueDepth;
             this.coreQueueDepthMax = coreQueueDepthMax;
@@ -226,7 +352,52 @@ public final class BifroREMetricsView {
         }
 
         static ViewSnapshot empty() {
-            return new ViewSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new ViewSnapshot(
+                0, // evalCount
+                0, // evalErrorCount
+                0, // messagePipelineTotalNanos
+                0, // messagePipelineMaxNanos
+                0, // execTotalNanos
+                0, // execMaxNanos
+                0, // topicMatchCount
+                0, // topicMatchTotalNanos
+                0, // topicMatchMaxNanos
+                0, // payloadDecodeCount
+                0, // payloadDecodeTotalNanos
+                0, // payloadDecodeMaxNanos
+                0, // msgIrBuildCount
+                0, // msgIrBuildTotalNanos
+                0, // msgIrBuildMaxNanos
+                0, // fastWhereCount
+                0, // fastWhereTotalNanos
+                0, // fastWhereMaxNanos
+                0, // predicateCount
+                0, // predicateTotalNanos
+                0, // predicateMaxNanos
+                0, // projectionCount
+                0, // projectionTotalNanos
+                0, // projectionMaxNanos
+                0, // ingressMessageCount
+                0, // coreQueueDepth
+                0, // coreQueueDepthMax
+                0, // coreQueueDropCount
+                0, // ffiQueueDepth
+                0, // ffiQueueDepthMax
+                0, // ffiQueueDropCount
+                0, // callbackDroppedCount
+                0, // callbackPendingCount
+                0, // callbackQueueDepth
+                0, // heapPollErrorCount
+                0, // heapPollInvalidArgumentCount
+                0, // heapPollInvalidStateCount
+                0, // heapPollOperationFailedCount
+                0, // heapPollUnknownErrorCount
+                0, // heapPollMessageCount
+                0, // heapPollPayloadBytes
+                0, // heapPollNoDataCount
+                0, // shutdownDroppedCount
+                0  // pollerTimeoutPendingCount
+            );
         }
 
         static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
@@ -238,6 +409,24 @@ public final class BifroREMetricsView {
                 snapshot.messagePipeline.maxNanos,
                 snapshot.exec.totalNanos,
                 snapshot.exec.maxNanos,
+                snapshot.topicMatch.count,
+                snapshot.topicMatch.totalNanos,
+                snapshot.topicMatch.maxNanos,
+                snapshot.payloadDecode.count,
+                snapshot.payloadDecode.totalNanos,
+                snapshot.payloadDecode.maxNanos,
+                snapshot.msgIrBuild.count,
+                snapshot.msgIrBuild.totalNanos,
+                snapshot.msgIrBuild.maxNanos,
+                snapshot.fastWhere.count,
+                snapshot.fastWhere.totalNanos,
+                snapshot.fastWhere.maxNanos,
+                snapshot.predicate.count,
+                snapshot.predicate.totalNanos,
+                snapshot.predicate.maxNanos,
+                snapshot.projection.count,
+                snapshot.projection.totalNanos,
+                snapshot.projection.maxNanos,
                 snapshot.ingressMessageCount,
                 snapshot.coreQueueDepth,
                 snapshot.coreQueueDepthMax,
