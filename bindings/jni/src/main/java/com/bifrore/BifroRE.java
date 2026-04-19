@@ -155,7 +155,6 @@ public final class BifroRE implements AutoCloseable {
         public final StageLatencySnapshot topicMatch;
         public final StageLatencySnapshot payloadDecode;
         public final StageLatencySnapshot msgIrBuild;
-        public final StageLatencySnapshot fastWhere;
         public final StageLatencySnapshot predicate;
         public final StageLatencySnapshot projection;
 
@@ -174,7 +173,6 @@ public final class BifroRE implements AutoCloseable {
             StageLatencySnapshot topicMatch,
             StageLatencySnapshot payloadDecode,
             StageLatencySnapshot msgIrBuild,
-            StageLatencySnapshot fastWhere,
             StageLatencySnapshot predicate,
             StageLatencySnapshot projection
         ) {
@@ -192,7 +190,6 @@ public final class BifroRE implements AutoCloseable {
             this.topicMatch = topicMatch;
             this.payloadDecode = payloadDecode;
             this.msgIrBuild = msgIrBuild;
-            this.fastWhere = fastWhere;
             this.predicate = predicate;
             this.projection = projection;
         }
@@ -206,13 +203,12 @@ public final class BifroRE implements AutoCloseable {
                 emptyStage,
                 emptyStage,
                 emptyStage,
-                emptyStage,
                 emptyStage
             );
         }
 
         static MetricsSnapshot from(long[] values) {
-            if (values == null || values.length < 33) {
+            if (values == null || values.length < 30) {
                 return empty();
             }
             int index = 0;
@@ -235,8 +231,6 @@ public final class BifroRE implements AutoCloseable {
             index += 3;
             StageLatencySnapshot msgIrBuild = readStageWithCount(values, index);
             index += 3;
-            StageLatencySnapshot fastWhere = readStageWithCount(values, index);
-            index += 3;
             StageLatencySnapshot predicate = readStageWithCount(values, index);
             index += 3;
             StageLatencySnapshot projection = readStageWithCount(values, index);
@@ -255,7 +249,6 @@ public final class BifroRE implements AutoCloseable {
                 topicMatch,
                 payloadDecode,
                 msgIrBuild,
-                fastWhere,
                 predicate,
                 projection
             );

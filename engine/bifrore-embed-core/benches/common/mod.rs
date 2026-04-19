@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use bifrore_embed_core::message::Message;
-use bifrore_embed_core::runtime::RuleEngine;
 use bifrore_embed_core::rule::RuleDefinition;
+use bifrore_embed_core::runtime::RuleEngine;
 use prost::Message as _;
 use serde_json::Value as JsonValue;
 
