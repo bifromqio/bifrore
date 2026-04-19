@@ -79,18 +79,6 @@ public final class BifroREMetricsView {
         return current().msgIrBuildMaxNanos;
     }
 
-    public double fastWhereCount() {
-        return current().fastWhereCount;
-    }
-
-    public double fastWhereTotalNanos() {
-        return current().fastWhereTotalNanos;
-    }
-
-    public double fastWhereMaxNanos() {
-        return current().fastWhereMaxNanos;
-    }
-
     public double predicateCount() {
         return current().predicateCount;
     }
@@ -229,9 +217,6 @@ public final class BifroREMetricsView {
         final long msgIrBuildCount;
         final long msgIrBuildTotalNanos;
         final long msgIrBuildMaxNanos;
-        final long fastWhereCount;
-        final long fastWhereTotalNanos;
-        final long fastWhereMaxNanos;
         final long predicateCount;
         final long predicateTotalNanos;
         final long predicateMaxNanos;
@@ -275,9 +260,6 @@ public final class BifroREMetricsView {
             long msgIrBuildCount,
             long msgIrBuildTotalNanos,
             long msgIrBuildMaxNanos,
-            long fastWhereCount,
-            long fastWhereTotalNanos,
-            long fastWhereMaxNanos,
             long predicateCount,
             long predicateTotalNanos,
             long predicateMaxNanos,
@@ -320,9 +302,6 @@ public final class BifroREMetricsView {
             this.msgIrBuildCount = msgIrBuildCount;
             this.msgIrBuildTotalNanos = msgIrBuildTotalNanos;
             this.msgIrBuildMaxNanos = msgIrBuildMaxNanos;
-            this.fastWhereCount = fastWhereCount;
-            this.fastWhereTotalNanos = fastWhereTotalNanos;
-            this.fastWhereMaxNanos = fastWhereMaxNanos;
             this.predicateCount = predicateCount;
             this.predicateTotalNanos = predicateTotalNanos;
             this.predicateMaxNanos = predicateMaxNanos;
@@ -368,9 +347,6 @@ public final class BifroREMetricsView {
                 0, // msgIrBuildCount
                 0, // msgIrBuildTotalNanos
                 0, // msgIrBuildMaxNanos
-                0, // fastWhereCount
-                0, // fastWhereTotalNanos
-                0, // fastWhereMaxNanos
                 0, // predicateCount
                 0, // predicateTotalNanos
                 0, // predicateMaxNanos
@@ -418,9 +394,6 @@ public final class BifroREMetricsView {
                 snapshot.msgIrBuild.count,
                 snapshot.msgIrBuild.totalNanos,
                 snapshot.msgIrBuild.maxNanos,
-                snapshot.fastWhere.count,
-                snapshot.fastWhere.totalNanos,
-                snapshot.fastWhere.maxNanos,
                 snapshot.predicate.count,
                 snapshot.predicate.totalNanos,
                 snapshot.predicate.maxNanos,

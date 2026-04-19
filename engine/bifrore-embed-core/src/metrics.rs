@@ -6,14 +6,13 @@ pub enum LatencyStage {
     TopicMatch = 0,
     PayloadDecode = 1,
     MsgIrBuild = 2,
-    FastWhere = 3,
-    Predicate = 4,
-    Projection = 5,
-    Exec = 6,
+    Predicate = 3,
+    Projection = 4,
+    Exec = 5,
 }
 
 impl LatencyStage {
-    const COUNT: usize = 7;
+    const COUNT: usize = 6;
 
     const fn index(self) -> usize {
         self as usize
@@ -40,7 +39,8 @@ impl Default for LatencyMetrics {
 impl LatencyMetrics {
     fn record(&self, duration_nanos: u64) {
         self.count.fetch_add(1, Ordering::Relaxed);
-        self.total_nanos.fetch_add(duration_nanos, Ordering::Relaxed);
+        self.total_nanos
+            .fetch_add(duration_nanos, Ordering::Relaxed);
 
         let mut current = self.max_nanos.load(Ordering::Relaxed);
         while duration_nanos > current {
@@ -54,7 +54,6 @@ impl LatencyMetrics {
                 Err(next) => current = next,
             }
         }
-
     }
 
     fn snapshot(&self) -> LatencyMetricsSnapshot {
@@ -156,7 +155,6 @@ impl EvalMetrics {
             topic_match: self.stages[LatencyStage::TopicMatch.index()].snapshot(),
             payload_decode: self.stages[LatencyStage::PayloadDecode.index()].snapshot(),
             msg_ir_build: self.stages[LatencyStage::MsgIrBuild.index()].snapshot(),
-            fast_where: self.stages[LatencyStage::FastWhere.index()].snapshot(),
             predicate: self.stages[LatencyStage::Predicate.index()].snapshot(),
             projection: self.stages[LatencyStage::Projection.index()].snapshot(),
             exec: self.stages[LatencyStage::Exec.index()].snapshot(),
@@ -184,7 +182,6 @@ pub struct EvalMetricsSnapshot {
     pub topic_match: LatencyMetricsSnapshot,
     pub payload_decode: LatencyMetricsSnapshot,
     pub msg_ir_build: LatencyMetricsSnapshot,
-    pub fast_where: LatencyMetricsSnapshot,
     pub predicate: LatencyMetricsSnapshot,
     pub projection: LatencyMetricsSnapshot,
     pub exec: LatencyMetricsSnapshot,

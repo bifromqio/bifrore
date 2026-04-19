@@ -75,9 +75,6 @@ final class ExampleSupport {
         Gauge.builder("bifrore_msg_ir_build_count", metrics, BifroREMetricsView::msgIrBuildCount).register(registry);
         Gauge.builder("bifrore_msg_ir_build_total_nanos", metrics, BifroREMetricsView::msgIrBuildTotalNanos).register(registry);
         Gauge.builder("bifrore_msg_ir_build_max_nanos", metrics, BifroREMetricsView::msgIrBuildMaxNanos).register(registry);
-        Gauge.builder("bifrore_fast_where_count", metrics, BifroREMetricsView::fastWhereCount).register(registry);
-        Gauge.builder("bifrore_fast_where_total_nanos", metrics, BifroREMetricsView::fastWhereTotalNanos).register(registry);
-        Gauge.builder("bifrore_fast_where_max_nanos", metrics, BifroREMetricsView::fastWhereMaxNanos).register(registry);
         Gauge.builder("bifrore_predicate_count", metrics, BifroREMetricsView::predicateCount).register(registry);
         Gauge.builder("bifrore_predicate_total_nanos", metrics, BifroREMetricsView::predicateTotalNanos).register(registry);
         Gauge.builder("bifrore_predicate_max_nanos", metrics, BifroREMetricsView::predicateMaxNanos).register(registry);

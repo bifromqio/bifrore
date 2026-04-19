@@ -8,8 +8,8 @@ use crate::payload::{
     PayloadFormat,
 };
 use crate::rule::{
-    compile_rule, evaluate_rule_with_payload_and_topic_parts,
-    CompiledRule, RuleDefinition, RuleError,
+    compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
+    RuleError,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -178,11 +178,12 @@ impl RuleEngine {
         matched_rule_indexes: &[usize],
     ) -> Vec<RuleEvaluation> {
         let mut results = Vec::new();
-        let topic_parts_storage = if matched_rules_require_topic_parts(&self.rules, &matched_rule_indexes) {
-            Some(message.topic.split('/').collect::<Vec<_>>())
-        } else {
-            None
-        };
+        let topic_parts_storage =
+            if matched_rules_require_topic_parts(&self.rules, &matched_rule_indexes) {
+                Some(message.topic.split('/').collect::<Vec<_>>())
+            } else {
+                None
+            };
         let topic_parts = topic_parts_storage.as_deref().unwrap_or(&[]);
 
         let use_parallel = matched_rule_indexes.len() >= self.eval_parallel_threshold
@@ -201,15 +202,15 @@ impl RuleEngine {
                         .par_iter()
                         .filter_map(|rule_index| {
                             evaluate_single_rule(
-                        *rule_index,
-                        rules,
-                        message,
-                        &payload_obj,
-                        topic_parts,
-                        &self.metrics,
-                    )
-                })
-                .collect::<Vec<_>>()
+                                *rule_index,
+                                rules,
+                                message,
+                                &payload_obj,
+                                topic_parts,
+                                &self.metrics,
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 })
         } else {
             matched_rule_indexes
@@ -450,7 +451,8 @@ impl TopicMatchCache {
             .entries
             .iter()
             .min_by_key(|(_, entry)| (entry.use_count, entry.last_access_seq))
-            .map(|(key, _)| key.clone()) else {
+            .map(|(key, _)| key.clone())
+        else {
             return;
         };
         self.entries.remove(&evict_key);
@@ -486,10 +488,14 @@ impl TopicTrie {
         for level in levels {
             match level {
                 "+" => {
-                    node = node.plus_child.get_or_insert_with(|| Box::new(TrieNode::default()));
+                    node = node
+                        .plus_child
+                        .get_or_insert_with(|| Box::new(TrieNode::default()));
                 }
                 "#" => {
-                    node = node.hash_child.get_or_insert_with(|| Box::new(TrieNode::default()));
+                    node = node
+                        .hash_child
+                        .get_or_insert_with(|| Box::new(TrieNode::default()));
                     break;
                 }
                 _ => {
@@ -605,7 +611,9 @@ mod tests {
         fs::write(temp.path(), json).expect("write");
 
         let mut engine = RuleEngine::default();
-        let count = engine.load_rules_from_json(temp.path()).expect("load rules");
+        let count = engine
+            .load_rules_from_json(temp.path())
+            .expect("load rules");
         assert_eq!(count, 1);
         assert_eq!(engine.rules.len(), 1);
     }

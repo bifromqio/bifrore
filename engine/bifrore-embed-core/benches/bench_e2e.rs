@@ -3,9 +3,7 @@ mod common;
 use bifrore_embed_core::message::Message;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use common::{
-    build_engine, build_engine_with_expr, build_protobuf_engine, build_protobuf_message,
-};
+use common::{build_engine, build_engine_with_expr, build_protobuf_engine, build_protobuf_message};
 
 fn bench_e2e(c: &mut Criterion) {
     let mut single_rule_engine = build_engine(1);
@@ -31,8 +29,10 @@ fn bench_e2e(c: &mut Criterion) {
 
     let mut all_match_engine = build_engine(100);
     let all_match_payload = serde_json::json!({"temp": 30, "hum": 40});
-    let all_match_message =
-        Message::new("sensors/room1/temp", serde_json::to_vec(&all_match_payload).unwrap());
+    let all_match_message = Message::new(
+        "sensors/room1/temp",
+        serde_json::to_vec(&all_match_payload).unwrap(),
+    );
 
     c.bench_function("rule_eval_100_all_match_json", |b| {
         b.iter(|| {
@@ -42,8 +42,10 @@ fn bench_e2e(c: &mut Criterion) {
     });
 
     let where_miss_payload = serde_json::json!({"temp": 10, "hum": 90});
-    let where_miss_message =
-        Message::new("sensors/room1/temp", serde_json::to_vec(&where_miss_payload).unwrap());
+    let where_miss_message = Message::new(
+        "sensors/room1/temp",
+        serde_json::to_vec(&where_miss_payload).unwrap(),
+    );
 
     c.bench_function("rule_eval_100_where_miss_json", |b| {
         b.iter(|| {
@@ -52,8 +54,10 @@ fn bench_e2e(c: &mut Criterion) {
         })
     });
 
-    let topic_miss_message =
-        Message::new("sensors/room1/hum", serde_json::to_vec(&all_match_payload).unwrap());
+    let topic_miss_message = Message::new(
+        "sensors/room1/hum",
+        serde_json::to_vec(&all_match_payload).unwrap(),
+    );
 
     c.bench_function("rule_eval_100_topic_miss_json", |b| {
         b.iter(|| {
@@ -69,8 +73,10 @@ fn bench_e2e(c: &mut Criterion) {
         )
     });
     let half_match_payload = serde_json::json!({"temp": 30, "hum": 40});
-    let half_match_message =
-        Message::new("sensors/room1/temp", serde_json::to_vec(&half_match_payload).unwrap());
+    let half_match_message = Message::new(
+        "sensors/room1/temp",
+        serde_json::to_vec(&half_match_payload).unwrap(),
+    );
 
     c.bench_function("rule_eval_100_half_match_json", |b| {
         b.iter(|| {
@@ -84,8 +90,10 @@ fn bench_e2e(c: &mut Criterion) {
             "select temp as t{idx} from sensors/+/temp where qos >= 1 and retain = false and topic_level(dev, 2) = 'room1'"
         )
     });
-    let mut metadata_message =
-        Message::new("sensors/room1/temp", serde_json::to_vec(&all_match_payload).unwrap());
+    let mut metadata_message = Message::new(
+        "sensors/room1/temp",
+        serde_json::to_vec(&all_match_payload).unwrap(),
+    );
     metadata_message.qos = 1;
     metadata_message.retain = false;
 

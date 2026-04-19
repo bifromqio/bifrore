@@ -220,11 +220,7 @@ impl MsgIr {
 
     fn insert_sparse(&mut self, field: &CompiledPayloadField, value: PayloadValue) {
         let Some(slot) = self.slot_by_key.get(field.key()).copied() else {
-            debug_assert!(
-                false,
-                "sparse MsgIr layout missing field: {}",
-                field.key()
-            );
+            debug_assert!(false, "sparse MsgIr layout missing field: {}", field.key());
             return;
         };
         self.values[slot] = Some(value);
@@ -253,7 +249,9 @@ impl MsgIr {
                 }
                 Ok(ir)
             }
-            PayloadDecodePlan::Sparse(_) | PayloadDecodePlan::Full => Self::from_json_object_ref(map),
+            PayloadDecodePlan::Sparse(_) | PayloadDecodePlan::Full => {
+                Self::from_json_object_ref(map)
+            }
         }
     }
 
@@ -266,7 +264,8 @@ impl MsgIr {
             PayloadDecodePlan::Sparse(required_fields) if !required_fields.is_empty() => {
                 let mut ir = Self::with_sparse_layout(required_fields);
                 for field in required_fields {
-                    if let Some(value) = extract_protobuf_payload_value(message, field.segments())? {
+                    if let Some(value) = extract_protobuf_payload_value(message, field.segments())?
+                    {
                         ir.insert_sparse(field, value);
                     }
                 }
@@ -281,7 +280,10 @@ impl MsgIr {
     }
 }
 
-fn lookup_json_path<'a>(map: &'a Map<String, JsonValue>, segments: &[String]) -> Option<&'a JsonValue> {
+fn lookup_json_path<'a>(
+    map: &'a Map<String, JsonValue>,
+    segments: &[String],
+) -> Option<&'a JsonValue> {
     let (first, rest) = segments.split_first()?;
     let mut current = map.get(first)?;
     for segment in rest {
@@ -368,7 +370,8 @@ fn message_to_payload_value(message: &DynamicMessage) -> Result<PayloadValue, St
     message
         .fields()
         .map(|(field_desc, value)| {
-            PayloadValue::try_from_protobuf_ref(value).map(|value| (field_desc.name().to_string(), value))
+            PayloadValue::try_from_protobuf_ref(value)
+                .map(|value| (field_desc.name().to_string(), value))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(PayloadValue::Object)

@@ -1,19 +1,18 @@
-use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::message::Message;
+use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::msg_ir::{CompiledPayloadField, MsgIr, PayloadValue};
 #[cfg(test)]
 use crate::payload::{decode_payload_ir, PayloadFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sqlparser::ast::{
     BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, Query, Select,
     SelectItem, SetExpr, Statement, TableFactor,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleDefinition {
@@ -30,8 +29,6 @@ pub struct CompiledRule {
     pub select_plan: SelectPlan,
     pub where_expr: Option<Expr>,
     pub where_plan: Option<EvalExprPlan>,
-    pub fast_where: Option<FastPredicate>,
-    pub fast_path_profile: FastPathProfile,
     pub destinations: Vec<String>,
     pub required_payload_fields: Vec<CompiledPayloadField>,
     pub requires_topic_parts: bool,
@@ -85,83 +82,6 @@ pub enum EvalExprPlan {
     Unknown(Expr),
 }
 
-#[derive(Debug)]
-pub enum FastPredicate {
-    Compare {
-        field: FastField,
-        op: FastCmpOp,
-        value: FastValue,
-    },
-    And {
-        left: Box<FastPredicate>,
-        right: Box<FastPredicate>,
-        profile: BranchProfile,
-    },
-    Or {
-        left: Box<FastPredicate>,
-        right: Box<FastPredicate>,
-        profile: BranchProfile,
-    },
-    Const(bool),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FastField {
-    Payload(CompiledPayloadField),
-    MetaQos,
-    MetaRetain,
-    MetaDup,
-    MetaTimestamp,
-    MetaClientId,
-    MetaUsername,
-    TopicLevel(u64),
-    Property(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FastCmpOp {
-    Eq,
-    NotEq,
-    Gt,
-    GtEq,
-    Lt,
-    LtEq,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum FastValue {
-    Number(f64),
-    String(String),
-    Bool(bool),
-}
-
-#[derive(Debug, Default)]
-pub struct FastPathProfile {
-    enabled: AtomicBool,
-    attempts: AtomicU64,
-    misses: AtomicU64,
-    downgrade_logged: AtomicBool,
-}
-
-impl FastPathProfile {
-    fn new() -> Self {
-        Self {
-            enabled: AtomicBool::new(true),
-            attempts: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
-            downgrade_logged: AtomicBool::new(false),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct BranchProfile {
-    left_true: AtomicU64,
-    left_false: AtomicU64,
-    right_true: AtomicU64,
-    right_false: AtomicU64,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum RuleError {
     #[error("SQL parse error: {0}")]
@@ -175,9 +95,8 @@ pub enum RuleError {
 pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let dialect = GenericDialect {};
     let normalized_sql = normalize_rule_sql(&rule.expression);
-    let mut statements =
-        Parser::parse_sql(&dialect, &normalized_sql)
-            .map_err(|e| RuleError::SqlParse(e.to_string()))?;
+    let mut statements = Parser::parse_sql(&dialect, &normalized_sql)
+        .map_err(|e| RuleError::SqlParse(e.to_string()))?;
     if statements.len() != 1 {
         return Err(RuleError::UnsupportedSql);
     }
@@ -189,18 +108,15 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let (topic_filter, aliased_topic_filter, select, where_expr) = parse_query(*query)?;
     let select_plan = compile_select_plan(&select);
     let where_plan = where_expr.as_ref().map(compile_expr_plan);
-    let fast_where = where_plan.as_ref().and_then(compile_fast_predicate);
-    let required_payload_fields = collect_required_payload_fields(&select_plan, where_plan.as_ref());
+    let required_payload_fields =
+        collect_required_payload_fields(&select_plan, where_plan.as_ref());
     let requires_topic_parts = select_plan_requires_topic_parts(&select_plan)
         || where_plan
             .as_ref()
             .map(plan_requires_topic_parts)
             .unwrap_or(false);
     let has_unknown_plan = select_plan_has_unknown(&select_plan)
-        || where_plan
-            .as_ref()
-            .map(plan_has_unknown)
-            .unwrap_or(false);
+        || where_plan.as_ref().map(plan_has_unknown).unwrap_or(false);
     if has_unknown_plan {
         log::warn!(
             "dropping incompatible rule during compile expression={}",
@@ -217,8 +133,6 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         select_plan,
         where_expr,
         where_plan,
-        fast_where,
-        fast_path_profile: FastPathProfile::new(),
         destinations: rule.destinations,
         required_payload_fields,
         requires_topic_parts,
@@ -234,13 +148,8 @@ fn parse_query(query: Query) -> Result<(String, String, SelectSpec, Option<Expr>
     Ok((topic_filter, aliased, select_spec.0, select_spec.1))
 }
 
-fn parse_select(
-    select: Select,
-) -> Result<(String, String, (SelectSpec, Option<Expr>)), RuleError> {
-    let from = select
-        .from
-        .get(0)
-        .ok_or(RuleError::MissingTopic)?;
+fn parse_select(select: Select) -> Result<(String, String, (SelectSpec, Option<Expr>)), RuleError> {
+    let from = select.from.get(0).ok_or(RuleError::MissingTopic)?;
     let relation = &from.relation;
     let (topic_filter, aliased) = match relation {
         TableFactor::Table { name, alias, .. } => {
@@ -314,9 +223,15 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             "username" => EvalExprPlan::MetaUsername,
             _ => EvalExprPlan::PayloadField(CompiledPayloadField::from_key(value.clone())),
         },
-        Expr::CompoundIdentifier(idents) => EvalExprPlan::PayloadField(CompiledPayloadField::from_key(
-            idents.iter().map(|ident| ident.value.as_str()).collect::<Vec<_>>().join("."),
-        )),
+        Expr::CompoundIdentifier(idents) => {
+            EvalExprPlan::PayloadField(CompiledPayloadField::from_key(
+                idents
+                    .iter()
+                    .map(|ident| ident.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            ))
+        }
         Expr::Value(value) => match value {
             sqlparser::ast::Value::Number(num, _) => num
                 .parse::<f64>()
@@ -342,7 +257,9 @@ fn compile_expr_plan(expr: &Expr) -> EvalExprPlan {
             if name == "topic_level" {
                 if let FunctionArguments::List(list) = &func.args {
                     if list.args.len() == 2 {
-                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(level_expr)) = &list.args[1] {
+                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(level_expr)) =
+                            &list.args[1]
+                        {
                             return EvalExprPlan::TopicLevel {
                                 level: Box::new(compile_expr_plan(level_expr)),
                             };
@@ -392,7 +309,11 @@ fn fold_binary_plan(left: EvalExprPlan, op: BinaryOperator, right: EvalExprPlan)
     }
 }
 
-fn fold_const_binary(left: &EvalExprPlan, op: &BinaryOperator, right: &EvalExprPlan) -> Option<Value> {
+fn fold_const_binary(
+    left: &EvalExprPlan,
+    op: &BinaryOperator,
+    right: &EvalExprPlan,
+) -> Option<Value> {
     let (EvalExprPlan::Const(left), EvalExprPlan::Const(right)) = (left, right) else {
         return None;
     };
@@ -513,110 +434,6 @@ fn collect_required_payload_fields_from_plan(
     }
 }
 
-fn compile_fast_predicate(plan: &EvalExprPlan) -> Option<FastPredicate> {
-    match plan {
-        EvalExprPlan::Const(Value::Bool(value)) => Some(FastPredicate::Const(*value)),
-        EvalExprPlan::Binary { left, op, right } if matches!(op, BinaryOperator::And | BinaryOperator::Or) => {
-            let left = compile_fast_predicate(left)?;
-            let right = compile_fast_predicate(right)?;
-            Some(match op {
-                BinaryOperator::And => FastPredicate::And {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    profile: BranchProfile::default(),
-                },
-                BinaryOperator::Or => FastPredicate::Or {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    profile: BranchProfile::default(),
-                },
-                _ => return None,
-            })
-        }
-        EvalExprPlan::Binary { left, op, right } => {
-            let cmp = fast_cmp_op(op)?;
-            if let (Some(field), Some(value)) = (compile_fast_field(left), compile_fast_const(right)) {
-                return Some(FastPredicate::Compare {
-                    field,
-                    op: cmp,
-                    value,
-                });
-            }
-            if let (Some(field), Some(value)) = (compile_fast_field(right), compile_fast_const(left)) {
-                return Some(FastPredicate::Compare {
-                    field,
-                    op: invert_fast_cmp_op(cmp),
-                    value,
-                });
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn compile_fast_field(plan: &EvalExprPlan) -> Option<FastField> {
-    match plan {
-        EvalExprPlan::PayloadField(path) => Some(FastField::Payload(path.clone())),
-        EvalExprPlan::MetaQos => Some(FastField::MetaQos),
-        EvalExprPlan::MetaRetain => Some(FastField::MetaRetain),
-        EvalExprPlan::MetaDup => Some(FastField::MetaDup),
-        EvalExprPlan::MetaTimestamp => Some(FastField::MetaTimestamp),
-        EvalExprPlan::MetaClientId => Some(FastField::MetaClientId),
-        EvalExprPlan::MetaUsername => Some(FastField::MetaUsername),
-        EvalExprPlan::TopicLevel { level } => {
-            let raw = compile_fast_const(level)?;
-            let FastValue::Number(number) = raw else {
-                return None;
-            };
-            if number < 0.0 || number.fract() != 0.0 || number > u64::MAX as f64 {
-                return None;
-            }
-            Some(FastField::TopicLevel(number as u64))
-        }
-        EvalExprPlan::PropertiesKey { key } => {
-            let value = compile_fast_const(key)?;
-            match value {
-                FastValue::String(key) => Some(FastField::Property(key)),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn compile_fast_const(plan: &EvalExprPlan) -> Option<FastValue> {
-    match plan {
-        EvalExprPlan::Const(Value::Number(value)) => value.as_f64().map(FastValue::Number),
-        EvalExprPlan::Const(Value::String(value)) => Some(FastValue::String(value.clone())),
-        EvalExprPlan::Const(Value::Bool(value)) => Some(FastValue::Bool(*value)),
-        _ => None,
-    }
-}
-
-fn fast_cmp_op(op: &BinaryOperator) -> Option<FastCmpOp> {
-    match op {
-        BinaryOperator::Eq => Some(FastCmpOp::Eq),
-        BinaryOperator::NotEq => Some(FastCmpOp::NotEq),
-        BinaryOperator::Gt => Some(FastCmpOp::Gt),
-        BinaryOperator::GtEq => Some(FastCmpOp::GtEq),
-        BinaryOperator::Lt => Some(FastCmpOp::Lt),
-        BinaryOperator::LtEq => Some(FastCmpOp::LtEq),
-        _ => None,
-    }
-}
-
-fn invert_fast_cmp_op(op: FastCmpOp) -> FastCmpOp {
-    match op {
-        FastCmpOp::Eq => FastCmpOp::Eq,
-        FastCmpOp::NotEq => FastCmpOp::NotEq,
-        FastCmpOp::Gt => FastCmpOp::Lt,
-        FastCmpOp::GtEq => FastCmpOp::LtEq,
-        FastCmpOp::Lt => FastCmpOp::Gt,
-        FastCmpOp::LtEq => FastCmpOp::GtEq,
-    }
-}
-
 pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     rule: &CompiledRule,
     message: &Message,
@@ -629,40 +446,6 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
         payload: payload_obj,
         topic_parts,
     };
-
-    if let Some(fast_where) = &rule.fast_where {
-        if rule.fast_path_profile.enabled.load(Ordering::Relaxed) {
-            rule.fast_path_profile
-                .attempts
-                .fetch_add(1, Ordering::Relaxed);
-            let fast_where_timer = metrics.start_stage();
-            let fast_where_result = evaluate_fast_predicate(fast_where, &context);
-            metrics.finish_stage(LatencyStage::FastWhere, fast_where_timer);
-            match fast_where_result {
-                Some(true) => {}
-                Some(false) => return None,
-                None => {
-                    let misses = rule.fast_path_profile.misses.fetch_add(1, Ordering::Relaxed) + 1;
-                    let attempts = rule.fast_path_profile.attempts.load(Ordering::Relaxed);
-                    if attempts >= 128 && misses.saturating_mul(100) >= attempts.saturating_mul(90) {
-                        rule.fast_path_profile.enabled.store(false, Ordering::Relaxed);
-                        if !rule
-                            .fast_path_profile
-                            .downgrade_logged
-                            .swap(true, Ordering::Relaxed)
-                        {
-                            log::warn!(
-                                "downgrading fast predicate for rule_id={} due to high miss ratio {}/{}",
-                                rule.id,
-                                misses,
-                                attempts
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     if let Some(plan) = &rule.where_plan {
         let predicate_timer = metrics.start_stage();
@@ -697,7 +480,9 @@ struct EvalContext<'a> {
 
 fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
     match plan {
-        EvalExprPlan::Binary { left, op, right } if matches!(op, BinaryOperator::And | BinaryOperator::Or) => {
+        EvalExprPlan::Binary { left, op, right }
+            if matches!(op, BinaryOperator::And | BinaryOperator::Or) =>
+        {
             let left_val = evaluate_plan_bool(left, ctx)?;
             let right_val = evaluate_plan_bool(right, ctx)?;
             Some(match op {
@@ -741,182 +526,6 @@ enum RuntimeValue<'a> {
     Bool(bool),
 }
 
-fn evaluate_fast_predicate(pred: &FastPredicate, ctx: &EvalContext) -> Option<bool> {
-    match pred {
-        FastPredicate::Const(value) => Some(*value),
-        FastPredicate::And { left, right, profile } => evaluate_fast_and(left, right, profile, ctx),
-        FastPredicate::Or { left, right, profile } => evaluate_fast_or(left, right, profile, ctx),
-        FastPredicate::Compare { field, op, value } => {
-            let runtime_value = evaluate_fast_field(field, ctx)?;
-            compare_runtime_value(&runtime_value, value, op)
-        }
-    }
-}
-
-fn evaluate_fast_and(
-    left: &FastPredicate,
-    right: &FastPredicate,
-    profile: &BranchProfile,
-    ctx: &EvalContext,
-) -> Option<bool> {
-    let left_total = profile.left_true.load(Ordering::Relaxed) + profile.left_false.load(Ordering::Relaxed);
-    let right_total = profile.right_true.load(Ordering::Relaxed) + profile.right_false.load(Ordering::Relaxed);
-    let left_false_rate = if left_total == 0 {
-        0.5
-    } else {
-        profile.left_false.load(Ordering::Relaxed) as f64 / left_total as f64
-    };
-    let right_false_rate = if right_total == 0 {
-        0.5
-    } else {
-        profile.right_false.load(Ordering::Relaxed) as f64 / right_total as f64
-    };
-    let right_first = right_false_rate > left_false_rate;
-
-    if right_first {
-        let first = evaluate_fast_predicate(right, ctx)?;
-        if first {
-            profile.right_true.fetch_add(1, Ordering::Relaxed);
-        } else {
-            profile.right_false.fetch_add(1, Ordering::Relaxed);
-            return Some(false);
-        }
-        let second = evaluate_fast_predicate(left, ctx)?;
-        if second {
-            profile.left_true.fetch_add(1, Ordering::Relaxed);
-        } else {
-            profile.left_false.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(second)
-    } else {
-        let first = evaluate_fast_predicate(left, ctx)?;
-        if first {
-            profile.left_true.fetch_add(1, Ordering::Relaxed);
-        } else {
-            profile.left_false.fetch_add(1, Ordering::Relaxed);
-            return Some(false);
-        }
-        let second = evaluate_fast_predicate(right, ctx)?;
-        if second {
-            profile.right_true.fetch_add(1, Ordering::Relaxed);
-        } else {
-            profile.right_false.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(second)
-    }
-}
-
-fn evaluate_fast_or(
-    left: &FastPredicate,
-    right: &FastPredicate,
-    profile: &BranchProfile,
-    ctx: &EvalContext,
-) -> Option<bool> {
-    let left_total = profile.left_true.load(Ordering::Relaxed) + profile.left_false.load(Ordering::Relaxed);
-    let right_total = profile.right_true.load(Ordering::Relaxed) + profile.right_false.load(Ordering::Relaxed);
-    let left_true_rate = if left_total == 0 {
-        0.5
-    } else {
-        profile.left_true.load(Ordering::Relaxed) as f64 / left_total as f64
-    };
-    let right_true_rate = if right_total == 0 {
-        0.5
-    } else {
-        profile.right_true.load(Ordering::Relaxed) as f64 / right_total as f64
-    };
-    let right_first = right_true_rate > left_true_rate;
-
-    if right_first {
-        let first = evaluate_fast_predicate(right, ctx)?;
-        if first {
-            profile.right_true.fetch_add(1, Ordering::Relaxed);
-            return Some(true);
-        }
-        profile.right_false.fetch_add(1, Ordering::Relaxed);
-        let second = evaluate_fast_predicate(left, ctx)?;
-        if second {
-            profile.left_true.fetch_add(1, Ordering::Relaxed);
-        } else {
-            profile.left_false.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(second)
-    } else {
-        let first = evaluate_fast_predicate(left, ctx)?;
-        if first {
-            profile.left_true.fetch_add(1, Ordering::Relaxed);
-            return Some(true);
-        }
-        profile.left_false.fetch_add(1, Ordering::Relaxed);
-        let second = evaluate_fast_predicate(right, ctx)?;
-        if second {
-            profile.right_true.fetch_add(1, Ordering::Relaxed);
-        } else {
-            profile.right_false.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(second)
-    }
-}
-
-fn evaluate_fast_field<'a>(field: &FastField, ctx: &'a EvalContext) -> Option<RuntimeValue<'a>> {
-    match field {
-        FastField::Payload(path) => match payload_value_by_path(ctx.payload, path)? {
-            PayloadValue::Number(number) => Some(RuntimeValue::Number(*number)),
-            PayloadValue::String(value) => Some(RuntimeValue::String(value)),
-            PayloadValue::Bool(value) => Some(RuntimeValue::Bool(*value)),
-            _ => None,
-        },
-        FastField::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
-        FastField::MetaRetain => Some(RuntimeValue::Bool(ctx.message.retain)),
-        FastField::MetaDup => Some(RuntimeValue::Bool(ctx.message.dup)),
-        FastField::MetaTimestamp => Some(RuntimeValue::Number(ctx.message.timestamp_millis as f64)),
-        FastField::MetaClientId => ctx
-            .message
-            .client_id
-            .as_ref()
-            .map(|value| RuntimeValue::String(value)),
-        FastField::MetaUsername => ctx
-            .message
-            .username
-            .as_ref()
-            .map(|value| RuntimeValue::String(value)),
-        FastField::TopicLevel(level) => {
-            let index = if *level == 0 { 0 } else { (*level - 1) as usize };
-            ctx.topic_parts
-                .get(index)
-                .map(|value| RuntimeValue::String(value))
-        }
-        FastField::Property(key) => ctx
-            .message
-            .properties
-            .get(key)
-            .map(|value| RuntimeValue::String(value)),
-    }
-}
-
-fn compare_runtime_value(value: &RuntimeValue, expected: &FastValue, op: &FastCmpOp) -> Option<bool> {
-    match (value, expected) {
-        (RuntimeValue::Number(left), FastValue::Number(right)) => Some(match op {
-            FastCmpOp::Eq => (left - right).abs() < f64::EPSILON,
-            FastCmpOp::NotEq => (left - right).abs() >= f64::EPSILON,
-            FastCmpOp::Gt => left > right,
-            FastCmpOp::GtEq => left >= right,
-            FastCmpOp::Lt => left < right,
-            FastCmpOp::LtEq => left <= right,
-        }),
-        (RuntimeValue::String(left), FastValue::String(right)) => Some(match op {
-            FastCmpOp::Eq => *left == right,
-            FastCmpOp::NotEq => *left != right,
-            _ => return None,
-        }),
-        (RuntimeValue::Bool(left), FastValue::Bool(right)) => Some(match op {
-            FastCmpOp::Eq => left == right,
-            FastCmpOp::NotEq => left != right,
-            _ => return None,
-        }),
-        _ => None,
-    }
-}
-
 fn evaluate_plan_compare_bool(
     left: &EvalExprPlan,
     op: &BinaryOperator,
@@ -948,7 +557,9 @@ fn evaluate_plan_runtime_value<'a>(
         EvalExprPlan::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
         EvalExprPlan::MetaRetain => Some(RuntimeValue::Bool(ctx.message.retain)),
         EvalExprPlan::MetaDup => Some(RuntimeValue::Bool(ctx.message.dup)),
-        EvalExprPlan::MetaTimestamp => Some(RuntimeValue::Number(ctx.message.timestamp_millis as f64)),
+        EvalExprPlan::MetaTimestamp => {
+            Some(RuntimeValue::Number(ctx.message.timestamp_millis as f64))
+        }
         EvalExprPlan::MetaClientId => ctx
             .message
             .client_id
@@ -1015,7 +626,9 @@ fn compare_runtime_runtime(
 fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> {
     match plan {
         EvalExprPlan::Const(value) => Some(value.clone()),
-        EvalExprPlan::PayloadField(path) => payload_value_by_path(ctx.payload, path).map(PayloadValue::to_json_value),
+        EvalExprPlan::PayloadField(path) => {
+            payload_value_by_path(ctx.payload, path).map(PayloadValue::to_json_value)
+        }
         EvalExprPlan::MetaQos => Some(Value::Number(serde_json::Number::from(ctx.message.qos))),
         EvalExprPlan::MetaRetain => Some(Value::Bool(ctx.message.retain)),
         EvalExprPlan::MetaDup => Some(Value::Bool(ctx.message.dup)),
@@ -1049,7 +662,9 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> 
                 | BinaryOperator::Lt
                 | BinaryOperator::LtEq
                 | BinaryOperator::Eq
-                | BinaryOperator::NotEq => compare_values(&left_val, &right_val, op).map(Value::Bool),
+                | BinaryOperator::NotEq => {
+                    compare_values(&left_val, &right_val, op).map(Value::Bool)
+                }
                 _ => None,
             }
         }
@@ -1206,7 +821,7 @@ pub fn match_topic(filter: &str, topic: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    
+
     pub fn evaluate_rule(rule: &CompiledRule, message: &Message) -> Option<Message> {
         let obj = decode_payload_ir(&message.payload, PayloadFormat::Json).ok()?;
         let topic_parts: Vec<&str> = message.topic.split('/').collect();
@@ -1324,8 +939,7 @@ mod tests {
     #[test]
     fn evaluate_arithmetic_expression() {
         let rule = RuleDefinition {
-            expression: "select (height + 2) * 2 as h from data where temp >= 20"
-                .to_string(),
+            expression: "select (height + 2) * 2 as h from data where temp >= 20".to_string(),
             destinations: vec!["dest".to_string()],
         };
         let compiled = compile_rule(rule).expect("compile");
@@ -1418,7 +1032,11 @@ mod tests {
 
         let where_plan = compiled.where_plan.expect("where plan");
         match where_plan {
-            EvalExprPlan::Binary { left: _, op: _, right } => {
+            EvalExprPlan::Binary {
+                left: _,
+                op: _,
+                right,
+            } => {
                 assert_eq!(*right, EvalExprPlan::Const(Value::from(28.0)));
             }
             _ => panic!("expected binary where plan"),
@@ -1432,72 +1050,13 @@ mod tests {
             destinations: vec!["dest".to_string()],
         };
         let compiled = compile_rule(rule).expect("compile");
-        assert_eq!(compiled.where_plan, Some(EvalExprPlan::Const(Value::Bool(true))));
+        assert_eq!(
+            compiled.where_plan,
+            Some(EvalExprPlan::Const(Value::Bool(true)))
+        );
 
         let payload = serde_json::json!({"temp": 10});
         let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
         assert!(evaluate_rule(&compiled, &message).is_some());
-    }
-
-    #[test]
-    fn compiles_fast_predicate_for_simple_compare() {
-        let rule = RuleDefinition {
-            expression: "select * from data where temp > 10".to_string(),
-            destinations: vec!["dest".to_string()],
-        };
-        let compiled = compile_rule(rule).expect("compile");
-        assert!(matches!(
-            compiled.fast_where,
-            Some(FastPredicate::Compare {
-                field: FastField::Payload(_),
-                op: FastCmpOp::Gt,
-                value: FastValue::Number(_)
-            })
-        ));
-    }
-
-    #[test]
-    fn fast_and_reorders_to_high_reject_side() {
-        let rule = RuleDefinition {
-            expression: "select * from data where a > 0 and b > 0".to_string(),
-            destinations: vec!["dest".to_string()],
-        };
-        let compiled = compile_rule(rule).expect("compile");
-        let payload = serde_json::json!({"a": 1, "b": 0});
-
-        for _ in 0..64 {
-            let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
-            assert!(evaluate_rule(&compiled, &message).is_none());
-        }
-
-        let profile = match compiled.fast_where.as_ref().expect("fast where") {
-            FastPredicate::And { profile, .. } => profile,
-            _ => panic!("expected fast AND predicate"),
-        };
-        let left_total = profile.left_true.load(Ordering::Relaxed)
-            + profile.left_false.load(Ordering::Relaxed);
-        let right_total = profile.right_true.load(Ordering::Relaxed)
-            + profile.right_false.load(Ordering::Relaxed);
-
-        assert!(right_total > left_total);
-        assert!(profile.right_false.load(Ordering::Relaxed) > 0);
-    }
-
-    #[test]
-    fn fast_path_downgrades_when_miss_ratio_is_high() {
-        let rule = RuleDefinition {
-            expression: "select * from data where temp > 10".to_string(),
-            destinations: vec!["dest".to_string()],
-        };
-        let compiled = compile_rule(rule).expect("compile");
-        let payload = serde_json::json!({"temp": "not-a-number"});
-
-        for _ in 0..160 {
-            let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
-            assert!(evaluate_rule(&compiled, &message).is_none());
-        }
-
-        assert!(!compiled.fast_path_profile.enabled.load(Ordering::Relaxed));
-        assert!(compiled.fast_path_profile.downgrade_logged.load(Ordering::Relaxed));
     }
 }

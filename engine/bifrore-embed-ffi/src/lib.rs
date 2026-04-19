@@ -12,8 +12,8 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::Path;
 use std::ptr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::{Once, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -119,12 +119,14 @@ impl log::Log for FfiLogger {
                 .unwrap_or_else(|_| CString::new("log message encoding error").unwrap());
             let thread_id = CString::new(format!("{:?}", std::thread::current().id()))
                 .unwrap_or_else(|_| CString::new("unknown-thread").unwrap());
-            let module_path = record
-                .module_path()
-                .map(|value| CString::new(value.replace('\0', "\\0")).unwrap_or_else(|_| CString::new("module-encoding-error").unwrap()));
-            let file = record
-                .file()
-                .map(|value| CString::new(value.replace('\0', "\\0")).unwrap_or_else(|_| CString::new("file-encoding-error").unwrap()));
+            let module_path = record.module_path().map(|value| {
+                CString::new(value.replace('\0', "\\0"))
+                    .unwrap_or_else(|_| CString::new("module-encoding-error").unwrap())
+            });
+            let file = record.file().map(|value| {
+                CString::new(value.replace('\0', "\\0"))
+                    .unwrap_or_else(|_| CString::new("file-encoding-error").unwrap())
+            });
             let level = match record.level() {
                 log::Level::Error => BifroRELogLevel::Error as c_int,
                 log::Level::Warn => BifroRELogLevel::Warn as c_int,
@@ -144,12 +146,19 @@ impl log::Log for FfiLogger {
                 message.as_ptr(),
                 timestamp_millis,
                 thread_id.as_ptr(),
-                module_path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                module_path
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
                 file.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 record.line().unwrap_or(0),
             );
         } else {
-            eprintln!("[{}][{}] {}", record.level(), record.target(), record.args());
+            eprintln!(
+                "[{}][{}] {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
         }
     }
 
@@ -187,7 +196,11 @@ fn load_client_ids(path: &str) -> Option<Vec<String>> {
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
         .collect::<Vec<_>>();
-    if values.is_empty() { None } else { Some(values) }
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
 }
 
 fn persist_client_ids(path: &str, client_ids: &[String]) -> Result<(), String> {
@@ -203,11 +216,7 @@ fn persist_client_ids(path: &str, client_ids: &[String]) -> Result<(), String> {
     fs::write(path_ref, format!("{}\n", client_ids.join("\n"))).map_err(|err| err.to_string())
 }
 
-fn resolve_client_ids(
-    path: &str,
-    node_id: &str,
-    client_count: u16,
-) -> Vec<String> {
+fn resolve_client_ids(path: &str, node_id: &str, client_count: u16) -> Vec<String> {
     if let Some(values) = load_client_ids(path) {
         return values;
     }
@@ -407,9 +416,6 @@ pub struct BifroREMetricsSnapshot {
     pub msg_ir_build_count: u64,
     pub msg_ir_build_total_nanos: u64,
     pub msg_ir_build_max_nanos: u64,
-    pub fast_where_count: u64,
-    pub fast_where_total_nanos: u64,
-    pub fast_where_max_nanos: u64,
     pub predicate_count: u64,
     pub predicate_total_nanos: u64,
     pub predicate_max_nanos: u64,
@@ -468,9 +474,6 @@ fn combine_metrics_snapshot(
         msg_ir_build_count: 0,
         msg_ir_build_total_nanos: 0,
         msg_ir_build_max_nanos: 0,
-        fast_where_count: 0,
-        fast_where_total_nanos: 0,
-        fast_where_max_nanos: 0,
         predicate_count: 0,
         predicate_total_nanos: 0,
         predicate_max_nanos: 0,
@@ -501,12 +504,6 @@ fn combine_metrics_snapshot(
         &mut snapshot.msg_ir_build_total_nanos,
         &mut snapshot.msg_ir_build_max_nanos,
         eval.msg_ir_build,
-    );
-    write_latency_snapshot(
-        &mut snapshot.fast_where_count,
-        &mut snapshot.fast_where_total_nanos,
-        &mut snapshot.fast_where_max_nanos,
-        eval.fast_where,
     );
     write_latency_snapshot(
         &mut snapshot.predicate_count,
@@ -653,7 +650,8 @@ pub extern "C" fn bre_create_engine(
             log::warn!("protobuf payload format requires descriptor_set_path and message_name");
             return ptr::null_mut();
         }
-        let descriptor_path = match unsafe { CStr::from_ptr(protobuf_descriptor_set_path) }.to_str() {
+        let descriptor_path = match unsafe { CStr::from_ptr(protobuf_descriptor_set_path) }.to_str()
+        {
             Ok(value) if !value.trim().is_empty() => value.trim(),
             _ => return ptr::null_mut(),
         };
@@ -822,10 +820,7 @@ pub extern "C" fn bre_get_rule_metadata_table(
 }
 
 #[no_mangle]
-pub extern "C" fn bre_set_eval_parallel_threshold(
-    engine: *mut BifroRE,
-    threshold: u32,
-) -> c_int {
+pub extern "C" fn bre_set_eval_parallel_threshold(engine: *mut BifroRE, threshold: u32) -> c_int {
     if engine.is_null() {
         return BRE_ERR_INVALID_ARGUMENT;
     }
@@ -842,10 +837,7 @@ pub extern "C" fn bre_set_eval_parallel_threshold(
 }
 
 #[no_mangle]
-pub extern "C" fn bre_set_poll_batch_limit(
-    engine: *mut BifroRE,
-    limit: u32,
-) -> c_int {
+pub extern "C" fn bre_set_poll_batch_limit(engine: *mut BifroRE, limit: u32) -> c_int {
     if engine.is_null() {
         return BRE_ERR_INVALID_ARGUMENT;
     }
@@ -859,10 +851,7 @@ pub extern "C" fn bre_set_poll_batch_limit(
 }
 
 #[no_mangle]
-pub extern "C" fn bre_set_detailed_latency_metrics(
-    engine: *mut BifroRE,
-    enabled: bool,
-) -> c_int {
+pub extern "C" fn bre_set_detailed_latency_metrics(engine: *mut BifroRE, enabled: bool) -> c_int {
     if engine.is_null() {
         return BRE_ERR_INVALID_ARGUMENT;
     }
@@ -893,11 +882,7 @@ pub extern "C" fn bre_start_mqtt(
     keep_alive_secs: u16,
     multi_nci: bool,
 ) -> c_int {
-    if engine.is_null()
-        || host.is_null()
-        || group_name.is_null()
-        || ordered_prefix.is_null()
-    {
+    if engine.is_null() || host.is_null() || group_name.is_null() || ordered_prefix.is_null() {
         return BRE_ERR_INVALID_ARGUMENT;
     }
     let engine_ref = unsafe { &mut *engine };
@@ -952,7 +937,11 @@ pub extern "C" fn bre_start_mqtt(
         }
     };
     let requested_client_count = client_count.max(1);
-    let client_ids = resolve_client_ids(&engine_ref.client_ids_path, &node_id, requested_client_count);
+    let client_ids = resolve_client_ids(
+        &engine_ref.client_ids_path,
+        &node_id,
+        requested_client_count,
+    );
     let effective_client_count = client_ids.len().max(1) as u16;
     if effective_client_count != requested_client_count {
         log::warn!(
@@ -982,7 +971,8 @@ pub extern "C" fn bre_start_mqtt(
         multi_nci,
     };
     engine_ref.active_client_ids = client_ids;
-    if let Err(err) = persist_client_ids(&engine_ref.client_ids_path, &engine_ref.active_client_ids) {
+    if let Err(err) = persist_client_ids(&engine_ref.client_ids_path, &engine_ref.active_client_ids)
+    {
         log::warn!(
             "failed to persist client ids at start path={} error={}",
             engine_ref.client_ids_path,
@@ -1222,10 +1212,7 @@ pub extern "C" fn bre_free_packed_eval_results(results: *mut BifroPackedEvalResu
 }
 
 #[no_mangle]
-pub extern "C" fn bre_free_rule_metadata_table(
-    metadata: *mut BifroRuleMetadata,
-    len: size_t,
-) {
+pub extern "C" fn bre_free_rule_metadata_table(metadata: *mut BifroRuleMetadata, len: size_t) {
     if metadata.is_null() || len == 0 {
         return;
     }
