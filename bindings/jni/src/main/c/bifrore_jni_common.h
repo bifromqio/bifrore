@@ -35,6 +35,7 @@ struct BifroREMetricsSnapshot {
     uint64_t message_pipeline_max_nanos;
     uint64_t eval_count;
     uint64_t eval_error_count;
+    uint64_t eval_type_error_count;
     uint64_t exec_count;
     uint64_t exec_total_nanos;
     uint64_t exec_max_nanos;
@@ -47,9 +48,6 @@ struct BifroREMetricsSnapshot {
     uint64_t msg_ir_build_count;
     uint64_t msg_ir_build_total_nanos;
     uint64_t msg_ir_build_max_nanos;
-    uint64_t fast_where_count;
-    uint64_t fast_where_total_nanos;
-    uint64_t fast_where_max_nanos;
     uint64_t predicate_count;
     uint64_t predicate_total_nanos;
     uint64_t predicate_max_nanos;
