@@ -107,6 +107,7 @@ impl StageRecorder {
 pub struct EvalMetrics {
     eval_count: AtomicU64,
     eval_error_count: AtomicU64,
+    eval_type_error_count: AtomicU64,
     detailed_latency_enabled: bool,
     stage_recorder: StageRecorder,
     stages: [LatencyMetrics; LatencyStage::COUNT],
@@ -117,6 +118,7 @@ impl EvalMetrics {
         Self {
             eval_count: AtomicU64::new(0),
             eval_error_count: AtomicU64::new(0),
+            eval_type_error_count: AtomicU64::new(0),
             detailed_latency_enabled,
             stage_recorder: if detailed_latency_enabled {
                 StageRecorder::DETAILED
@@ -141,10 +143,15 @@ impl EvalMetrics {
         (self.stage_recorder.finish)(&self.stages[stage.index()], timer);
     }
 
-    pub fn record_eval(&self, success: bool) {
+    pub fn record_eval_success(&self) {
         self.eval_count.fetch_add(1, Ordering::Relaxed);
-        if !success {
-            self.eval_error_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_eval_error(&self, is_type_error: bool) {
+        self.eval_count.fetch_add(1, Ordering::Relaxed);
+        self.eval_error_count.fetch_add(1, Ordering::Relaxed);
+        if is_type_error {
+            self.eval_type_error_count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -152,6 +159,7 @@ impl EvalMetrics {
         EvalMetricsSnapshot {
             eval_count: self.eval_count.load(Ordering::Relaxed),
             eval_error_count: self.eval_error_count.load(Ordering::Relaxed),
+            eval_type_error_count: self.eval_type_error_count.load(Ordering::Relaxed),
             topic_match: self.stages[LatencyStage::TopicMatch.index()].snapshot(),
             payload_decode: self.stages[LatencyStage::PayloadDecode.index()].snapshot(),
             msg_ir_build: self.stages[LatencyStage::MsgIrBuild.index()].snapshot(),
@@ -179,6 +187,7 @@ pub struct LatencyMetricsSnapshot {
 pub struct EvalMetricsSnapshot {
     pub eval_count: u64,
     pub eval_error_count: u64,
+    pub eval_type_error_count: u64,
     pub topic_match: LatencyMetricsSnapshot,
     pub payload_decode: LatencyMetricsSnapshot,
     pub msg_ir_build: LatencyMetricsSnapshot,

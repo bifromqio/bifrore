@@ -92,6 +92,49 @@ pub enum RuleError {
     MissingTopic,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EvalError {
+    #[error("missing payload field `{field}`")]
+    MissingPayloadField { field: String },
+    #[error("missing message property `{key}`")]
+    MissingProperty { key: String },
+    #[error("missing message metadata `{name}`")]
+    MissingMetadata { name: &'static str },
+    #[error("type mismatch in {context}: expected {expected}, got {actual}")]
+    TypeMismatch {
+        context: &'static str,
+        expected: &'static str,
+        actual: &'static str,
+    },
+    #[error("type mismatch in {context}: operator {op} cannot apply to {left} and {right}")]
+    BinaryTypeMismatch {
+        context: &'static str,
+        op: &'static str,
+        left: &'static str,
+        right: &'static str,
+    },
+    #[error("invalid topic level value in {context}: expected non-negative integer, got {actual}")]
+    InvalidTopicLevelValue {
+        context: &'static str,
+        actual: &'static str,
+    },
+    #[error("unsupported expression in {context}")]
+    UnsupportedExpression { context: &'static str },
+    #[error("failed to serialize projected payload")]
+    ProjectionSerialization,
+}
+
+impl EvalError {
+    pub fn is_type_error(&self) -> bool {
+        matches!(
+            self,
+            EvalError::TypeMismatch { .. }
+                | EvalError::BinaryTypeMismatch { .. }
+                | EvalError::InvalidTopicLevelValue { .. }
+        )
+    }
+}
+
 pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let dialect = GenericDialect {};
     let normalized_sql = normalize_rule_sql(&rule.expression);
@@ -440,7 +483,7 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
     payload_obj: &MsgIr,
     topic_parts: &[&str],
     metrics: &EvalMetrics,
-) -> Option<Message> {
+) -> Result<Option<Message>, EvalError> {
     let context = EvalContext {
         message,
         payload: payload_obj,
@@ -449,25 +492,26 @@ pub(crate) fn evaluate_rule_with_payload_and_topic_parts(
 
     if let Some(plan) = &rule.where_plan {
         let predicate_timer = metrics.start_stage();
-        let predicate_result = evaluate_plan_bool(plan, &context).unwrap_or(false);
+        let predicate_result = evaluate_plan_bool(plan, &context)?;
         metrics.finish_stage(LatencyStage::Predicate, predicate_timer);
         if !predicate_result {
-            return None;
+            return Ok(None);
         }
     }
 
     match &rule.select_plan {
-        SelectPlan::All => Some(message.clone()),
+        SelectPlan::All => Ok(Some(message.clone())),
         SelectPlan::Columns(columns) => {
             let projection_timer = metrics.start_stage();
             let mut output = serde_json::Map::with_capacity(columns.len());
             for column in columns {
-                let value = evaluate_plan_value(&column.expr, &context).unwrap_or(Value::Null);
+                let value = evaluate_plan_value(&column.expr, &context)?;
                 output.insert(column.alias.clone(), value);
             }
-            let new_payload = serde_json::to_vec(&Value::Object(output)).ok()?;
+            let new_payload = serde_json::to_vec(&Value::Object(output))
+                .map_err(|_| EvalError::ProjectionSerialization)?;
             metrics.finish_stage(LatencyStage::Projection, projection_timer);
-            Some(Message::new(&message.topic, new_payload))
+            Ok(Some(Message::new(&message.topic, new_payload)))
         }
     }
 }
@@ -478,14 +522,14 @@ struct EvalContext<'a> {
     topic_parts: &'a [&'a str],
 }
 
-fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
+fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Result<bool, EvalError> {
     match plan {
         EvalExprPlan::Binary { left, op, right }
             if matches!(op, BinaryOperator::And | BinaryOperator::Or) =>
         {
             let left_val = evaluate_plan_bool(left, ctx)?;
             let right_val = evaluate_plan_bool(right, ctx)?;
-            Some(match op {
+            Ok(match op {
                 BinaryOperator::And => left_val && right_val,
                 BinaryOperator::Or => left_val || right_val,
                 _ => false,
@@ -502,18 +546,22 @@ fn evaluate_plan_bool(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<bool> {
                     | BinaryOperator::NotEq
             ) =>
         {
-            if let Some(value) = evaluate_plan_compare_bool(left, op, right, ctx) {
-                return Some(value);
+            if let Some(value) = evaluate_plan_compare_bool(left, op, right, ctx)? {
+                return Ok(value);
             }
             let left_val = evaluate_plan_value(left, ctx)?;
             let right_val = evaluate_plan_value(right, ctx)?;
-            compare_values(&left_val, &right_val, op)
+            compare_values_runtime(&left_val, &right_val, op, "predicate")
         }
         _ => {
             let value = evaluate_plan_value(plan, ctx)?;
             match value {
-                Value::Bool(v) => Some(v),
-                _ => None,
+                Value::Bool(v) => Ok(v),
+                _ => Err(EvalError::TypeMismatch {
+                    context: "predicate",
+                    expected: "bool",
+                    actual: json_value_type_name(&value),
+                }),
             }
         }
     }
@@ -531,47 +579,62 @@ fn evaluate_plan_compare_bool(
     op: &BinaryOperator,
     right: &EvalExprPlan,
     ctx: &EvalContext,
-) -> Option<bool> {
-    let left_val = evaluate_plan_runtime_value(left, ctx)?;
-    let right_val = evaluate_plan_runtime_value(right, ctx)?;
-    compare_runtime_runtime(&left_val, &right_val, op)
+) -> Result<Option<bool>, EvalError> {
+    let Some(left_val) = evaluate_plan_runtime_value(left, ctx)? else {
+        return Ok(None);
+    };
+    let Some(right_val) = evaluate_plan_runtime_value(right, ctx)? else {
+        return Ok(None);
+    };
+    compare_runtime_runtime(&left_val, &right_val, op, "predicate").map(Some)
 }
 
 fn evaluate_plan_runtime_value<'a>(
     plan: &'a EvalExprPlan,
     ctx: &'a EvalContext,
-) -> Option<RuntimeValue<'a>> {
+) -> Result<Option<RuntimeValue<'a>>, EvalError> {
     match plan {
         EvalExprPlan::Const(value) => match value {
-            Value::Number(number) => number.as_f64().map(RuntimeValue::Number),
-            Value::String(text) => Some(RuntimeValue::String(text)),
-            Value::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
-            _ => None,
+            Value::Number(number) => Ok(number.as_f64().map(RuntimeValue::Number)),
+            Value::String(text) => Ok(Some(RuntimeValue::String(text))),
+            Value::Bool(flag) => Ok(Some(RuntimeValue::Bool(*flag))),
+            _ => Ok(None),
         },
-        EvalExprPlan::PayloadField(path) => match payload_value_by_path(ctx.payload, path)? {
-            PayloadValue::Number(number) => Some(RuntimeValue::Number(*number)),
-            PayloadValue::String(text) => Some(RuntimeValue::String(text)),
-            PayloadValue::Bool(flag) => Some(RuntimeValue::Bool(*flag)),
-            _ => None,
-        },
-        EvalExprPlan::MetaQos => Some(RuntimeValue::Number(ctx.message.qos as f64)),
-        EvalExprPlan::MetaRetain => Some(RuntimeValue::Bool(ctx.message.retain)),
-        EvalExprPlan::MetaDup => Some(RuntimeValue::Bool(ctx.message.dup)),
-        EvalExprPlan::MetaTimestamp => {
-            Some(RuntimeValue::Number(ctx.message.timestamp_millis as f64))
-        }
+        EvalExprPlan::PayloadField(path) => Ok(Some(match payload_value_by_path(ctx.payload, path)? {
+            PayloadValue::Number(number) => RuntimeValue::Number(*number),
+            PayloadValue::String(text) => RuntimeValue::String(text),
+            PayloadValue::Bool(flag) => RuntimeValue::Bool(*flag),
+            value => {
+                return Err(EvalError::TypeMismatch {
+                    context: "predicate",
+                    expected: "number|string|bool",
+                    actual: payload_value_type_name(value),
+                })
+            }
+        })),
+        EvalExprPlan::MetaQos => Ok(Some(RuntimeValue::Number(ctx.message.qos as f64))),
+        EvalExprPlan::MetaRetain => Ok(Some(RuntimeValue::Bool(ctx.message.retain))),
+        EvalExprPlan::MetaDup => Ok(Some(RuntimeValue::Bool(ctx.message.dup))),
+        EvalExprPlan::MetaTimestamp => Ok(Some(RuntimeValue::Number(
+            ctx.message.timestamp_millis as f64,
+        ))),
         EvalExprPlan::MetaClientId => ctx
             .message
             .client_id
             .as_ref()
-            .map(|value| RuntimeValue::String(value)),
+            .map(|value| RuntimeValue::String(value))
+            .map(Some)
+            .ok_or(EvalError::MissingMetadata { name: "clientId" }),
         EvalExprPlan::MetaUsername => ctx
             .message
             .username
             .as_ref()
-            .map(|value| RuntimeValue::String(value)),
+            .map(|value| RuntimeValue::String(value))
+            .map(Some)
+            .ok_or(EvalError::MissingMetadata { name: "username" }),
         EvalExprPlan::TopicLevel { level } => {
-            let level_value = value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?)?;
+            let level_value =
+                value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?, "topic_level")?;
             let index = if level_value == 0 {
                 0
             } else {
@@ -581,16 +644,26 @@ fn evaluate_plan_runtime_value<'a>(
                 .get(index)
                 .copied()
                 .map(RuntimeValue::String)
+                .map(Some)
+                .ok_or(EvalError::MissingMetadata { name: "topic level" })
         }
         EvalExprPlan::PropertiesKey { key } => {
             let key_value = evaluate_plan_value(key, ctx)?;
-            let key = key_value.as_str()?;
+            let key = key_value.as_str().ok_or(EvalError::TypeMismatch {
+                context: "properties key",
+                expected: "string",
+                actual: json_value_type_name(&key_value),
+            })?;
             ctx.message
                 .properties
                 .get(key)
                 .map(|value| RuntimeValue::String(value))
+                .map(Some)
+                .ok_or_else(|| EvalError::MissingProperty {
+                    key: key.to_string(),
+                })
         }
-        _ => None,
+        EvalExprPlan::Binary { .. } | EvalExprPlan::Unknown(_) => Ok(None),
     }
 }
 
@@ -598,53 +671,73 @@ fn compare_runtime_runtime(
     left: &RuntimeValue,
     right: &RuntimeValue,
     op: &BinaryOperator,
-) -> Option<bool> {
+    context: &'static str,
+) -> Result<bool, EvalError> {
     match (left, right) {
-        (RuntimeValue::Number(l), RuntimeValue::Number(r)) => Some(match op {
+        (RuntimeValue::Number(l), RuntimeValue::Number(r)) => Ok(match op {
             BinaryOperator::Gt => l > r,
             BinaryOperator::GtEq => l >= r,
             BinaryOperator::Lt => l < r,
             BinaryOperator::LtEq => l <= r,
             BinaryOperator::Eq => (l - r).abs() < f64::EPSILON,
             BinaryOperator::NotEq => (l - r).abs() >= f64::EPSILON,
-            _ => return None,
+            _ => return Err(EvalError::UnsupportedExpression { context }),
         }),
-        (RuntimeValue::String(l), RuntimeValue::String(r)) => Some(match op {
+        (RuntimeValue::String(l), RuntimeValue::String(r)) => Ok(match op {
             BinaryOperator::Eq => l == r,
             BinaryOperator::NotEq => l != r,
-            _ => return None,
+            _ => {
+                return Err(EvalError::BinaryTypeMismatch {
+                    context,
+                    op: binary_operator_name(op),
+                    left: left.kind(),
+                    right: right.kind(),
+                })
+            }
         }),
-        (RuntimeValue::Bool(l), RuntimeValue::Bool(r)) => Some(match op {
+        (RuntimeValue::Bool(l), RuntimeValue::Bool(r)) => Ok(match op {
             BinaryOperator::Eq => l == r,
             BinaryOperator::NotEq => l != r,
-            _ => return None,
+            _ => {
+                return Err(EvalError::BinaryTypeMismatch {
+                    context,
+                    op: binary_operator_name(op),
+                    left: left.kind(),
+                    right: right.kind(),
+                })
+            }
         }),
-        _ => None,
+        _ => Err(EvalError::BinaryTypeMismatch {
+            context,
+            op: binary_operator_name(op),
+            left: left.kind(),
+            right: right.kind(),
+        }),
     }
 }
 
-fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> {
+fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Result<Value, EvalError> {
     match plan {
-        EvalExprPlan::Const(value) => Some(value.clone()),
-        EvalExprPlan::PayloadField(path) => {
-            payload_value_by_path(ctx.payload, path).map(PayloadValue::to_json_value)
-        }
-        EvalExprPlan::MetaQos => Some(Value::Number(serde_json::Number::from(ctx.message.qos))),
-        EvalExprPlan::MetaRetain => Some(Value::Bool(ctx.message.retain)),
-        EvalExprPlan::MetaDup => Some(Value::Bool(ctx.message.dup)),
-        EvalExprPlan::MetaTimestamp => Some(Value::Number(serde_json::Number::from(
+        EvalExprPlan::Const(value) => Ok(value.clone()),
+        EvalExprPlan::PayloadField(path) => Ok(payload_value_by_path(ctx.payload, path)?.to_json_value()),
+        EvalExprPlan::MetaQos => Ok(Value::Number(serde_json::Number::from(ctx.message.qos))),
+        EvalExprPlan::MetaRetain => Ok(Value::Bool(ctx.message.retain)),
+        EvalExprPlan::MetaDup => Ok(Value::Bool(ctx.message.dup)),
+        EvalExprPlan::MetaTimestamp => Ok(Value::Number(serde_json::Number::from(
             ctx.message.timestamp_millis,
         ))),
         EvalExprPlan::MetaClientId => ctx
             .message
             .client_id
             .as_ref()
-            .map(|value| Value::String(value.clone())),
+            .map(|value| Value::String(value.clone()))
+            .ok_or(EvalError::MissingMetadata { name: "clientId" }),
         EvalExprPlan::MetaUsername => ctx
             .message
             .username
             .as_ref()
-            .map(|value| Value::String(value.clone())),
+            .map(|value| Value::String(value.clone()))
+            .ok_or(EvalError::MissingMetadata { name: "username" }),
         EvalExprPlan::Binary { left, op, right } => {
             if matches!(op, BinaryOperator::And | BinaryOperator::Or) {
                 return evaluate_plan_bool(plan, ctx).map(Value::Bool);
@@ -656,20 +749,26 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> 
                 BinaryOperator::Plus
                 | BinaryOperator::Minus
                 | BinaryOperator::Multiply
-                | BinaryOperator::Divide => evaluate_arithmetic(&left_val, &right_val, op),
+                | BinaryOperator::Divide => {
+                    evaluate_arithmetic_runtime(&left_val, &right_val, op, "projection")
+                }
                 BinaryOperator::Gt
                 | BinaryOperator::GtEq
                 | BinaryOperator::Lt
                 | BinaryOperator::LtEq
                 | BinaryOperator::Eq
                 | BinaryOperator::NotEq => {
-                    compare_values(&left_val, &right_val, op).map(Value::Bool)
+                    compare_values_runtime(&left_val, &right_val, op, "projection")
+                        .map(Value::Bool)
                 }
-                _ => None,
+                _ => Err(EvalError::UnsupportedExpression {
+                    context: "projection",
+                }),
             }
         }
         EvalExprPlan::TopicLevel { level } => {
-            let level_value = value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?)?;
+            let level_value =
+                value_to_non_negative_u64(&evaluate_plan_value(level, ctx)?, "topic_level")?;
             let index = if level_value == 0 {
                 0
             } else {
@@ -678,16 +777,26 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Option<Value> 
             ctx.topic_parts
                 .get(index)
                 .map(|value| Value::String((*value).to_string()))
+                .ok_or(EvalError::MissingMetadata { name: "topic level" })
         }
         EvalExprPlan::PropertiesKey { key } => {
             let key_value = evaluate_plan_value(key, ctx)?;
-            let key = key_value.as_str()?;
+            let key = key_value.as_str().ok_or(EvalError::TypeMismatch {
+                context: "properties key",
+                expected: "string",
+                actual: json_value_type_name(&key_value),
+            })?;
             ctx.message
                 .properties
                 .get(key)
                 .map(|value| Value::String(value.clone()))
+                .ok_or_else(|| EvalError::MissingProperty {
+                    key: key.to_string(),
+                })
         }
-        EvalExprPlan::Unknown(_) => None,
+        EvalExprPlan::Unknown(_) => Err(EvalError::UnsupportedExpression {
+            context: "rule expression",
+        }),
     }
 }
 
@@ -702,6 +811,38 @@ fn evaluate_arithmetic(left: &Value, right: &Value, op: &BinaryOperator) -> Opti
         _ => return None,
     };
     serde_json::Number::from_f64(result).map(Value::Number)
+}
+
+fn evaluate_arithmetic_runtime(
+    left: &Value,
+    right: &Value,
+    op: &BinaryOperator,
+    context: &'static str,
+) -> Result<Value, EvalError> {
+    let left_number = left.as_f64().ok_or(EvalError::BinaryTypeMismatch {
+        context,
+        op: binary_operator_name(op),
+        left: json_value_type_name(left),
+        right: json_value_type_name(right),
+    })?;
+    let right_number = right.as_f64().ok_or(EvalError::BinaryTypeMismatch {
+        context,
+        op: binary_operator_name(op),
+        left: json_value_type_name(left),
+        right: json_value_type_name(right),
+    })?;
+    let result = match op {
+        BinaryOperator::Plus => left_number + right_number,
+        BinaryOperator::Minus => left_number - right_number,
+        BinaryOperator::Multiply => left_number * right_number,
+        BinaryOperator::Divide => left_number / right_number,
+        _ => {
+            return Err(EvalError::UnsupportedExpression { context });
+        }
+    };
+    serde_json::Number::from_f64(result)
+        .map(Value::Number)
+        .ok_or(EvalError::UnsupportedExpression { context })
 }
 
 fn compare_values(left: &Value, right: &Value, op: &BinaryOperator) -> Option<bool> {
@@ -733,15 +874,84 @@ fn compare_values(left: &Value, right: &Value, op: &BinaryOperator) -> Option<bo
     }
 }
 
-fn value_to_non_negative_u64(value: &Value) -> Option<u64> {
+fn compare_values_runtime(
+    left: &Value,
+    right: &Value,
+    op: &BinaryOperator,
+    context: &'static str,
+) -> Result<bool, EvalError> {
+    match (left, right) {
+        (Value::Number(l), Value::Number(r)) => {
+            let l = l.as_f64().ok_or(EvalError::BinaryTypeMismatch {
+                context,
+                op: binary_operator_name(op),
+                left: json_value_type_name(left),
+                right: json_value_type_name(right),
+            })?;
+            let r = r.as_f64().ok_or(EvalError::BinaryTypeMismatch {
+                context,
+                op: binary_operator_name(op),
+                left: json_value_type_name(left),
+                right: json_value_type_name(right),
+            })?;
+            Ok(match op {
+                BinaryOperator::Gt => l > r,
+                BinaryOperator::GtEq => l >= r,
+                BinaryOperator::Lt => l < r,
+                BinaryOperator::LtEq => l <= r,
+                BinaryOperator::Eq => (l - r).abs() < f64::EPSILON,
+                BinaryOperator::NotEq => (l - r).abs() >= f64::EPSILON,
+                _ => return Err(EvalError::UnsupportedExpression { context }),
+            })
+        }
+        (Value::String(l), Value::String(r)) => Ok(match op {
+            BinaryOperator::Eq => l == r,
+            BinaryOperator::NotEq => l != r,
+            _ => {
+                return Err(EvalError::BinaryTypeMismatch {
+                    context,
+                    op: binary_operator_name(op),
+                    left: json_value_type_name(left),
+                    right: json_value_type_name(right),
+                })
+            }
+        }),
+        (Value::Bool(l), Value::Bool(r)) => Ok(match op {
+            BinaryOperator::Eq => l == r,
+            BinaryOperator::NotEq => l != r,
+            _ => {
+                return Err(EvalError::BinaryTypeMismatch {
+                    context,
+                    op: binary_operator_name(op),
+                    left: json_value_type_name(left),
+                    right: json_value_type_name(right),
+                })
+            }
+        }),
+        _ => Err(EvalError::BinaryTypeMismatch {
+            context,
+            op: binary_operator_name(op),
+            left: json_value_type_name(left),
+            right: json_value_type_name(right),
+        }),
+    }
+}
+
+fn value_to_non_negative_u64(value: &Value, context: &'static str) -> Result<u64, EvalError> {
     if let Some(raw) = value.as_u64() {
-        return Some(raw);
+        return Ok(raw);
     }
-    let number = value.as_f64()?;
+    let number = value.as_f64().ok_or(EvalError::InvalidTopicLevelValue {
+        context,
+        actual: json_value_type_name(value),
+    })?;
     if number < 0.0 || number.fract() != 0.0 || number > u64::MAX as f64 {
-        return None;
+        return Err(EvalError::InvalidTopicLevelValue {
+            context,
+            actual: json_value_type_name(value),
+        });
     }
-    Some(number as u64)
+    Ok(number as u64)
 }
 
 fn derive_alias(expr: &Expr) -> String {
@@ -758,8 +968,62 @@ fn derive_alias(expr: &Expr) -> String {
 fn payload_value_by_path<'a>(
     payload: &'a MsgIr,
     path: &CompiledPayloadField,
-) -> Option<&'a PayloadValue> {
-    payload.get_field(path)
+) -> Result<&'a PayloadValue, EvalError> {
+    payload
+        .get_field(path)
+        .ok_or_else(|| EvalError::MissingPayloadField {
+            field: path.key().to_string(),
+        })
+}
+
+impl RuntimeValue<'_> {
+    fn kind(&self) -> &'static str {
+        match self {
+            RuntimeValue::Number(_) => "number",
+            RuntimeValue::String(_) => "string",
+            RuntimeValue::Bool(_) => "bool",
+        }
+    }
+}
+
+fn json_value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn payload_value_type_name(value: &PayloadValue) -> &'static str {
+    match value {
+        PayloadValue::Null => "null",
+        PayloadValue::Bool(_) => "bool",
+        PayloadValue::Number(_) => "number",
+        PayloadValue::String(_) => "string",
+        PayloadValue::Array(_) => "array",
+        PayloadValue::Object(_) => "object",
+    }
+}
+
+fn binary_operator_name(op: &BinaryOperator) -> &'static str {
+    match op {
+        BinaryOperator::Plus => "+",
+        BinaryOperator::Minus => "-",
+        BinaryOperator::Multiply => "*",
+        BinaryOperator::Divide => "/",
+        BinaryOperator::Gt => ">",
+        BinaryOperator::GtEq => ">=",
+        BinaryOperator::Lt => "<",
+        BinaryOperator::LtEq => "<=",
+        BinaryOperator::Eq => "=",
+        BinaryOperator::NotEq => "!=",
+        BinaryOperator::And => "and",
+        BinaryOperator::Or => "or",
+        _ => "unknown",
+    }
 }
 
 fn normalize_topic(topic: &str) -> String {
@@ -832,6 +1096,7 @@ mod tests {
             &topic_parts,
             &EvalMetrics::default(),
         )
+        .expect("evaluation should not error")
     }
 
     #[test]

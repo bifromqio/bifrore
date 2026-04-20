@@ -375,6 +375,7 @@ JNIEXPORT jlongArray JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshotValue
         (jlong)snapshot.message_pipeline_max_nanos,
         (jlong)snapshot.eval_count,
         (jlong)snapshot.eval_error_count,
+        (jlong)snapshot.eval_type_error_count,
         (jlong)snapshot.exec_count,
         (jlong)snapshot.exec_total_nanos,
         (jlong)snapshot.exec_max_nanos,

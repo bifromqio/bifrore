@@ -8,8 +8,8 @@ use crate::payload::{
     PayloadFormat,
 };
 use crate::rule::{
-    compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, RuleDefinition,
-    RuleError,
+    compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, EvalError,
+    RuleDefinition, RuleError,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -228,7 +228,10 @@ impl RuleEngine {
                 .collect::<Vec<_>>()
         };
         for attempt in attempts {
-            self.metrics.record_eval(attempt.success);
+            match attempt.error.as_ref() {
+                Some(error) => self.metrics.record_eval_error(error.is_type_error()),
+                None => self.metrics.record_eval_success(),
+            }
             if let Some(evaluation) = attempt.evaluation {
                 log::trace!("evaluation={:?}", evaluation);
                 results.push(evaluation);
@@ -308,8 +311,8 @@ struct RuleFile {
 }
 
 struct EvalAttempt {
-    success: bool,
     evaluation: Option<RuleEvaluation>,
+    error: Option<EvalError>,
 }
 
 fn evaluate_single_rule(
@@ -330,14 +333,30 @@ fn evaluate_single_rule(
         metrics,
     );
     metrics.finish_stage(LatencyStage::Exec, exec_timer);
-    let success = evaluated.is_some();
-    let evaluation = evaluated.map(|evaluated_message| RuleEvaluation {
-        rule_index,
-        message: evaluated_message,
-    });
-    Some(EvalAttempt {
-        success,
-        evaluation,
+    Some(match evaluated {
+        Ok(Some(evaluated_message)) => EvalAttempt {
+            evaluation: Some(RuleEvaluation {
+                rule_index,
+                message: evaluated_message,
+            }),
+            error: None,
+        },
+        Ok(None) => EvalAttempt {
+            evaluation: None,
+            error: None,
+        },
+        Err(error) => {
+            log::warn!(
+                "dropping rule evaluation topic={} rule_id={} error={}",
+                message.topic,
+                rule.id,
+                error
+            );
+            EvalAttempt {
+                evaluation: None,
+                error: Some(error),
+            }
+        }
     })
 }
 
@@ -632,6 +651,27 @@ mod tests {
         let _ = engine.evaluate(&message);
         let snapshot = engine.metrics().snapshot();
         assert!(snapshot.topic_match.count > 0);
+    }
+
+    #[test]
+    fn evaluate_type_mismatch_drops_message_and_records_type_error() {
+        let mut engine = RuleEngine::default();
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select hum + 10 as h from data".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+
+        let payload = serde_json::json!({"hum": "10"});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        let results = engine.evaluate(&message);
+        assert!(results.is_empty());
+
+        let snapshot = engine.metrics().snapshot();
+        assert_eq!(snapshot.eval_count, 1);
+        assert_eq!(snapshot.eval_error_count, 1);
+        assert_eq!(snapshot.eval_type_error_count, 1);
     }
 
     #[test]
