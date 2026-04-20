@@ -386,37 +386,29 @@ fn matched_rules_require_topic_parts(
 #[derive(Debug)]
 struct TopicMatchCache {
     capacity: usize,
-    access_seq: u64,
-    entries: HashMap<String, TopicMatchCacheEntry>,
-}
-
-#[derive(Debug, Clone)]
-struct TopicMatchCacheEntry {
-    matched_rule_indexes: Vec<usize>,
-    use_count: u64,
-    last_access_seq: u64,
+    random_state: u64,
+    entries: HashMap<String, Vec<usize>>,
+    keys: Vec<String>,
 }
 
 impl TopicMatchCache {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            access_seq: 0,
+            random_state: 0x9e37_79b9_7f4a_7c15,
             entries: HashMap::new(),
+            keys: Vec::with_capacity(capacity.min(64)),
         }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
-        self.access_seq = 0;
+        self.keys.clear();
+        self.random_state = 0x9e37_79b9_7f4a_7c15;
     }
 
     fn get(&mut self, topic: &str) -> Option<Vec<usize>> {
-        self.access_seq = self.access_seq.saturating_add(1);
-        let entry = self.entries.get_mut(topic)?;
-        entry.use_count = entry.use_count.saturating_add(1);
-        entry.last_access_seq = self.access_seq;
-        Some(entry.matched_rule_indexes.clone())
+        self.entries.get(topic).cloned()
     }
 
     fn insert(&mut self, topic: String, matched_rule_indexes: Vec<usize>) {
@@ -424,38 +416,36 @@ impl TopicMatchCache {
             return;
         }
 
-        self.access_seq = self.access_seq.saturating_add(1);
         if let Some(entry) = self.entries.get_mut(&topic) {
-            entry.matched_rule_indexes = matched_rule_indexes;
-            entry.use_count = entry.use_count.saturating_add(1);
-            entry.last_access_seq = self.access_seq;
+            *entry = matched_rule_indexes;
             return;
         }
 
         if self.entries.len() >= self.capacity {
-            self.evict_lfu();
+            self.evict_random();
         }
 
-        self.entries.insert(
-            topic,
-            TopicMatchCacheEntry {
-                matched_rule_indexes,
-                use_count: 1,
-                last_access_seq: self.access_seq,
-            },
-        );
+        self.keys.push(topic.clone());
+        self.entries.insert(topic, matched_rule_indexes);
     }
 
-    fn evict_lfu(&mut self) {
-        let Some(evict_key) = self
-            .entries
-            .iter()
-            .min_by_key(|(_, entry)| (entry.use_count, entry.last_access_seq))
-            .map(|(key, _)| key.clone())
-        else {
+    fn evict_random(&mut self) {
+        if self.keys.is_empty() {
             return;
-        };
+        }
+
+        let index = (self.next_random_u64() as usize) % self.keys.len();
+        let evict_key = self.keys.swap_remove(index);
         self.entries.remove(&evict_key);
+    }
+
+    fn next_random_u64(&mut self) -> u64 {
+        let mut x = self.random_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.random_state = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
 }
 
@@ -781,16 +771,17 @@ mod tests {
         assert_eq!(engine.evaluate(&message).len(), 1);
 
         assert_eq!(engine.topic_match_cache.entries.len(), 1);
+        assert_eq!(engine.topic_match_cache.keys.len(), 1);
         let entry = engine
             .topic_match_cache
             .entries
             .get("sensors/room1/temp")
             .expect("cache entry");
-        assert_eq!(entry.use_count, 2);
+        assert!(!entry.is_empty());
     }
 
     #[test]
-    fn topic_match_cache_evicts_least_used_entry() {
+    fn topic_match_cache_evicts_to_capacity() {
         let mut engine = RuleEngine::new_with_cache_capacity(PayloadDecoder::Json, 2);
         engine
             .add_rule(RuleDefinition {
@@ -809,8 +800,11 @@ mod tests {
         assert_eq!(engine.evaluate(&message_b).len(), 1);
         assert_eq!(engine.evaluate(&message_c).len(), 1);
 
-        assert!(engine.topic_match_cache.entries.get("sensors/a/temp").is_some());
-        assert!(engine.topic_match_cache.entries.get("sensors/c/temp").is_some());
-        assert!(engine.topic_match_cache.entries.get("sensors/b/temp").is_none());
+        assert_eq!(engine.topic_match_cache.entries.len(), 2);
+        assert_eq!(engine.topic_match_cache.keys.len(), 2);
+        assert!(engine.topic_match_cache.entries.contains_key("sensors/c/temp"));
+        for key in &engine.topic_match_cache.keys {
+            assert!(engine.topic_match_cache.entries.contains_key(key));
+        }
     }
 }
