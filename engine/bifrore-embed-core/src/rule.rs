@@ -1099,6 +1099,21 @@ mod tests {
         .expect("evaluation should not error")
     }
 
+    pub fn evaluate_rule_result(
+        rule: &CompiledRule,
+        message: &Message,
+    ) -> Result<Option<Message>, EvalError> {
+        let obj = decode_payload_ir(&message.payload, PayloadFormat::Json).expect("decode payload");
+        let topic_parts: Vec<&str> = message.topic.split('/').collect();
+        evaluate_rule_with_payload_and_topic_parts(
+            rule,
+            message,
+            &obj,
+            &topic_parts,
+            &EvalMetrics::default(),
+        )
+    }
+
     #[test]
     fn compile_basic_rule() {
         let rule = RuleDefinition {
@@ -1323,5 +1338,111 @@ mod tests {
         let payload = serde_json::json!({"temp": 10});
         let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
         assert!(evaluate_rule(&compiled, &message).is_some());
+    }
+
+    #[test]
+    fn incompatible_arithmetic_reports_binary_type_mismatch() {
+        let rule = RuleDefinition {
+            expression: "select hum + 10 from data".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": 25, "hum": "10"});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert_eq!(
+            evaluate_rule_result(&compiled, &message),
+            Err(EvalError::BinaryTypeMismatch {
+                context: "projection",
+                op: "+",
+                left: "string",
+                right: "number",
+            })
+        );
+    }
+
+    #[test]
+    fn missing_payload_field_reports_missing_payload_field() {
+        let rule = RuleDefinition {
+            expression: "select hum from data".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": 25});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert_eq!(
+            evaluate_rule_result(&compiled, &message),
+            Err(EvalError::MissingPayloadField {
+                field: "hum".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn missing_property_reports_missing_property() {
+        let rule = RuleDefinition {
+            expression: "select properties['tenant'] as tenant from data".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": 25});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert_eq!(
+            evaluate_rule_result(&compiled, &message),
+            Err(EvalError::MissingProperty {
+                key: "tenant".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn missing_metadata_reports_missing_metadata() {
+        let rule = RuleDefinition {
+            expression: "select clientId as cid from data".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": 25});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert_eq!(
+            evaluate_rule_result(&compiled, &message),
+            Err(EvalError::MissingMetadata { name: "clientId" })
+        );
+    }
+
+    #[test]
+    fn topic_level_string_index_reports_invalid_topic_level_value() {
+        let rule = RuleDefinition {
+            expression: "select topic_level(t, '2') as room from 'sensors/+/temp' as t".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": 25});
+        let message = Message::new("sensors/room1/temp", serde_json::to_vec(&payload).unwrap());
+        assert_eq!(
+            evaluate_rule_result(&compiled, &message),
+            Err(EvalError::InvalidTopicLevelValue {
+                context: "topic_level",
+                actual: "string",
+            })
+        );
+    }
+
+    #[test]
+    fn properties_numeric_key_reports_type_mismatch() {
+        let rule = RuleDefinition {
+            expression: "select properties[1] as p from data".to_string(),
+            destinations: vec!["dest".to_string()],
+        };
+        let compiled = compile_rule(rule).expect("compile");
+        let payload = serde_json::json!({"temp": 25});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        assert_eq!(
+            evaluate_rule_result(&compiled, &message),
+            Err(EvalError::TypeMismatch {
+                context: "properties key",
+                expected: "string",
+                actual: "number",
+            })
+        );
     }
 }

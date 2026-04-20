@@ -675,6 +675,27 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_missing_field_drops_message_and_records_non_type_error() {
+        let mut engine = RuleEngine::default();
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select hum from data".to_string(),
+                destinations: vec!["dest".to_string()],
+            })
+            .expect("add rule");
+
+        let payload = serde_json::json!({"temp": 10});
+        let message = Message::new("data", serde_json::to_vec(&payload).unwrap());
+        let results = engine.evaluate(&message);
+        assert!(results.is_empty());
+
+        let snapshot = engine.metrics().snapshot();
+        assert_eq!(snapshot.eval_count, 1);
+        assert_eq!(snapshot.eval_error_count, 1);
+        assert_eq!(snapshot.eval_type_error_count, 0);
+    }
+
+    #[test]
     fn trie_matches_wildcards() {
         let mut engine = RuleEngine::default();
         engine
