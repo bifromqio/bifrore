@@ -376,7 +376,7 @@ public final class BifroREMetricsView {
             );
         }
 
-        static ViewSnapshot from(BifroRE engine, BifroRE.MetricsSnapshot metrics) {
+        static ViewSnapshot from(BifroRE instance, BifroRE.MetricsSnapshot metrics) {
             BifroRE.MetricsSnapshot snapshot = metrics != null ? metrics : BifroRE.MetricsSnapshot.empty();
             return new ViewSnapshot(
                 snapshot.evalCount,
@@ -407,19 +407,19 @@ public final class BifroREMetricsView {
                 snapshot.ffiQueueDepth,
                 snapshot.ffiQueueDepthMax,
                 snapshot.ffiQueueDropCount,
-                engine.callbackDroppedCount(),
-                engine.callbackPendingCount(),
-                engine.callbackQueueDepth(),
-                engine.heapPollErrorCount(),
-                engine.heapPollInvalidArgumentCount(),
-                engine.heapPollInvalidStateCount(),
-                engine.heapPollOperationFailedCount(),
-                engine.heapPollUnknownErrorCount(),
-                engine.heapPollMessageCount(),
-                engine.heapPollPayloadBytes(),
-                engine.heapPollNoDataCount(),
-                engine.shutdownDroppedCount(),
-                engine.pollerTimeoutPendingCount()
+                instance.callbackDroppedCount(),
+                instance.callbackPendingCount(),
+                instance.callbackQueueDepth(),
+                instance.heapPollErrorCount(),
+                instance.heapPollInvalidArgumentCount(),
+                instance.heapPollInvalidStateCount(),
+                instance.heapPollOperationFailedCount(),
+                instance.heapPollUnknownErrorCount(),
+                instance.heapPollMessageCount(),
+                instance.heapPollPayloadBytes(),
+                instance.heapPollNoDataCount(),
+                instance.shutdownDroppedCount(),
+                instance.pollerTimeoutPendingCount()
             );
         }
     }
