@@ -23,7 +23,8 @@ impl PayloadFormat {
     }
 }
 
-type DecodeFn = dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>) -> Result<MsgIr, String>
+type DecodeFn =
+    dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>, Option<&str>) -> Result<MsgIr, String>
     + Send
     + Sync
     + 'static;
@@ -66,6 +67,51 @@ impl PayloadDecoder {
     }
 }
 
+pub fn dynamic_protobuf_registry_from_descriptor_set_file<P: AsRef<Path>>(
+    descriptor_set_path: P,
+) -> Result<PayloadDecoder, String> {
+    let descriptor_set = fs::read(descriptor_set_path).map_err(|err| err.to_string())?;
+    dynamic_protobuf_registry_from_descriptor_set_bytes(&descriptor_set)
+}
+
+pub fn dynamic_protobuf_registry_from_descriptor_set_bytes(
+    descriptor_set: &[u8],
+) -> Result<PayloadDecoder, String> {
+    let pool = Arc::new(DescriptorPool::decode(descriptor_set).map_err(|err| err.to_string())?);
+    let decode = move |payload: &[u8],
+                       plan: PayloadDecodePlan<'_>,
+                       metrics: Option<&EvalMetrics>,
+                       schema_name: Option<&str>| {
+        let schema_name = schema_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "protobuf schema name is required per rule".to_string())?;
+        let message_descriptor = pool
+            .get_message_by_name(schema_name)
+            .ok_or_else(|| format!("protobuf message not found in descriptor set: {schema_name}"))?;
+        let decode_timer = metrics.map(|metrics| metrics.start_stage());
+        let message =
+            DynamicMessage::decode(message_descriptor, payload).map_err(|err| err.to_string())?;
+        if let Some(metrics) = metrics {
+            metrics.finish_stage(
+                LatencyStage::PayloadDecode,
+                decode_timer.expect("stage timer present with metrics"),
+            );
+        }
+
+        let ir_timer = metrics.map(|metrics| metrics.start_stage());
+        let ir = MsgIr::from_protobuf_message_with_decode_plan(&message, plan)?;
+        if let Some(metrics) = metrics {
+            metrics.finish_stage(
+                LatencyStage::MsgIrBuild,
+                ir_timer.expect("stage timer present with metrics"),
+            );
+        }
+        Ok(ir)
+    };
+    Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
+}
+
 pub fn dynamic_protobuf_decoder_from_descriptor_set_file<P: AsRef<Path>>(
     descriptor_set_path: P,
     message_name: &str,
@@ -78,33 +124,16 @@ pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
     descriptor_set: &[u8],
     message_name: &str,
 ) -> Result<PayloadDecoder, String> {
-    let pool = DescriptorPool::decode(descriptor_set).map_err(|err| err.to_string())?;
-    let message_descriptor = pool
-        .get_message_by_name(message_name)
-        .ok_or_else(|| format!("protobuf message not found in descriptor set: {message_name}"))?;
-    let decode =
-        move |payload: &[u8], plan: PayloadDecodePlan<'_>, metrics: Option<&EvalMetrics>| {
-            let decode_timer = metrics.map(|metrics| metrics.start_stage());
-            let message = DynamicMessage::decode(message_descriptor.clone(), payload)
-                .map_err(|err| err.to_string())?;
-            if let Some(metrics) = metrics {
-                metrics.finish_stage(
-                    LatencyStage::PayloadDecode,
-                    decode_timer.expect("stage timer present with metrics"),
-                );
-            }
-
-            let ir_timer = metrics.map(|metrics| metrics.start_stage());
-            let ir = MsgIr::from_protobuf_message_with_decode_plan(&message, plan)?;
-            if let Some(metrics) = metrics {
-                metrics.finish_stage(
-                    LatencyStage::MsgIrBuild,
-                    ir_timer.expect("stage timer present with metrics"),
-                );
-            }
-            Ok(ir)
-        };
-    Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
+    let registry = dynamic_protobuf_registry_from_descriptor_set_bytes(descriptor_set)?;
+    let default_schema = message_name.to_string();
+    match registry {
+        PayloadDecoder::Protobuf(decode) => Ok(PayloadDecoder::Protobuf(Arc::new(
+            move |payload, plan, metrics, _schema_name| {
+                decode(payload, plan, metrics, Some(default_schema.as_str()))
+            },
+        ))),
+        PayloadDecoder::Json => unreachable!("protobuf registry must produce protobuf decoder"),
+    }
 }
 
 pub fn decode_payload_ir(payload: &[u8], format: PayloadFormat) -> Result<MsgIr, String> {
@@ -129,9 +158,21 @@ pub fn decode_payload_ir_with_decoder_and_plan_and_metrics(
     plan: PayloadDecodePlan<'_>,
     metrics: Option<&EvalMetrics>,
 ) -> Result<MsgIr, String> {
+    decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
+        payload, decoder, plan, metrics, None,
+    )
+}
+
+pub fn decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
+    payload: &[u8],
+    decoder: &PayloadDecoder,
+    plan: PayloadDecodePlan<'_>,
+    metrics: Option<&EvalMetrics>,
+    schema_name: Option<&str>,
+) -> Result<MsgIr, String> {
     match decoder {
         PayloadDecoder::Json => decode_json_ir(payload, plan, metrics),
-        PayloadDecoder::Protobuf(decode) => decode(payload, plan, metrics),
+        PayloadDecoder::Protobuf(decode) => decode(payload, plan, metrics, schema_name),
     }
 }
 
@@ -178,6 +219,7 @@ fn unsupported_protobuf_decoder(
     _payload: &[u8],
     _plan: PayloadDecodePlan<'_>,
     _metrics: Option<&EvalMetrics>,
+    _schema_name: Option<&str>,
 ) -> Result<MsgIr, String> {
     Err(
         "protobuf payload decoding requires a descriptor-set file and fully-qualified message name"

@@ -58,6 +58,7 @@ pub fn build_engine(rule_count: usize) -> RuleEngine {
             .add_rule(RuleDefinition {
                 expression,
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
     }
@@ -74,6 +75,7 @@ pub fn build_engine_with_expr(
             .add_rule(RuleDefinition {
                 expression: expr_builder(idx),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
     }
@@ -95,6 +97,7 @@ pub fn build_protobuf_engine(rule_count: usize) -> RuleEngine {
             .add_rule(RuleDefinition {
                 expression,
                 destinations: vec!["dest".to_string()],
+                schema: Some(String::from("bifrore.test.EvalPayload"))
             })
             .expect("add rule");
     }

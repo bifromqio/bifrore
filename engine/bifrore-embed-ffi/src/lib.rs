@@ -4,7 +4,7 @@ use bifrore_embed_core::mqtt::{
     start_mqtt, IncomingDelivery, MessageHandler, MqttAdapterHandle, MqttConfig,
 };
 use bifrore_embed_core::payload::{
-    dynamic_protobuf_decoder_from_descriptor_set_file, PayloadFormat,
+    dynamic_protobuf_registry_from_descriptor_set_file, PayloadFormat,
 };
 use bifrore_embed_core::runtime::{RuleEngine, RuleMetadata};
 use libc::{c_char, c_int, c_void, size_t};
@@ -613,7 +613,7 @@ pub extern "C" fn bre_create_engine(
     client_ids_path: *const c_char,
     notify_mode: c_int,
     protobuf_descriptor_set_path: *const c_char,
-    protobuf_message_name: *const c_char,
+    _protobuf_message_name: *const c_char,
 ) -> *mut BifroRE {
     ensure_logger_initialized();
     if config_path.is_null() {
@@ -648,8 +648,8 @@ pub extern "C" fn bre_create_engine(
     };
 
     let mut rule_engine = if payload_format == PayloadFormat::Protobuf {
-        if protobuf_descriptor_set_path.is_null() || protobuf_message_name.is_null() {
-            log::warn!("protobuf payload format requires descriptor_set_path and message_name");
+        if protobuf_descriptor_set_path.is_null() {
+            log::warn!("protobuf payload format requires descriptor_set_path");
             return ptr::null_mut();
         }
         let descriptor_path = match unsafe { CStr::from_ptr(protobuf_descriptor_set_path) }.to_str()
@@ -657,17 +657,12 @@ pub extern "C" fn bre_create_engine(
             Ok(value) if !value.trim().is_empty() => value.trim(),
             _ => return ptr::null_mut(),
         };
-        let message_name = match unsafe { CStr::from_ptr(protobuf_message_name) }.to_str() {
-            Ok(value) if !value.trim().is_empty() => value.trim(),
-            _ => return ptr::null_mut(),
-        };
-        match dynamic_protobuf_decoder_from_descriptor_set_file(descriptor_path, message_name) {
+        match dynamic_protobuf_registry_from_descriptor_set_file(descriptor_path) {
             Ok(decoder) => RuleEngine::new(decoder),
             Err(err) => {
                 log::warn!(
-                    "failed to initialize protobuf decoder descriptor_set={} message={} error={}",
+                    "failed to initialize protobuf decoder registry descriptor_set={} error={}",
                     descriptor_path,
-                    message_name,
                     err
                 );
                 return ptr::null_mut();

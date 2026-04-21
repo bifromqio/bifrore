@@ -3,13 +3,16 @@ use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::msg_ir::MsgIr;
 #[cfg(test)]
 use crate::payload::dynamic_protobuf_decoder_from_descriptor_set_bytes;
+#[cfg(test)]
+use crate::payload::dynamic_protobuf_registry_from_descriptor_set_bytes;
 use crate::payload::{
-    decode_payload_ir_with_decoder_and_plan_and_metrics, PayloadDecodePlan, PayloadDecoder,
-    PayloadFormat,
+    decode_payload_ir_with_decoder_and_plan_and_metrics,
+    decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema, PayloadDecodePlan,
+    PayloadDecoder, PayloadFormat,
 };
 use crate::rule::{
     compile_rule, evaluate_rule_with_payload_and_topic_parts, CompiledRule, EvalError,
-    RuleDefinition, RuleError,
+    RuleDefinition, RuleError, RulePayloadBinding,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -85,6 +88,11 @@ impl RuleEngine {
     }
 
     pub fn add_rule(&mut self, rule: RuleDefinition) -> Result<String, RuleError> {
+        match (&self.payload_decoder, rule.schema.as_ref()) {
+            (PayloadDecoder::Json, Some(_)) => return Err(RuleError::UnexpectedSchemaName),
+            (PayloadDecoder::Protobuf(_), None) => return Err(RuleError::MissingSchemaName),
+            _ => {}
+        }
         let compiled = compile_rule(rule)?;
         let id = compiled.id.clone();
         let index = self.rules.len();
@@ -120,6 +128,10 @@ impl RuleEngine {
             return Vec::new();
         }
 
+        if matches!(self.payload_decoder, PayloadDecoder::Protobuf(_)) {
+            return self.evaluate_protobuf_message(message, &matched_rule_indexes);
+        }
+
         let required_fields = collect_required_fields(&self.rules, &matched_rule_indexes);
         let decode_plan = if required_fields.is_empty() {
             PayloadDecodePlan::None
@@ -148,6 +160,46 @@ impl RuleEngine {
             &payload_obj,
             &matched_rule_indexes,
         )
+    }
+
+    fn evaluate_protobuf_message(
+        &self,
+        message: &Message,
+        matched_rule_indexes: &[usize],
+    ) -> Vec<RuleEvaluation> {
+        let mut results = Vec::new();
+        for (schema_name, rule_indexes) in group_rule_indexes_by_schema(&self.rules, matched_rule_indexes) {
+            let required_fields = collect_required_fields(&self.rules, &rule_indexes);
+            let decode_plan = if required_fields.is_empty() {
+                PayloadDecodePlan::None
+            } else {
+                PayloadDecodePlan::Sparse(&required_fields)
+            };
+            let payload_obj = match decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
+                &message.payload,
+                &self.payload_decoder,
+                decode_plan,
+                Some(&self.metrics),
+                Some(schema_name.as_str()),
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    log::warn!(
+                        "dropping protobuf message with invalid payload topic={} schema={} error={}",
+                        message.topic,
+                        schema_name,
+                        err
+                    );
+                    continue;
+                }
+            };
+            results.extend(self.evaluate_matched_rules_with_decoded_payload(
+                message,
+                &payload_obj,
+                &rule_indexes,
+            ));
+        }
+        results
     }
 
     #[doc(hidden)]
@@ -402,6 +454,23 @@ fn matched_rules_require_topic_parts(
     })
 }
 
+fn group_rule_indexes_by_schema(
+    rules: &[Option<CompiledRule>],
+    matched_rule_indexes: &[usize],
+) -> Vec<(String, Vec<usize>)> {
+    let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
+    for rule_index in matched_rule_indexes {
+        let Some(rule) = rules.get(*rule_index).and_then(|slot| slot.as_ref()) else {
+            continue;
+        };
+        let RulePayloadBinding::Protobuf { schema } = &rule.payload_binding else {
+            continue;
+        };
+        grouped.entry(schema.clone()).or_default().push(*rule_index);
+    }
+    grouped.into_iter().collect()
+}
+
 #[derive(Debug)]
 struct TopicMatchCache {
     capacity: usize,
@@ -609,6 +678,14 @@ mod tests {
         online: bool,
     }
 
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct EvalPayload {
+        #[prost(double, tag = "1")]
+        temp: f64,
+        #[prost(double, tag = "2")]
+        hum: f64,
+    }
+
     #[test]
     fn load_rules_from_json() {
         let json = r#"{
@@ -634,6 +711,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select * from data".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
 
@@ -660,6 +738,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select hum + 10 as h from data".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
 
@@ -681,6 +760,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select hum from data".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
 
@@ -702,12 +782,14 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/+/temp".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/#".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
 
@@ -724,6 +806,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/+/temp".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
 
@@ -750,6 +833,7 @@ mod tests {
                 expression: "select device as d from data where temp >= 20 and online = true"
                     .to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: Some("bifrore.test.TypedRuntimePayload".to_string()),
             })
             .expect("add rule");
 
@@ -779,6 +863,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select * from data where temp > 10".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: Some("bifrore.test.TypedRuntimePayload".to_string()),
             })
             .expect("add rule");
 
@@ -799,6 +884,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select device as d from data where temp > 20".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: Some("bifrore.test.TypedRuntimePayload".to_string()),
             })
             .expect("add rule");
 
@@ -817,12 +903,87 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_with_multi_schema_protobuf_rules() {
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
+        let mut engine = RuleEngine::new(decoder);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select temp as t from data where hum >= 50".to_string(),
+                destinations: vec!["dest-eval".to_string()],
+                schema: Some("bifrore.test.EvalPayload".to_string()),
+            })
+            .expect("add eval rule");
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select device as d from data where temp >= 20 and online = true"
+                    .to_string(),
+                destinations: vec!["dest-typed".to_string()],
+                schema: Some("bifrore.test.TypedRuntimePayload".to_string()),
+            })
+            .expect("add typed rule");
+
+        let eval_payload = EvalPayload {
+            temp: 30.0,
+            hum: 61.0,
+        };
+        let eval_results = engine.evaluate(&Message::new("data", eval_payload.encode_to_vec()));
+        assert_eq!(eval_results.len(), 1);
+        let eval_output: serde_json::Value =
+            serde_json::from_slice(&eval_results[0].message.payload).expect("eval output");
+        assert_eq!(eval_output["t"].as_f64(), Some(30.0));
+
+        let typed_payload = TypedRuntimePayload {
+            temp: 22.0,
+            device: "typed-dev".to_string(),
+            online: true,
+        };
+        let typed_results =
+            engine.evaluate(&Message::new("data", typed_payload.encode_to_vec()));
+        assert_eq!(typed_results.len(), 1);
+        let typed_output: serde_json::Value =
+            serde_json::from_slice(&typed_results[0].message.payload).expect("typed output");
+        assert_eq!(typed_output["d"], serde_json::Value::from("typed-dev"));
+    }
+
+    #[test]
+    fn protobuf_rules_require_schema_name() {
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
+        let mut engine = RuleEngine::new(decoder);
+        let error = engine
+            .add_rule(RuleDefinition {
+                expression: "select temp from data".to_string(),
+                destinations: vec!["dest".to_string()],
+                schema: None,
+            })
+            .expect_err("protobuf rules without schema should fail");
+        assert!(matches!(error, RuleError::MissingSchemaName));
+    }
+
+    #[test]
+    fn json_rules_reject_protobuf_schema_name() {
+        let mut engine = RuleEngine::default();
+        let error = engine
+            .add_rule(RuleDefinition {
+                expression: "select temp from data".to_string(),
+                destinations: vec!["dest".to_string()],
+                schema: Some("bifrore.test.EvalPayload".to_string()),
+            })
+            .expect_err("json rules with schema should fail");
+        assert!(matches!(error, RuleError::UnexpectedSchemaName));
+    }
+
+    #[test]
     fn topic_match_cache_reuses_entries() {
         let mut engine = RuleEngine::new_with_cache_capacity(PayloadDecoder::Json, 8);
         engine
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/+/temp".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
         let payload = serde_json::json!({"temp": 10});
@@ -848,6 +1009,7 @@ mod tests {
             .add_rule(RuleDefinition {
                 expression: "select * from sensors/#".to_string(),
                 destinations: vec!["dest".to_string()],
+                schema: None,
             })
             .expect("add rule");
         let payload = serde_json::json!({"temp": 10});

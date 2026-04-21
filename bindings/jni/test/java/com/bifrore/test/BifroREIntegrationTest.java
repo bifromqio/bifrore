@@ -108,6 +108,7 @@ final class BifroREIntegrationTest {
               "rules": [
                 {
                   "expression": "select sensor.device as device, sensor.reading.temp as temperature, sensor.reading.hum as humidity, site from data where sensor.reading.online = true and sensor.reading.temp >= 20",
+                  "schema": "example.telemetry.Envelope",
                   "destinations": ["kafka", "log"]
                 }
               ]

@@ -18,6 +18,8 @@ use std::collections::HashSet;
 pub struct RuleDefinition {
     pub expression: String,
     pub destinations: Vec<String>,
+    #[serde(default)]
+    pub schema: Option<String>,
 }
 
 #[derive(Debug)]
@@ -30,8 +32,15 @@ pub struct CompiledRule {
     pub where_expr: Option<Expr>,
     pub where_plan: Option<EvalExprPlan>,
     pub destinations: Vec<String>,
+    pub payload_binding: RulePayloadBinding,
     pub required_payload_fields: Vec<CompiledPayloadField>,
     pub requires_topic_parts: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RulePayloadBinding {
+    Json,
+    Protobuf { schema: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +99,10 @@ pub enum RuleError {
     UnsupportedSql,
     #[error("missing topic filter in FROM")]
     MissingTopic,
+    #[error("protobuf rules require a schema name")]
+    MissingSchemaName,
+    #[error("json rules must not specify a protobuf schema")]
+    UnexpectedSchemaName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -135,6 +148,28 @@ impl EvalError {
     }
 }
 
+impl RuleDefinition {
+    pub fn json(expression: impl Into<String>, destinations: Vec<String>) -> Self {
+        Self {
+            expression: expression.into(),
+            destinations,
+            schema: None,
+        }
+    }
+
+    pub fn protobuf(
+        expression: impl Into<String>,
+        schema: impl Into<String>,
+        destinations: Vec<String>,
+    ) -> Self {
+        Self {
+            expression: expression.into(),
+            destinations,
+            schema: Some(schema.into()),
+        }
+    }
+}
+
 pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
     let dialect = GenericDialect {};
     let normalized_sql = normalize_rule_sql(&rule.expression);
@@ -177,6 +212,10 @@ pub fn compile_rule(rule: RuleDefinition) -> Result<CompiledRule, RuleError> {
         where_expr,
         where_plan,
         destinations: rule.destinations,
+        payload_binding: rule
+            .schema
+            .map(|schema| RulePayloadBinding::Protobuf { schema })
+            .unwrap_or(RulePayloadBinding::Json),
         required_payload_fields,
         requires_topic_parts,
     })
@@ -1119,6 +1158,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from a/b/c".to_string(),
             destinations: vec!["dest1".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile rule");
         assert_eq!(compiled.topic_filter, "a/b/c");
@@ -1132,6 +1172,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data where temp > 25".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 30, "hum": 10});
@@ -1145,6 +1186,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data where temp > 25".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 10});
@@ -1158,6 +1200,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select height as h from data where temp > 20".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 22, "height": 9});
@@ -1172,6 +1215,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data where a.b.temp >= 20".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
 
@@ -1190,6 +1234,7 @@ mod tests {
             expression: "select a.b.temp as temperature, c from data where a.b.temp >= 20"
                 .to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
 
@@ -1206,6 +1251,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select a.b.temp from data where a.b.temp >= 20".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
 
@@ -1221,6 +1267,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select (height + 2) * 2 as h from data where temp >= 20".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 22, "height": 9});
@@ -1242,6 +1289,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data where temp > 20 and hum < 30".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25, "hum": 10});
@@ -1258,6 +1306,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data as source_data".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         assert_eq!(compiled.topic_filter, "data");
@@ -1271,6 +1320,7 @@ mod tests {
             expression: "select * from 'sensors/+/temp' as t where topic_level(t, 2) = 'room1'"
                 .to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         assert!(compiled.requires_topic_parts);
@@ -1288,6 +1338,7 @@ mod tests {
             expression: "select * from data where qos >= 1 and properties['content-type'] = 'application/json'"
                 .to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25});
@@ -1307,6 +1358,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data where temp > 25 + 3".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
 
@@ -1328,6 +1380,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select * from data where (25 + 3) = 28".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         assert_eq!(
@@ -1345,6 +1398,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select hum + 10 from data".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25, "hum": "10"});
@@ -1365,6 +1419,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select hum from data".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25});
@@ -1382,6 +1437,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select properties['tenant'] as tenant from data".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25});
@@ -1399,6 +1455,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select clientId as cid from data".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25});
@@ -1414,6 +1471,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select topic_level(t, '2') as room from 'sensors/+/temp' as t".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25});
@@ -1432,6 +1490,7 @@ mod tests {
         let rule = RuleDefinition {
             expression: "select properties[1] as p from data".to_string(),
             destinations: vec!["dest".to_string()],
+            schema: None,
         };
         let compiled = compile_rule(rule).expect("compile");
         let payload = serde_json::json!({"temp": 25});
