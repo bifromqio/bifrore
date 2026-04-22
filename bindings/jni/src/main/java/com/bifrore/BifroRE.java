@@ -152,6 +152,7 @@ public final class BifroRE implements AutoCloseable {
         public final long evalCount;
         public final long evalErrorCount;
         public final long evalTypeErrorCount;
+        public final long payloadErrorCount;
         public final StageLatencySnapshot exec;
         public final StageLatencySnapshot topicMatch;
         public final StageLatencySnapshot payloadDecode;
@@ -171,6 +172,7 @@ public final class BifroRE implements AutoCloseable {
             long evalCount,
             long evalErrorCount,
             long evalTypeErrorCount,
+            long payloadErrorCount,
             StageLatencySnapshot exec,
             StageLatencySnapshot topicMatch,
             StageLatencySnapshot payloadDecode,
@@ -189,6 +191,7 @@ public final class BifroRE implements AutoCloseable {
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
             this.evalTypeErrorCount = evalTypeErrorCount;
+            this.payloadErrorCount = payloadErrorCount;
             this.exec = exec;
             this.topicMatch = topicMatch;
             this.payloadDecode = payloadDecode;
@@ -200,7 +203,7 @@ public final class BifroRE implements AutoCloseable {
         static MetricsSnapshot empty() {
             StageLatencySnapshot emptyStage = new StageLatencySnapshot(0, 0, 0);
             return new MetricsSnapshot(
-                0, 0, 0, 0, 0, 0, 0, emptyStage, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, emptyStage, 0, 0, 0, 0,
                 emptyStage,
                 emptyStage,
                 emptyStage,
@@ -211,7 +214,7 @@ public final class BifroRE implements AutoCloseable {
         }
 
         static MetricsSnapshot from(long[] values) {
-            if (values == null || values.length < 31) {
+            if (values == null || values.length < 32) {
                 return empty();
             }
             int index = 0;
@@ -227,6 +230,7 @@ public final class BifroRE implements AutoCloseable {
             long evalCount = values[index++];
             long evalErrorCount = values[index++];
             long evalTypeErrorCount = values[index++];
+            long payloadErrorCount = values[index++];
             StageLatencySnapshot exec = readStageWithCount(values, index);
             index += 3;
             StageLatencySnapshot topicMatch = readStageWithCount(values, index);
@@ -250,6 +254,7 @@ public final class BifroRE implements AutoCloseable {
                 evalCount,
                 evalErrorCount,
                 evalTypeErrorCount,
+                payloadErrorCount,
                 exec,
                 topicMatch,
                 payloadDecode,
@@ -323,7 +328,6 @@ public final class BifroRE implements AutoCloseable {
             options.ffi.payloadFormat,
             options.ffi.clientIdsPath,
             options.ffi.protobufDescriptorSetPath,
-            options.ffi.protobufMessageName,
             options.jvm.callbackQueueCapacity,
             options.jvm.pollBatchLimit,
             options.jvm.directPollSlotCount,
@@ -347,7 +351,6 @@ public final class BifroRE implements AutoCloseable {
         int payloadFormat,
         String clientIdsPath,
         String protobufDescriptorSetPath,
-        String protobufMessageName,
         int callbackQueueCapacity,
         int pollBatchLimit,
         int directPollSlotCount,
@@ -383,8 +386,7 @@ public final class BifroRE implements AutoCloseable {
             payloadFormat,
             this.clientIdsPath,
             NOTIFY_MODE_POLL,
-            protobufDescriptorSetPath,
-            protobufMessageName
+            protobufDescriptorSetPath
         );
         if (this.handle == 0) {
             throw new IllegalStateException("Failed to create engine with rule file");
@@ -1002,8 +1004,7 @@ public final class BifroRE implements AutoCloseable {
         int payloadFormat,
         String clientIdsPath,
         int notifyMode,
-        String protobufDescriptorSetPath,
-        String protobufMessageName
+        String protobufDescriptorSetPath
     );
     private static native void nativeDestroy(long handle);
     private static native int nativeDisconnect(long handle);

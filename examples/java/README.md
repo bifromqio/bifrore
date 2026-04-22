@@ -75,7 +75,6 @@ The direct example also configures protobuf payload decoding at engine init with
 
 - `payloadFormat(BifroRE.PAYLOAD_PROTOBUF)`
 - `protobufDescriptorSetPath(...)`
-- `protobufMessageName("example.telemetry.Envelope")`
 
 The nested protobuf schema source lives at:
 

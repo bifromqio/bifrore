@@ -36,6 +36,7 @@ struct BifroREMetricsSnapshot {
     uint64_t eval_count;
     uint64_t eval_error_count;
     uint64_t eval_type_error_count;
+    uint64_t payload_error_count;
     uint64_t exec_count;
     uint64_t exec_total_nanos;
     uint64_t exec_max_nanos;
@@ -61,8 +62,7 @@ extern void *bre_create_engine(
     int payload_format,
     const char *client_ids_path,
     int notify_mode,
-    const char *protobuf_descriptor_set_path,
-    const char *protobuf_message_name);
+    const char *protobuf_descriptor_set_path);
 extern void bre_destroy(void *engine);
 extern int bre_disconnect(void *engine);
 extern int bre_start_mqtt(

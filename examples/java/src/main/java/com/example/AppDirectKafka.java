@@ -48,7 +48,6 @@ public final class AppDirectKafka {
                     .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
                     .ruleJsonPath(ExampleSupport.extractProtobufRuleResource())
                     .protobufDescriptorSetPath(ExampleSupport.extractProtobufDescriptorResource())
-                    .protobufMessageName("example.telemetry.Envelope")
                 )
                 .jvm(jvm -> jvm
                     .callbackQueueCapacity(1024)

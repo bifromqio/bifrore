@@ -2,8 +2,6 @@ use crate::message::Message;
 use crate::metrics::{EvalMetrics, LatencyStage};
 use crate::msg_ir::MsgIr;
 #[cfg(test)]
-use crate::payload::dynamic_protobuf_decoder_from_descriptor_set_bytes;
-#[cfg(test)]
 use crate::payload::dynamic_protobuf_registry_from_descriptor_set_bytes;
 use crate::payload::{
     decode_payload_ir_with_decoder_and_plan_and_metrics,
@@ -121,17 +119,18 @@ impl RuleEngine {
 
     pub fn evaluate(&mut self, message: &Message) -> Vec<RuleEvaluation> {
         let topic_match_timer = self.metrics.start_stage();
-        let matched_rule_indexes = self.match_rule_indexes_with_cache(&message.topic);
+        let matched = self.match_rule_indexes_with_cache(&message.topic);
         self.metrics
             .finish_stage(LatencyStage::TopicMatch, topic_match_timer);
-        if matched_rule_indexes.is_empty() {
+        if matched.is_empty() {
             return Vec::new();
         }
 
         if matches!(self.payload_decoder, PayloadDecoder::Protobuf(_)) {
-            return self.evaluate_protobuf_message(message, &matched_rule_indexes);
+            return self.evaluate_protobuf_message(message, matched.protobuf_groups());
         }
 
+        let matched_rule_indexes = matched.rule_indexes();
         let required_fields = collect_required_fields(&self.rules, &matched_rule_indexes);
         let decode_plan = if required_fields.is_empty() {
             PayloadDecodePlan::None
@@ -146,6 +145,7 @@ impl RuleEngine {
         ) {
             Ok(value) => value,
             Err(err) => {
+                self.metrics.record_payload_error();
                 log::warn!(
                     "dropping message with invalid payload topic={} decoder={:?} error={}",
                     message.topic,
@@ -165,10 +165,10 @@ impl RuleEngine {
     fn evaluate_protobuf_message(
         &self,
         message: &Message,
-        matched_rule_indexes: &[usize],
+        schema_groups: &[(String, Vec<usize>)],
     ) -> Vec<RuleEvaluation> {
         let mut results = Vec::new();
-        for (schema_name, rule_indexes) in group_rule_indexes_by_schema(&self.rules, matched_rule_indexes) {
+        for (schema_name, rule_indexes) in schema_groups {
             let required_fields = collect_required_fields(&self.rules, &rule_indexes);
             let decode_plan = if required_fields.is_empty() {
                 PayloadDecodePlan::None
@@ -180,10 +180,11 @@ impl RuleEngine {
                 &self.payload_decoder,
                 decode_plan,
                 Some(&self.metrics),
-                Some(schema_name.as_str()),
+                schema_name.as_str(),
             ) {
                 Ok(value) => value,
                 Err(err) => {
+                    self.metrics.record_payload_error();
                     log::warn!(
                         "dropping protobuf message with invalid payload topic={} schema={} error={}",
                         message.topic,
@@ -215,10 +216,11 @@ impl RuleEngine {
         if matched_rule_indexes.is_empty() {
             return Vec::new();
         }
+        let matched_rule_indexes = matched_rule_indexes.rule_indexes();
         self.evaluate_matched_rules_with_decoded_payload(
             message,
             payload_obj,
-            &matched_rule_indexes,
+            matched_rule_indexes,
         )
     }
 
@@ -294,7 +296,7 @@ impl RuleEngine {
 
     #[doc(hidden)]
     pub fn match_rule_indexes_for_bench(&mut self, topic: &str) -> Vec<usize> {
-        self.match_rule_indexes_with_cache(topic)
+        self.match_rule_indexes_with_cache(topic).into_rule_indexes()
     }
 
     pub fn topic_filters(&self) -> Vec<String> {
@@ -333,15 +335,15 @@ impl RuleEngine {
         self.topic_match_cache.clear();
     }
 
-    fn match_rule_indexes_with_cache(&mut self, topic: &str) -> Vec<usize> {
+    fn match_rule_indexes_with_cache(&mut self, topic: &str) -> CachedTopicMatch {
         if let Some(cached) = self.topic_match_cache.get(topic) {
             return cached;
         }
 
         let matched = self.matcher.match_topic_indexes(topic);
-        self.topic_match_cache
-            .insert(topic.to_string(), matched.clone());
-        matched
+        let cached = build_cached_topic_match(&self.rules, matched);
+        self.topic_match_cache.insert(topic.to_string(), cached.clone());
+        cached
     }
 }
 
@@ -454,28 +456,75 @@ fn matched_rules_require_topic_parts(
     })
 }
 
-fn group_rule_indexes_by_schema(
-    rules: &[Option<CompiledRule>],
-    matched_rule_indexes: &[usize],
-) -> Vec<(String, Vec<usize>)> {
-    let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
-    for rule_index in matched_rule_indexes {
-        let Some(rule) = rules.get(*rule_index).and_then(|slot| slot.as_ref()) else {
-            continue;
-        };
-        let RulePayloadBinding::Protobuf { schema } = &rule.payload_binding else {
-            continue;
-        };
-        grouped.entry(schema.clone()).or_default().push(*rule_index);
+#[derive(Debug, Clone)]
+enum CachedTopicMatch {
+    Json(Vec<usize>),
+    Protobuf(Vec<(String, Vec<usize>)>),
+}
+
+impl CachedTopicMatch {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Json(rule_indexes) => rule_indexes.is_empty(),
+            Self::Protobuf(groups) => groups.is_empty(),
+        }
     }
-    grouped.into_iter().collect()
+
+    fn rule_indexes(&self) -> &[usize] {
+        match self {
+            Self::Json(rule_indexes) => rule_indexes,
+            Self::Protobuf(_) => &[],
+        }
+    }
+
+    fn protobuf_groups(&self) -> &[(String, Vec<usize>)] {
+        match self {
+            Self::Json(_) => &[],
+            Self::Protobuf(groups) => groups,
+        }
+    }
+
+    fn into_rule_indexes(self) -> Vec<usize> {
+        match self {
+            Self::Json(rule_indexes) => rule_indexes,
+            Self::Protobuf(groups) => groups
+                .into_iter()
+                .flat_map(|(_, rule_indexes)| rule_indexes)
+                .collect(),
+        }
+    }
+}
+
+fn build_cached_topic_match(
+    rules: &[Option<CompiledRule>],
+    matched_rule_indexes: Vec<usize>,
+) -> CachedTopicMatch {
+    let mut protobuf_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut json_rule_indexes = Vec::new();
+    for rule_index in matched_rule_indexes {
+        let Some(rule) = rules.get(rule_index).and_then(|slot| slot.as_ref()) else {
+            continue;
+        };
+        match &rule.payload_binding {
+            RulePayloadBinding::Json => json_rule_indexes.push(rule_index),
+            RulePayloadBinding::Protobuf { schema } => {
+                protobuf_groups.entry(schema.clone()).or_default().push(rule_index);
+            }
+        }
+    }
+
+    if protobuf_groups.is_empty() {
+        CachedTopicMatch::Json(json_rule_indexes)
+    } else {
+        CachedTopicMatch::Protobuf(protobuf_groups.into_iter().collect())
+    }
 }
 
 #[derive(Debug)]
 struct TopicMatchCache {
     capacity: usize,
     random_state: u64,
-    entries: HashMap<String, Vec<usize>>,
+    entries: HashMap<String, CachedTopicMatch>,
     keys: Vec<String>,
 }
 
@@ -495,17 +544,17 @@ impl TopicMatchCache {
         self.random_state = 0x9e37_79b9_7f4a_7c15;
     }
 
-    fn get(&mut self, topic: &str) -> Option<Vec<usize>> {
+    fn get(&mut self, topic: &str) -> Option<CachedTopicMatch> {
         self.entries.get(topic).cloned()
     }
 
-    fn insert(&mut self, topic: String, matched_rule_indexes: Vec<usize>) {
+    fn insert(&mut self, topic: String, matched: CachedTopicMatch) {
         if self.capacity == 0 {
             return;
         }
 
         if let Some(entry) = self.entries.get_mut(&topic) {
-            *entry = matched_rule_indexes;
+            *entry = matched;
             return;
         }
 
@@ -514,7 +563,7 @@ impl TopicMatchCache {
         }
 
         self.keys.push(topic.clone());
-        self.entries.insert(topic, matched_rule_indexes);
+        self.entries.insert(topic, matched);
     }
 
     fn evict_random(&mut self) {
@@ -822,11 +871,9 @@ mod tests {
 
     #[test]
     fn evaluate_with_schema_based_protobuf_predicates_and_projection() {
-        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
-            include_bytes!("../testdata/bifrore_test.desc"),
-            "bifrore.test.TypedRuntimePayload",
-        )
-        .expect("protobuf decoder");
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
         let mut engine = RuleEngine::new(decoder);
         engine
             .add_rule(RuleDefinition {
@@ -853,11 +900,9 @@ mod tests {
 
     #[test]
     fn evaluate_with_schema_based_protobuf_invalid_payload_is_dropped() {
-        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
-            include_bytes!("../testdata/bifrore_test.desc"),
-            "bifrore.test.TypedRuntimePayload",
-        )
-        .expect("protobuf decoder");
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
         let mut engine = RuleEngine::new(decoder);
         engine
             .add_rule(RuleDefinition {
@@ -874,11 +919,9 @@ mod tests {
 
     #[test]
     fn evaluate_with_schema_based_protobuf_decoder() {
-        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
-            include_bytes!("../testdata/bifrore_test.desc"),
-            "bifrore.test.TypedRuntimePayload",
-        )
-        .expect("protobuf decoder");
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
         let mut engine = RuleEngine::new(decoder);
         engine
             .add_rule(RuleDefinition {

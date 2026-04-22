@@ -150,8 +150,7 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
     jint payload_format,
     jstring client_ids_path,
     jint notify_mode,
-    jstring protobuf_descriptor_set_path,
-    jstring protobuf_message_name) {
+    jstring protobuf_descriptor_set_path) {
     (void)cls;
     if (path == NULL) {
         return 0;
@@ -159,7 +158,6 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
     const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
     const char *client_ids_path_str = NULL;
     const char *protobuf_descriptor_set_path_str = NULL;
-    const char *protobuf_message_name_str = NULL;
     if (client_ids_path != NULL) {
         client_ids_path_str = (*env)->GetStringUTFChars(env, client_ids_path, NULL);
     }
@@ -167,16 +165,12 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
         protobuf_descriptor_set_path_str =
             (*env)->GetStringUTFChars(env, protobuf_descriptor_set_path, NULL);
     }
-    if (protobuf_message_name != NULL) {
-        protobuf_message_name_str = (*env)->GetStringUTFChars(env, protobuf_message_name, NULL);
-    }
     void *engine = bre_create_engine(
         path_str,
         (int)payload_format,
         client_ids_path_str,
         (int)notify_mode,
-        protobuf_descriptor_set_path_str,
-        protobuf_message_name_str);
+        protobuf_descriptor_set_path_str);
     (*env)->ReleaseStringUTFChars(env, path, path_str);
     if (client_ids_path_str != NULL) {
         (*env)->ReleaseStringUTFChars(env, client_ids_path, client_ids_path_str);
@@ -184,9 +178,6 @@ JNIEXPORT jlong JNICALL Java_com_bifrore_BifroRE_nativeCreateEngine(
     if (protobuf_descriptor_set_path_str != NULL) {
         (*env)->ReleaseStringUTFChars(
             env, protobuf_descriptor_set_path, protobuf_descriptor_set_path_str);
-    }
-    if (protobuf_message_name_str != NULL) {
-        (*env)->ReleaseStringUTFChars(env, protobuf_message_name, protobuf_message_name_str);
     }
     return (jlong)engine;
 }
@@ -376,6 +367,7 @@ JNIEXPORT jlongArray JNICALL Java_com_bifrore_BifroRE_nativeMetricsSnapshotValue
         (jlong)snapshot.eval_count,
         (jlong)snapshot.eval_error_count,
         (jlong)snapshot.eval_type_error_count,
+        (jlong)snapshot.payload_error_count,
         (jlong)snapshot.exec_count,
         (jlong)snapshot.exec_total_nanos,
         (jlong)snapshot.exec_max_nanos,

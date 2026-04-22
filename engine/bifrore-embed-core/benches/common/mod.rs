@@ -83,11 +83,10 @@ pub fn build_engine_with_expr(
 }
 
 pub fn build_protobuf_engine(rule_count: usize) -> RuleEngine {
-    let decoder = bifrore_embed_core::payload::dynamic_protobuf_decoder_from_descriptor_set_bytes(
+    let decoder = bifrore_embed_core::payload::dynamic_protobuf_registry_from_descriptor_set_bytes(
         include_bytes!("../../testdata/bifrore_test.desc"),
-        "bifrore.test.EvalPayload",
     )
-    .expect("protobuf decoder");
+    .expect("protobuf registry");
     let mut engine = RuleEngine::new(decoder);
     for idx in 0..rule_count {
         let expression = format!(

@@ -93,7 +93,6 @@ public final class BifroREOptions {
         int payloadFormat = BifroRE.PAYLOAD_JSON;
         String clientIdsPath = "./client_ids";
         String protobufDescriptorSetPath;
-        String protobufMessageName;
         boolean detailedLatencyMetrics = false;
 
         private FfiOptions() {}
@@ -115,11 +114,6 @@ public final class BifroREOptions {
 
         public FfiOptions protobufDescriptorSetPath(String protobufDescriptorSetPath) {
             this.protobufDescriptorSetPath = protobufDescriptorSetPath;
-            return this;
-        }
-
-        public FfiOptions protobufMessageName(String protobufMessageName) {
-            this.protobufMessageName = protobufMessageName;
             return this;
         }
 

@@ -110,12 +110,17 @@ final class BifroREIntegrationTest {
                   "expression": "select sensor.device as device, sensor.reading.temp as temperature, sensor.reading.hum as humidity, site from data where sensor.reading.online = true and sensor.reading.temp >= 20",
                   "schema": "example.telemetry.Envelope",
                   "destinations": ["kafka", "log"]
+                },
+                {
+                  "expression": "select device as device, reading.temp as temperature, reading.hum as humidity from data where reading.online = true and reading.temp >= 20",
+                  "schema": "example.telemetry.Sensor",
+                  "destinations": ["kafka", "sensor-log"]
                 }
               ]
             }
             """);
 
-        CountDownLatch latch = new CountDownLatch(1);
+        CountDownLatch latch = new CountDownLatch(2);
         ConcurrentLinkedQueue<JsonNode> payloads = new ConcurrentLinkedQueue<>();
 
         try (BifroRE engine = new BifroRE(
@@ -123,7 +128,6 @@ final class BifroREIntegrationTest {
                 .ffi(ffi -> ffi
                     .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
                     .protobufDescriptorSetPath(descriptorPath)
-                    .protobufMessageName("example.telemetry.Envelope")
                 )
                 .jvm(jvm -> jvm
                     .directPollSlotCount(2)
@@ -150,17 +154,26 @@ final class BifroREIntegrationTest {
             awaitSubscriptionWarmup();
 
             byte[] payload = buildTelemetryPayload("sensor-a", 23.5, 61.0, true, "factory-a");
+            byte[] sensorPayload = buildSensorPayload("sensor-b", 24.5, 62.0, true);
 
             publish("data", payload, List.of());
+            publish("data", sensorPayload, List.of());
             assertTrue(latch.await(AWAIT_TIMEOUT.toSeconds(), TimeUnit.SECONDS));
         }
 
-        assertEquals(1, payloads.size());
-        JsonNode projected = payloads.peek();
-        assertEquals("sensor-a", projected.get("device").asText());
-        assertEquals(23.5, projected.get("temperature").asDouble());
-        assertEquals(61.0, projected.get("humidity").asDouble());
-        assertEquals("factory-a", projected.get("site").asText());
+        assertEquals(2, payloads.size());
+        assertTrue(payloads.stream().anyMatch(projected ->
+            "sensor-a".equals(projected.get("device").asText())
+                && projected.get("temperature").asDouble() == 23.5
+                && projected.get("humidity").asDouble() == 61.0
+                && "factory-a".equals(projected.get("site").asText())
+        ));
+        assertTrue(payloads.stream().anyMatch(projected ->
+            "sensor-b".equals(projected.get("device").asText())
+                && projected.get("temperature").asDouble() == 24.5
+                && projected.get("humidity").asDouble() == 62.0
+                && !projected.has("site")
+        ));
     }
 
     @Test
@@ -306,6 +319,35 @@ final class BifroREIntegrationTest {
         return DynamicMessage.newBuilder(envelopeDescriptor)
             .setField(envelopeDescriptor.findFieldByName("sensor"), sensor)
             .setField(envelopeDescriptor.findFieldByName("site"), site)
+            .build()
+            .toByteArray();
+    }
+
+    private static byte[] buildSensorPayload(
+        String device,
+        double temp,
+        double hum,
+        boolean online
+    ) throws Exception {
+        DescriptorProtos.FileDescriptorSet descriptorSet;
+        try (InputStream input = BifroREIntegrationTest.class.getResourceAsStream("/proto/telemetry.desc")) {
+            if (input == null) {
+                throw new IllegalStateException("missing resource: /proto/telemetry.desc");
+            }
+            descriptorSet = DescriptorProtos.FileDescriptorSet.parseFrom(input);
+        }
+        Descriptors.Descriptor sensorDescriptor =
+            findMessageDescriptor(buildFileDescriptorMap(descriptorSet), "example.telemetry.Sensor");
+        Descriptors.Descriptor readingDescriptor = sensorDescriptor.findFieldByName("reading").getMessageType();
+
+        DynamicMessage reading = DynamicMessage.newBuilder(readingDescriptor)
+            .setField(readingDescriptor.findFieldByName("temp"), temp)
+            .setField(readingDescriptor.findFieldByName("hum"), hum)
+            .setField(readingDescriptor.findFieldByName("online"), online)
+            .build();
+        return DynamicMessage.newBuilder(sensorDescriptor)
+            .setField(sensorDescriptor.findFieldByName("device"), device)
+            .setField(sensorDescriptor.findFieldByName("reading"), reading)
             .build()
             .toByteArray();
     }
