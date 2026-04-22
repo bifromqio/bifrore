@@ -405,6 +405,7 @@ pub struct BifroREMetricsSnapshot {
     pub eval_count: u64,
     pub eval_error_count: u64,
     pub eval_type_error_count: u64,
+    pub payload_error_count: u64,
     pub exec_count: u64,
     pub exec_total_nanos: u64,
     pub exec_max_nanos: u64,
@@ -464,6 +465,7 @@ fn combine_metrics_snapshot(
         eval_count: eval.eval_count,
         eval_error_count: eval.eval_error_count,
         eval_type_error_count: eval.eval_type_error_count,
+        payload_error_count: eval.payload_error_count,
         exec_count: 0,
         exec_total_nanos: 0,
         exec_max_nanos: 0,
@@ -613,7 +615,6 @@ pub extern "C" fn bre_create_engine(
     client_ids_path: *const c_char,
     notify_mode: c_int,
     protobuf_descriptor_set_path: *const c_char,
-    _protobuf_message_name: *const c_char,
 ) -> *mut BifroRE {
     ensure_logger_initialized();
     if config_path.is_null() {

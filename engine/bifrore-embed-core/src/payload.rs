@@ -24,10 +24,10 @@ impl PayloadFormat {
 }
 
 type DecodeFn =
-    dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>, Option<&str>) -> Result<MsgIr, String>
-    + Send
-    + Sync
-    + 'static;
+    dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>, &str) -> Result<MsgIr, String>
+        + Send
+        + Sync
+        + 'static;
 
 #[derive(Debug, Clone, Copy)]
 pub enum PayloadDecodePlan<'a> {
@@ -81,11 +81,7 @@ pub fn dynamic_protobuf_registry_from_descriptor_set_bytes(
     let decode = move |payload: &[u8],
                        plan: PayloadDecodePlan<'_>,
                        metrics: Option<&EvalMetrics>,
-                       schema_name: Option<&str>| {
-        let schema_name = schema_name
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "protobuf schema name is required per rule".to_string())?;
+                       schema_name: &str| {
         let message_descriptor = pool
             .get_message_by_name(schema_name)
             .ok_or_else(|| format!("protobuf message not found in descriptor set: {schema_name}"))?;
@@ -112,30 +108,6 @@ pub fn dynamic_protobuf_registry_from_descriptor_set_bytes(
     Ok(PayloadDecoder::Protobuf(Arc::new(decode)))
 }
 
-pub fn dynamic_protobuf_decoder_from_descriptor_set_file<P: AsRef<Path>>(
-    descriptor_set_path: P,
-    message_name: &str,
-) -> Result<PayloadDecoder, String> {
-    let descriptor_set = fs::read(descriptor_set_path).map_err(|err| err.to_string())?;
-    dynamic_protobuf_decoder_from_descriptor_set_bytes(&descriptor_set, message_name)
-}
-
-pub fn dynamic_protobuf_decoder_from_descriptor_set_bytes(
-    descriptor_set: &[u8],
-    message_name: &str,
-) -> Result<PayloadDecoder, String> {
-    let registry = dynamic_protobuf_registry_from_descriptor_set_bytes(descriptor_set)?;
-    let default_schema = message_name.to_string();
-    match registry {
-        PayloadDecoder::Protobuf(decode) => Ok(PayloadDecoder::Protobuf(Arc::new(
-            move |payload, plan, metrics, _schema_name| {
-                decode(payload, plan, metrics, Some(default_schema.as_str()))
-            },
-        ))),
-        PayloadDecoder::Json => unreachable!("protobuf registry must produce protobuf decoder"),
-    }
-}
-
 pub fn decode_payload_ir(payload: &[u8], format: PayloadFormat) -> Result<MsgIr, String> {
     decode_payload_ir_with_decoder(payload, &PayloadDecoder::from_format(format))
 }
@@ -158,9 +130,7 @@ pub fn decode_payload_ir_with_decoder_and_plan_and_metrics(
     plan: PayloadDecodePlan<'_>,
     metrics: Option<&EvalMetrics>,
 ) -> Result<MsgIr, String> {
-    decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
-        payload, decoder, plan, metrics, None,
-    )
+    decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(payload, decoder, plan, metrics, "")
 }
 
 pub fn decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
@@ -168,7 +138,7 @@ pub fn decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
     decoder: &PayloadDecoder,
     plan: PayloadDecodePlan<'_>,
     metrics: Option<&EvalMetrics>,
-    schema_name: Option<&str>,
+    schema_name: &str,
 ) -> Result<MsgIr, String> {
     match decoder {
         PayloadDecoder::Json => decode_json_ir(payload, plan, metrics),
@@ -219,12 +189,9 @@ fn unsupported_protobuf_decoder(
     _payload: &[u8],
     _plan: PayloadDecodePlan<'_>,
     _metrics: Option<&EvalMetrics>,
-    _schema_name: Option<&str>,
+    _schema_name: &str,
 ) -> Result<MsgIr, String> {
-    Err(
-        "protobuf payload decoding requires a descriptor-set file and fully-qualified message name"
-            .to_string(),
-    )
+    Err("protobuf payload decoding requires a descriptor-set file".to_string())
 }
 #[cfg(test)]
 mod tests {
@@ -248,18 +215,24 @@ mod tests {
 
     #[test]
     fn decode_schema_based_protobuf_payload() {
-        let decoder = dynamic_protobuf_decoder_from_descriptor_set_bytes(
+        let decoder = dynamic_protobuf_registry_from_descriptor_set_bytes(
             include_bytes!("../testdata/bifrore_test.desc"),
-            "bifrore.test.EvalPayload",
         )
-        .expect("protobuf decoder");
+        .expect("protobuf registry");
         let payload = EvalPayload {
             temp: 30.0,
             hum: 61.0,
         }
         .encode_to_vec();
 
-        let decoded = decode_payload_ir_with_decoder(&payload, &decoder).expect("decode protobuf");
+        let decoded = decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
+            &payload,
+            &decoder,
+            PayloadDecodePlan::Full,
+            None,
+            "bifrore.test.EvalPayload",
+        )
+        .expect("decode protobuf");
         assert_eq!(
             decoded.get_key("temp").and_then(|value| value.as_f64()),
             Some(30.0)

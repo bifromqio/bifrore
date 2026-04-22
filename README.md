@@ -162,25 +162,19 @@ The release contract is:
 - JSON input
 - protobuf input with:
   - a descriptor-set file
-  - a fully-qualified protobuf message name
+  - per-rule fully-qualified schema names
 
 Rust embed usage:
 
 ```rust
-use bifrore_embed_core::payload::dynamic_protobuf_decoder_from_descriptor_set_file;
+use bifrore_embed_core::payload::dynamic_protobuf_registry_from_descriptor_set_file;
 use bifrore_embed_core::runtime::RuleEngine;
 
-let decoder = dynamic_protobuf_decoder_from_descriptor_set_file(
-    "/path/to/schema.desc",
-    "example.telemetry.Envelope",
-)?;
+let decoder = dynamic_protobuf_registry_from_descriptor_set_file("/path/to/schema.desc")?;
 let engine = RuleEngine::new(decoder);
 ```
 
 The old implicit `google.protobuf.Struct` decoding path is not supported.
-
-There is still a low-level Rust-only typed decoder hook used by tests and benchmarks, but it is not
-part of the main release-facing API contract.
 
 ## Using Pre-built Releases (Users)
 

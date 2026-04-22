@@ -49,6 +49,7 @@ class _MetricsSnapshot(ctypes.Structure):
         ("eval_count", ctypes.c_uint64),
         ("eval_error_count", ctypes.c_uint64),
         ("eval_type_error_count", ctypes.c_uint64),
+        ("payload_error_count", ctypes.c_uint64),
         ("exec_count", ctypes.c_uint64),
         ("exec_total_nanos", ctypes.c_uint64),
         ("exec_max_nanos", ctypes.c_uint64),
@@ -95,7 +96,6 @@ class BifroRE:
         payload_format=PAYLOAD_JSON,
         client_ids_path="./client_ids",
         protobuf_descriptor_set_path=None,
-        protobuf_message_name=None,
     ):
         lib_path, rule_path = self._resolve_paths(lib_path_or_rule_path, rule_path)
         self.lib = ctypes.cdll.LoadLibrary(lib_path)
@@ -106,7 +106,6 @@ class BifroRE:
             client_ids_path.encode("utf-8") if client_ids_path else None,
             self.NOTIFY_MODE_PUSH,
             protobuf_descriptor_set_path.encode("utf-8") if protobuf_descriptor_set_path else None,
-            protobuf_message_name.encode("utf-8") if protobuf_message_name else None,
         )
         if not self.handle:
             raise RuntimeError("Failed to create engine with rule file")
@@ -158,7 +157,6 @@ class BifroRE:
             c_int,
             c_char_p,
             c_int,
-            c_char_p,
             c_char_p,
         ]
         self.lib.bre_create_engine.restype = c_void_p
@@ -428,6 +426,7 @@ class BifroRE:
             "eval_count": snapshot.eval_count,
             "eval_error_count": snapshot.eval_error_count,
             "eval_type_error_count": snapshot.eval_type_error_count,
+            "payload_error_count": snapshot.payload_error_count,
             "exec_count": snapshot.exec_count,
             "exec_total_nanos": snapshot.exec_total_nanos,
             "exec_max_nanos": snapshot.exec_max_nanos,

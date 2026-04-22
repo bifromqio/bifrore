@@ -31,6 +31,10 @@ public final class BifroREMetricsView {
         return current().evalTypeErrorCount;
     }
 
+    public double payloadErrorCount() {
+        return current().payloadErrorCount;
+    }
+
     public double messagePipelineTotalNanos() {
         return current().messagePipelineTotalNanos;
     }
@@ -209,6 +213,7 @@ public final class BifroREMetricsView {
         final long evalCount;
         final long evalErrorCount;
         final long evalTypeErrorCount;
+        final long payloadErrorCount;
         final long messagePipelineTotalNanos;
         final long messagePipelineMaxNanos;
         final long execTotalNanos;
@@ -253,6 +258,7 @@ public final class BifroREMetricsView {
             long evalCount,
             long evalErrorCount,
             long evalTypeErrorCount,
+            long payloadErrorCount,
             long messagePipelineTotalNanos,
             long messagePipelineMaxNanos,
             long execTotalNanos,
@@ -296,6 +302,7 @@ public final class BifroREMetricsView {
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
             this.evalTypeErrorCount = evalTypeErrorCount;
+            this.payloadErrorCount = payloadErrorCount;
             this.messagePipelineTotalNanos = messagePipelineTotalNanos;
             this.messagePipelineMaxNanos = messagePipelineMaxNanos;
             this.execTotalNanos = execTotalNanos;
@@ -342,6 +349,7 @@ public final class BifroREMetricsView {
                 0, // evalCount
                 0, // evalErrorCount
                 0, // evalTypeErrorCount
+                0, // payloadErrorCount
                 0, // messagePipelineTotalNanos
                 0, // messagePipelineMaxNanos
                 0, // execTotalNanos
@@ -390,6 +398,7 @@ public final class BifroREMetricsView {
                 snapshot.evalCount,
                 snapshot.evalErrorCount,
                 snapshot.evalTypeErrorCount,
+                snapshot.payloadErrorCount,
                 snapshot.messagePipeline.totalNanos,
                 snapshot.messagePipeline.maxNanos,
                 snapshot.exec.totalNanos,

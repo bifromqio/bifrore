@@ -16,14 +16,12 @@ void *bre_create_engine(
     int payload_format,
     const char *client_ids_path,
     int notify_mode,
-    const char *protobuf_descriptor_set_path,
-    const char *protobuf_message_name) {
+    const char *protobuf_descriptor_set_path) {
     (void)path;
     (void)payload_format;
     (void)client_ids_path;
     (void)notify_mode;
     (void)protobuf_descriptor_set_path;
-    (void)protobuf_message_name;
     return NULL;
 }
 
