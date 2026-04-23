@@ -36,7 +36,9 @@ struct BifroREMetricsSnapshot {
     uint64_t eval_count;
     uint64_t eval_error_count;
     uint64_t eval_type_error_count;
-    uint64_t payload_error_count;
+    uint64_t payload_schema_error_count;
+    uint64_t payload_decode_error_count;
+    uint64_t payload_build_error_count;
     uint64_t exec_count;
     uint64_t exec_total_nanos;
     uint64_t exec_max_nanos;

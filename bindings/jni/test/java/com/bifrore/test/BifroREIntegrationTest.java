@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -177,6 +178,102 @@ final class BifroREIntegrationTest {
     }
 
     @Test
+    void heapProtobufProjectionWorks() throws Exception {
+        Path clientIdsDir = Files.createTempDirectory("bifrore-itest-protobuf-heap-");
+        String descriptorPath = extractResource("/proto/telemetry.desc", "bifrore-itest-protobuf-heap-", ".desc");
+        String rulePath = writeRuleFile("""
+            {
+              "rules": [
+                {
+                  "expression": "select sensor.device as device, sensor.reading.temp as temperature, sensor.reading.hum as humidity, site from data where sensor.reading.online = true and sensor.reading.temp >= 20",
+                  "schema": "example.telemetry.Envelope",
+                  "destinations": ["kafka", "log"]
+                },
+                {
+                  "expression": "select device as device, reading.temp as temperature, reading.hum as humidity from data where reading.online = true and reading.temp >= 20",
+                  "schema": "example.telemetry.Sensor",
+                  "destinations": ["kafka", "sensor-log"]
+                }
+              ]
+            }
+            """);
+
+        CountDownLatch latch = new CountDownLatch(2);
+        ConcurrentLinkedQueue<JsonNode> payloads = new ConcurrentLinkedQueue<>();
+
+        try (BifroRE engine = new BifroRE(
+            baseProtobufOptions(rulePath, clientIdsDir, "itest-protobuf-heap-" + UUID.randomUUID(), descriptorPath)
+        )) {
+            engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
+                try {
+                    payloads.add(MAPPER.readTree(payloadBlob, offset, length));
+                    latch.countDown();
+                } catch (Exception error) {
+                    throw new RuntimeException(error);
+                }
+            });
+            assertEquals(0, engine.start());
+            awaitSubscriptionWarmup();
+
+            publish("data", buildTelemetryPayload("sensor-h1", 23.5, 61.0, true, "factory-h"), List.of());
+            publish("data", buildSensorPayload("sensor-h2", 24.5, 62.0, true), List.of());
+            assertTrue(latch.await(AWAIT_TIMEOUT.toSeconds(), TimeUnit.SECONDS));
+        }
+
+        assertEquals(2, payloads.size());
+        assertTrue(payloads.stream().anyMatch(projected ->
+            "sensor-h1".equals(projected.get("device").asText())
+                && projected.get("temperature").asDouble() == 23.5
+                && projected.get("humidity").asDouble() == 61.0
+                && "factory-h".equals(projected.get("site").asText())
+        ));
+        assertTrue(payloads.stream().anyMatch(projected ->
+            "sensor-h2".equals(projected.get("device").asText())
+                && projected.get("temperature").asDouble() == 24.5
+                && projected.get("humidity").asDouble() == 62.0
+                && !projected.has("site")
+        ));
+    }
+
+    @Test
+    void heapProtobufInvalidPayloadIncrementsPayloadDecodeErrorMetric() throws Exception {
+        Path clientIdsDir = Files.createTempDirectory("bifrore-itest-protobuf-bad-");
+        String descriptorPath = extractResource("/proto/telemetry.desc", "bifrore-itest-protobuf-bad-", ".desc");
+        String rulePath = writeRuleFile("""
+            {
+              "rules": [
+                {
+                  "expression": "select device as device, reading.temp as temperature from data where reading.online = true and reading.temp >= 20",
+                  "schema": "example.telemetry.Sensor",
+                  "destinations": ["sensor-log"]
+                }
+              ]
+            }
+            """);
+
+        AtomicInteger callbackCount = new AtomicInteger();
+
+        try (BifroRE engine = new BifroRE(
+            baseProtobufOptions(rulePath, clientIdsDir, "itest-protobuf-bad-" + UUID.randomUUID(), descriptorPath)
+        )) {
+            engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
+                callbackCount.incrementAndGet();
+            });
+            assertEquals(0, engine.start());
+            awaitSubscriptionWarmup();
+
+            publish("data", new byte[] {0x0A, 0x05, 0x41}, List.of());
+            awaitMetricAtLeast(() -> engine.metrics().payloadDecodeErrorCount, 1L);
+
+            BifroRE.MetricsSnapshot metrics = engine.metrics();
+            assertEquals(0, callbackCount.get());
+            assertEquals(0, metrics.payloadSchemaErrorCount);
+            assertTrue(metrics.payloadDecodeErrorCount >= 1);
+            assertEquals(0, metrics.payloadBuildErrorCount);
+        }
+    }
+
+    @Test
     void persistentSessionReceivesQueuedAndLiveMessages() throws Exception {
         Path clientIdsDir = Files.createTempDirectory("bifrore-itest-session-");
         String groupName = "test-session-" + UUID.randomUUID();
@@ -243,6 +340,19 @@ final class BifroREIntegrationTest {
             );
     }
 
+    private static BifroREOptions baseProtobufOptions(
+        String rulePath,
+        Path clientIdsDir,
+        String groupName,
+        String descriptorPath
+    ) {
+        return baseOptions(rulePath, clientIdsDir, groupName)
+            .ffi(ffi -> ffi
+                .payloadFormat(BifroRE.PAYLOAD_PROTOBUF)
+                .protobufDescriptorSetPath(descriptorPath)
+            );
+    }
+
     private static void publish(String topic, byte[] payload, List<UserProperty> userProperties)
         throws MqttException {
         String clientId = "bifrore-itest-publisher-" + System.nanoTime();
@@ -267,6 +377,17 @@ final class BifroREIntegrationTest {
 
     private static void awaitSubscriptionWarmup() throws InterruptedException {
         Thread.sleep(1500L);
+    }
+
+    private static void awaitMetricAtLeast(LongSupplier supplier, long expected) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + AWAIT_TIMEOUT.toNanos();
+        while (System.nanoTime() < deadlineNanos) {
+            if (supplier.getAsLong() >= expected) {
+                return;
+            }
+            Thread.sleep(100L);
+        }
+        throw new AssertionError("timed out waiting for metric >= " + expected);
     }
 
     private static String writeRuleFile(String content) throws Exception {
