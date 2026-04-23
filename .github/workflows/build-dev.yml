@@ -33,24 +33,10 @@ jobs:
           sudo apt-get install -y mosquitto-clients
 
       - name: Run Rust core tests
-        run: cargo test -p bifrore-embed-core --features mqtt -- --nocapture
-        working-directory: engine
+        run: ./scripts/test.sh core
 
       - name: Run JNI helper tests
-        run: ./build.sh jni-test
-
-      - name: Build Java jar
-        run: ./build.sh java
-
-      - name: Install local Java jar to Maven repository
-        run: |
-          mvn -q -Dmaven.repo.local="$MAVEN_REPO_LOCAL" org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
-            -Dfile=build/bifrore-java.jar \
-            -DgroupId=com.bifrore \
-            -DartifactId=bifrore-java \
-            -Dversion=0.1.0 \
-            -Dpackaging=jar \
-            -DgeneratePom=true
+        run: ./scripts/test.sh jni
 
       - name: Start BifroMQ broker
         run: |
@@ -83,7 +69,7 @@ jobs:
           exit 1
 
       - name: Run Java JNI integration tests
-        run: mvn -q -Dmaven.repo.local="$MAVEN_REPO_LOCAL" -f bindings/jni/test/pom.xml test
+        run: ./scripts/test.sh java-integration
 
       - name: Dump broker logs on failure
         if: failure()

@@ -82,12 +82,14 @@ Requirements:
 Build the artifacts:
 
 ```bash
-./build.sh jni     # raw Rust cdylib + JNI bridge
 ./build.sh java    # platform jar with bundled native libraries
 ./build.sh python  # platform wheel with bundled native library
-./build.sh all     # java + python (+ raw native libs)
-./build.sh bench   # run runtime benchmarks
-./build.sh bench-diff # compare serde_json vs simd-json and json vs protobuf
+./build.sh all     # java + python
+./scripts/test.sh core        # engine core tests
+./scripts/test.sh jni               # JNI related test cases
+./scripts/test.sh java-integration  # Java integration test cases
+./scripts/bench.sh rust       # Rust benchmarks
+./scripts/bench.sh jmh        # Java JMH benchmarks
 ```
 
 Optional feature flags (manual cargo usage):
@@ -251,14 +253,8 @@ Current benchmark scenarios:
 Run with:
 
 ```bash
-./build.sh bench
-./build.sh bench-diff
+./scripts/bench.sh rust
 ```
-
-`bench-diff` output includes:
-- Parse-only JSON parser comparison (`serde_json` vs `simd-json`) for `parse_only_*_json`.
-- Parse-only payload comparison (`json` vs `protobuf`) for matching
-  `parse_only_*_json` / `parse_only_*_protobuf` pairs.
 
 Parse-only benchmark cases are intended for parser comparison:
 - normal payload: `parse_only_normal_json` vs `parse_only_normal_protobuf`
