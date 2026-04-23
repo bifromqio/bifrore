@@ -2,6 +2,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadErrorKind {
+    Schema,
+    Decode,
+    Build,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LatencyStage {
     TopicMatch = 0,
     PayloadDecode = 1,
@@ -108,7 +115,9 @@ pub struct EvalMetrics {
     eval_count: AtomicU64,
     eval_error_count: AtomicU64,
     eval_type_error_count: AtomicU64,
-    payload_error_count: AtomicU64,
+    payload_schema_error_count: AtomicU64,
+    payload_decode_error_count: AtomicU64,
+    payload_build_error_count: AtomicU64,
     detailed_latency_enabled: bool,
     stage_recorder: StageRecorder,
     stages: [LatencyMetrics; LatencyStage::COUNT],
@@ -120,7 +129,9 @@ impl EvalMetrics {
             eval_count: AtomicU64::new(0),
             eval_error_count: AtomicU64::new(0),
             eval_type_error_count: AtomicU64::new(0),
-            payload_error_count: AtomicU64::new(0),
+            payload_schema_error_count: AtomicU64::new(0),
+            payload_decode_error_count: AtomicU64::new(0),
+            payload_build_error_count: AtomicU64::new(0),
             detailed_latency_enabled,
             stage_recorder: if detailed_latency_enabled {
                 StageRecorder::DETAILED
@@ -157,8 +168,18 @@ impl EvalMetrics {
         }
     }
 
-    pub fn record_payload_error(&self) {
-        self.payload_error_count.fetch_add(1, Ordering::Relaxed);
+    pub fn record_payload_error(&self, kind: PayloadErrorKind) {
+        match kind {
+            PayloadErrorKind::Schema => {
+                self.payload_schema_error_count.fetch_add(1, Ordering::Relaxed);
+            }
+            PayloadErrorKind::Decode => {
+                self.payload_decode_error_count.fetch_add(1, Ordering::Relaxed);
+            }
+            PayloadErrorKind::Build => {
+                self.payload_build_error_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn snapshot(&self) -> EvalMetricsSnapshot {
@@ -166,7 +187,9 @@ impl EvalMetrics {
             eval_count: self.eval_count.load(Ordering::Relaxed),
             eval_error_count: self.eval_error_count.load(Ordering::Relaxed),
             eval_type_error_count: self.eval_type_error_count.load(Ordering::Relaxed),
-            payload_error_count: self.payload_error_count.load(Ordering::Relaxed),
+            payload_schema_error_count: self.payload_schema_error_count.load(Ordering::Relaxed),
+            payload_decode_error_count: self.payload_decode_error_count.load(Ordering::Relaxed),
+            payload_build_error_count: self.payload_build_error_count.load(Ordering::Relaxed),
             topic_match: self.stages[LatencyStage::TopicMatch.index()].snapshot(),
             payload_decode: self.stages[LatencyStage::PayloadDecode.index()].snapshot(),
             msg_ir_build: self.stages[LatencyStage::MsgIrBuild.index()].snapshot(),
@@ -195,7 +218,9 @@ pub struct EvalMetricsSnapshot {
     pub eval_count: u64,
     pub eval_error_count: u64,
     pub eval_type_error_count: u64,
-    pub payload_error_count: u64,
+    pub payload_schema_error_count: u64,
+    pub payload_decode_error_count: u64,
+    pub payload_build_error_count: u64,
     pub topic_match: LatencyMetricsSnapshot,
     pub payload_decode: LatencyMetricsSnapshot,
     pub msg_ir_build: LatencyMetricsSnapshot,

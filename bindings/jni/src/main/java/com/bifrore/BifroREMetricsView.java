@@ -31,8 +31,16 @@ public final class BifroREMetricsView {
         return current().evalTypeErrorCount;
     }
 
-    public double payloadErrorCount() {
-        return current().payloadErrorCount;
+    public double payloadSchemaErrorCount() {
+        return current().payloadSchemaErrorCount;
+    }
+
+    public double payloadDecodeErrorCount() {
+        return current().payloadDecodeErrorCount;
+    }
+
+    public double payloadBuildErrorCount() {
+        return current().payloadBuildErrorCount;
     }
 
     public double messagePipelineTotalNanos() {
@@ -213,7 +221,9 @@ public final class BifroREMetricsView {
         final long evalCount;
         final long evalErrorCount;
         final long evalTypeErrorCount;
-        final long payloadErrorCount;
+        final long payloadSchemaErrorCount;
+        final long payloadDecodeErrorCount;
+        final long payloadBuildErrorCount;
         final long messagePipelineTotalNanos;
         final long messagePipelineMaxNanos;
         final long execTotalNanos;
@@ -258,7 +268,9 @@ public final class BifroREMetricsView {
             long evalCount,
             long evalErrorCount,
             long evalTypeErrorCount,
-            long payloadErrorCount,
+            long payloadSchemaErrorCount,
+            long payloadDecodeErrorCount,
+            long payloadBuildErrorCount,
             long messagePipelineTotalNanos,
             long messagePipelineMaxNanos,
             long execTotalNanos,
@@ -302,7 +314,9 @@ public final class BifroREMetricsView {
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
             this.evalTypeErrorCount = evalTypeErrorCount;
-            this.payloadErrorCount = payloadErrorCount;
+            this.payloadSchemaErrorCount = payloadSchemaErrorCount;
+            this.payloadDecodeErrorCount = payloadDecodeErrorCount;
+            this.payloadBuildErrorCount = payloadBuildErrorCount;
             this.messagePipelineTotalNanos = messagePipelineTotalNanos;
             this.messagePipelineMaxNanos = messagePipelineMaxNanos;
             this.execTotalNanos = execTotalNanos;
@@ -349,7 +363,9 @@ public final class BifroREMetricsView {
                 0, // evalCount
                 0, // evalErrorCount
                 0, // evalTypeErrorCount
-                0, // payloadErrorCount
+                0, // payloadSchemaErrorCount
+                0, // payloadDecodeErrorCount
+                0, // payloadBuildErrorCount
                 0, // messagePipelineTotalNanos
                 0, // messagePipelineMaxNanos
                 0, // execTotalNanos
@@ -398,7 +414,9 @@ public final class BifroREMetricsView {
                 snapshot.evalCount,
                 snapshot.evalErrorCount,
                 snapshot.evalTypeErrorCount,
-                snapshot.payloadErrorCount,
+                snapshot.payloadSchemaErrorCount,
+                snapshot.payloadDecodeErrorCount,
+                snapshot.payloadBuildErrorCount,
                 snapshot.messagePipeline.totalNanos,
                 snapshot.messagePipeline.maxNanos,
                 snapshot.exec.totalNanos,

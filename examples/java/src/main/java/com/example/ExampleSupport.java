@@ -63,7 +63,9 @@ final class ExampleSupport {
         Gauge.builder("bifrore_eval_count", metrics, BifroREMetricsView::evalCount).register(registry);
         Gauge.builder("bifrore_eval_error_count", metrics, BifroREMetricsView::evalErrorCount).register(registry);
         Gauge.builder("bifrore_eval_type_error_count", metrics, BifroREMetricsView::evalTypeErrorCount).register(registry);
-        Gauge.builder("bifrore_payload_error_count", metrics, BifroREMetricsView::payloadErrorCount).register(registry);
+        Gauge.builder("bifrore_payload_schema_error_count", metrics, BifroREMetricsView::payloadSchemaErrorCount).register(registry);
+        Gauge.builder("bifrore_payload_decode_error_count", metrics, BifroREMetricsView::payloadDecodeErrorCount).register(registry);
+        Gauge.builder("bifrore_payload_build_error_count", metrics, BifroREMetricsView::payloadBuildErrorCount).register(registry);
         Gauge.builder("bifrore_message_pipeline_total_nanos", metrics, BifroREMetricsView::messagePipelineTotalNanos).register(registry);
         Gauge.builder("bifrore_message_pipeline_max_nanos", metrics, BifroREMetricsView::messagePipelineMaxNanos).register(registry);
         Gauge.builder("bifrore_exec_total_nanos", metrics, BifroREMetricsView::execTotalNanos).register(registry);

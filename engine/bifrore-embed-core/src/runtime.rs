@@ -145,7 +145,7 @@ impl RuleEngine {
         ) {
             Ok(value) => value,
             Err(err) => {
-                self.metrics.record_payload_error();
+                self.metrics.record_payload_error(err.kind());
                 log::warn!(
                     "dropping message with invalid payload topic={} decoder={:?} error={}",
                     message.topic,
@@ -184,7 +184,7 @@ impl RuleEngine {
             ) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.metrics.record_payload_error();
+                    self.metrics.record_payload_error(err.kind());
                     log::warn!(
                         "dropping protobuf message with invalid payload topic={} schema={} error={}",
                         message.topic,
@@ -822,6 +822,80 @@ mod tests {
         assert_eq!(snapshot.eval_count, 1);
         assert_eq!(snapshot.eval_error_count, 1);
         assert_eq!(snapshot.eval_type_error_count, 0);
+    }
+
+    #[test]
+    fn evaluate_non_object_json_records_payload_build_error() {
+        let mut engine = RuleEngine::default();
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select temp from data".to_string(),
+                destinations: vec!["dest".to_string()],
+                schema: None,
+            })
+            .expect("add rule");
+
+        let message = Message::new("data", br#"42"#.to_vec());
+        let results = engine.evaluate(&message);
+        assert!(results.is_empty());
+
+        let snapshot = engine.metrics().snapshot();
+        assert_eq!(snapshot.payload_schema_error_count, 0);
+        assert_eq!(snapshot.payload_decode_error_count, 0);
+        assert_eq!(snapshot.payload_build_error_count, 1);
+    }
+
+    #[test]
+    fn evaluate_invalid_protobuf_records_payload_decode_error() {
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
+        let mut engine = RuleEngine::new(decoder);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select device from data".to_string(),
+                destinations: vec!["dest".to_string()],
+                schema: Some("bifrore.test.TypedRuntimePayload".to_string()),
+            })
+            .expect("add rule");
+
+        let message = Message::new("data", vec![0x0A, 0x05, 0x41]);
+        let results = engine.evaluate(&message);
+        assert!(results.is_empty());
+
+        let snapshot = engine.metrics().snapshot();
+        assert_eq!(snapshot.payload_schema_error_count, 0);
+        assert_eq!(snapshot.payload_decode_error_count, 1);
+        assert_eq!(snapshot.payload_build_error_count, 0);
+    }
+
+    #[test]
+    fn evaluate_unknown_protobuf_schema_records_payload_schema_error() {
+        let decoder =
+            dynamic_protobuf_registry_from_descriptor_set_bytes(include_bytes!("../testdata/bifrore_test.desc"))
+                .expect("protobuf registry");
+        let mut engine = RuleEngine::new(decoder);
+        engine
+            .add_rule(RuleDefinition {
+                expression: "select device from data".to_string(),
+                destinations: vec!["dest".to_string()],
+                schema: Some("bifrore.test.UnknownPayload".to_string()),
+            })
+            .expect("add rule");
+
+        let payload = TypedRuntimePayload {
+            temp: 21.0,
+            device: "sensor-x".to_string(),
+            online: true,
+        };
+        let message = Message::new("data", payload.encode_to_vec());
+        let results = engine.evaluate(&message);
+        assert!(results.is_empty());
+
+        let snapshot = engine.metrics().snapshot();
+        assert_eq!(snapshot.payload_schema_error_count, 1);
+        assert_eq!(snapshot.payload_decode_error_count, 0);
+        assert_eq!(snapshot.payload_build_error_count, 0);
     }
 
     #[test]
