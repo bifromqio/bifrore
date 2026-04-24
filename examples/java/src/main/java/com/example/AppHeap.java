@@ -28,7 +28,7 @@ public final class AppHeap {
         );
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         HttpServer metricsServer = ExampleSupport.startMetricsServer(registry);
-        ExampleSupport.bindMetrics(engine, registry);
+        engine.bindMetrics(registry);
         engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
             System.out.println("ruleIndex=" + ruleIndex);
             if (metadata != null) {

@@ -46,11 +46,16 @@ http://127.0.0.1:9464/metrics
 The Java bindings provide:
 
 - `BifroREOptions` for engine configuration
-- `BifroREMetricsView` for lazy scrape-triggered metric reads
+- `bindMetrics(...)` for binding all SDK metrics to a Micrometer registry
+- `BifroREMetricsView` for low-level lazy scrape-triggered metric reads
 - `disconnect()` to stop MQTT intake before final `close()`
 
-The example binds `BifroREMetricsView` to Micrometer gauges. Metrics are pulled lazily on scrape.
+The example calls `engine.bindMetrics(registry)`. Metrics are pulled lazily on scrape.
 No dedicated metrics polling thread is used.
+`bindMetrics(...)` accepts a Micrometer `MeterRegistry`; use `PrometheusMeterRegistry`
+for Prometheus or another Micrometer registry for OTLP, Datadog, StatsD, JMX, etc.
+Monotonic totals are bound as Micrometer function counters, while depths and max values
+are bound as gauges.
 
 Backpressure-related knobs in `BifroREOptions`:
 
