@@ -555,6 +555,16 @@ public final class BifroRE implements AutoCloseable {
         return MetricsSnapshot.from(nativeMetricsSnapshotValues(handle));
     }
 
+    public BifroRE bindMetrics(Object registry) {
+        BifroREMetricsBinder.bind(this, registry);
+        return this;
+    }
+
+    public BifroRE bindMetrics(Object registry, String prefix) {
+        BifroREMetricsBinder.bind(this, registry, prefix);
+        return this;
+    }
+
     public long callbackDroppedCount() {
         return callbackDroppedCount.get();
     }

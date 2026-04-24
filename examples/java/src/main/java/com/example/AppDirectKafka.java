@@ -58,7 +58,7 @@ public final class AppDirectKafka {
         );
         PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
         HttpServer metricsServer = ExampleSupport.startMetricsServer(registry);
-        ExampleSupport.bindMetrics(engine, registry);
+        engine.bindMetrics(registry);
 
         KafkaProducer<String, byte[]> producer = createKafkaProducer();
         engine.onNextAsyncDirect((ruleIndex, payloadBuffer, offset, length, metadata) -> {
