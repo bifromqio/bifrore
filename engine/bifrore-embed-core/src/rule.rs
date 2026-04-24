@@ -639,18 +639,20 @@ fn evaluate_plan_runtime_value<'a>(
             Value::Bool(flag) => Ok(Some(RuntimeValue::Bool(*flag))),
             _ => Ok(None),
         },
-        EvalExprPlan::PayloadField(path) => Ok(Some(match payload_value_by_path(ctx.payload, path)? {
-            PayloadValue::Number(number) => RuntimeValue::Number(*number),
-            PayloadValue::String(text) => RuntimeValue::String(text),
-            PayloadValue::Bool(flag) => RuntimeValue::Bool(*flag),
-            value => {
-                return Err(EvalError::TypeMismatch {
-                    context: "predicate",
-                    expected: "number|string|bool",
-                    actual: payload_value_type_name(value),
-                })
-            }
-        })),
+        EvalExprPlan::PayloadField(path) => {
+            Ok(Some(match payload_value_by_path(ctx.payload, path)? {
+                PayloadValue::Number(number) => RuntimeValue::Number(*number),
+                PayloadValue::String(text) => RuntimeValue::String(text),
+                PayloadValue::Bool(flag) => RuntimeValue::Bool(*flag),
+                value => {
+                    return Err(EvalError::TypeMismatch {
+                        context: "predicate",
+                        expected: "number|string|bool",
+                        actual: payload_value_type_name(value),
+                    })
+                }
+            }))
+        }
         EvalExprPlan::MetaQos => Ok(Some(RuntimeValue::Number(ctx.message.qos as f64))),
         EvalExprPlan::MetaRetain => Ok(Some(RuntimeValue::Bool(ctx.message.retain))),
         EvalExprPlan::MetaDup => Ok(Some(RuntimeValue::Bool(ctx.message.dup))),
@@ -758,7 +760,9 @@ fn compare_runtime_runtime(
 fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Result<Value, EvalError> {
     match plan {
         EvalExprPlan::Const(value) => Ok(value.clone()),
-        EvalExprPlan::PayloadField(path) => Ok(payload_value_by_path(ctx.payload, path)?.to_json_value()),
+        EvalExprPlan::PayloadField(path) => {
+            Ok(payload_value_by_path(ctx.payload, path)?.to_json_value())
+        }
         EvalExprPlan::MetaQos => Ok(Value::Number(serde_json::Number::from(ctx.message.qos))),
         EvalExprPlan::MetaRetain => Ok(Value::Bool(ctx.message.retain)),
         EvalExprPlan::MetaDup => Ok(Value::Bool(ctx.message.dup)),
@@ -797,8 +801,7 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Result<Value, 
                 | BinaryOperator::LtEq
                 | BinaryOperator::Eq
                 | BinaryOperator::NotEq => {
-                    compare_values_runtime(&left_val, &right_val, op, "projection")
-                        .map(Value::Bool)
+                    compare_values_runtime(&left_val, &right_val, op, "projection").map(Value::Bool)
                 }
                 _ => Err(EvalError::UnsupportedExpression {
                     context: "projection",
@@ -816,7 +819,9 @@ fn evaluate_plan_value(plan: &EvalExprPlan, ctx: &EvalContext) -> Result<Value, 
             ctx.topic_parts
                 .get(index)
                 .map(|value| Value::String((*value).to_string()))
-                .ok_or(EvalError::MissingMetadata { name: "topic level" })
+                .ok_or(EvalError::MissingMetadata {
+                    name: "topic level",
+                })
         }
         EvalExprPlan::PropertiesKey { key } => {
             let key_value = evaluate_plan_value(key, ctx)?;
