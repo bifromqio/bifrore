@@ -24,11 +24,10 @@ impl PayloadFormat {
     }
 }
 
-type DecodeFn =
-    dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>, &str) -> Result<MsgIr, PayloadError>
-        + Send
-        + Sync
-        + 'static;
+type DecodeFn = dyn Fn(&[u8], PayloadDecodePlan<'_>, Option<&EvalMetrics>, &str) -> Result<MsgIr, PayloadError>
+    + Send
+    + Sync
+    + 'static;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PayloadError {
@@ -160,7 +159,9 @@ pub fn decode_payload_ir_with_decoder_and_plan_and_metrics(
     plan: PayloadDecodePlan<'_>,
     metrics: Option<&EvalMetrics>,
 ) -> Result<MsgIr, PayloadError> {
-    decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(payload, decoder, plan, metrics, "")
+    decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
+        payload, decoder, plan, metrics, "",
+    )
 }
 
 pub fn decode_payload_ir_with_decoder_and_plan_and_metrics_and_schema(
@@ -189,7 +190,8 @@ fn decode_json_ir(
     #[cfg(feature = "simd-json")]
     let parsed: Value = {
         let mut buffer = payload.to_vec();
-        simd_json::serde::from_slice(&mut buffer).map_err(|err| PayloadError::Decode(err.to_string()))?
+        simd_json::serde::from_slice(&mut buffer)
+            .map_err(|err| PayloadError::Decode(err.to_string()))?
     };
 
     #[cfg(not(feature = "simd-json"))]
