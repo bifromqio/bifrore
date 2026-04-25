@@ -1,7 +1,5 @@
-package com.bifrore.test;
+package com.bifrore;
 
-import com.bifrore.BifroRE;
-import com.bifrore.BifroREOptions;
 import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;

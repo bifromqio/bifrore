@@ -129,11 +129,11 @@ public final class BifroRE implements AutoCloseable {
         STOP
     }
 
-    public static final class MetricsSnapshot {
-        public static final class StageLatencySnapshot {
-            public final long count;
-            public final long totalNanos;
-            public final long maxNanos;
+    static final class MetricsSnapshot {
+        static final class StageLatencySnapshot {
+            final long count;
+            final long totalNanos;
+            final long maxNanos;
 
             StageLatencySnapshot(long count, long totalNanos, long maxNanos) {
                 this.count = count;
@@ -142,26 +142,26 @@ public final class BifroRE implements AutoCloseable {
             }
         }
 
-        public final long ingressMessageCount;
-        public final long coreQueueDepth;
-        public final long coreQueueDepthMax;
-        public final long coreQueueDropCount;
-        public final long ffiQueueDepth;
-        public final long ffiQueueDepthMax;
-        public final long ffiQueueDropCount;
-        public final StageLatencySnapshot messagePipeline;
-        public final long evalCount;
-        public final long evalErrorCount;
-        public final long evalTypeErrorCount;
-        public final long payloadSchemaErrorCount;
-        public final long payloadDecodeErrorCount;
-        public final long payloadBuildErrorCount;
-        public final StageLatencySnapshot exec;
-        public final StageLatencySnapshot topicMatch;
-        public final StageLatencySnapshot payloadDecode;
-        public final StageLatencySnapshot msgIrBuild;
-        public final StageLatencySnapshot predicate;
-        public final StageLatencySnapshot projection;
+        final long ingressMessageCount;
+        final long coreQueueDepth;
+        final long coreQueueDepthMax;
+        final long coreQueueDropCount;
+        final long ffiQueueDepth;
+        final long ffiQueueDepthMax;
+        final long ffiQueueDropCount;
+        final StageLatencySnapshot messagePipeline;
+        final long evalCount;
+        final long evalErrorCount;
+        final long evalTypeErrorCount;
+        final long payloadSchemaErrorCount;
+        final long payloadDecodeErrorCount;
+        final long payloadBuildErrorCount;
+        final StageLatencySnapshot exec;
+        final StageLatencySnapshot topicMatch;
+        final StageLatencySnapshot payloadDecode;
+        final StageLatencySnapshot msgIrBuild;
+        final StageLatencySnapshot predicate;
+        final StageLatencySnapshot projection;
 
         MetricsSnapshot(
             long ingressMessageCount,
@@ -549,7 +549,7 @@ public final class BifroRE implements AutoCloseable {
         return nativeSetLogCallback(logCallbackHandle, minLevel);
     }
 
-    public MetricsSnapshot metrics() {
+    MetricsSnapshot metrics() {
         if (handle == 0) {
             return MetricsSnapshot.empty();
         }
@@ -566,55 +566,55 @@ public final class BifroRE implements AutoCloseable {
         return this;
     }
 
-    public long callbackDroppedCount() {
+    long callbackDroppedCount() {
         return callbackDroppedCount.get();
     }
 
-    public long callbackPendingCount() {
+    long callbackPendingCount() {
         return pendingCallbackCount();
     }
 
-    public long callbackQueueDepth() {
+    long callbackQueueDepth() {
         return defaultMessageExecutor.getQueue().size();
     }
 
-    public long heapPollErrorCount() {
+    long heapPollErrorCount() {
         return heapPollErrorCount;
     }
 
-    public long heapPollInvalidArgumentCount() {
+    long heapPollInvalidArgumentCount() {
         return heapPollInvalidArgumentCount;
     }
 
-    public long heapPollInvalidStateCount() {
+    long heapPollInvalidStateCount() {
         return heapPollInvalidStateCount;
     }
 
-    public long heapPollInternalQueueErrorCount() {
+    long heapPollInternalQueueErrorCount() {
         return heapPollInternalQueueErrorCount;
     }
 
-    public long heapPollUnknownErrorCount() {
+    long heapPollUnknownErrorCount() {
         return heapPollUnknownErrorCount;
     }
 
-    public long heapPollMessageCount() {
+    long heapPollMessageCount() {
         return heapPollMessageCount;
     }
 
-    public long heapPollNoDataCount() {
+    long heapPollNoDataCount() {
         return heapPollNoDataCount;
     }
 
-    public long heapPollPayloadBytes() {
+    long heapPollPayloadBytes() {
         return heapPollPayloadBytes;
     }
 
-    public long shutdownDroppedCount() {
+    long shutdownDroppedCount() {
         return shutdownDroppedCount.get();
     }
 
-    public long pollerTimeoutPendingCount() {
+    long pollerTimeoutPendingCount() {
         return pollerTimeoutPendingCount.get();
     }
 
