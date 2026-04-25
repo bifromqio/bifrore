@@ -54,7 +54,6 @@ public final class BifroRE implements AutoCloseable {
     public static final int BRE_ERR_ALREADY_STARTED = -5;
     public static final int BRE_ERR_WORKER_UNAVAILABLE = -6;
     public static final int BRE_ERR_INTERNAL_QUEUE_ERROR = -7;
-    public static final int BRE_ERR_INTERNAL_ERROR = -8;
 
     private static final int JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL = -4;
     private static final int JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL = -5;
@@ -313,7 +312,6 @@ public final class BifroRE implements AutoCloseable {
     private volatile long heapPollInvalidArgumentCount;
     private volatile long heapPollInvalidStateCount;
     private volatile long heapPollInternalQueueErrorCount;
-    private volatile long heapPollInternalErrorCount;
     private volatile long heapPollUnknownErrorCount;
     private volatile long heapPollNoDataCount;
     private volatile long heapPollPayloadBytes;
@@ -429,7 +427,6 @@ public final class BifroRE implements AutoCloseable {
         this.heapPollInvalidArgumentCount = 0L;
         this.heapPollInvalidStateCount = 0L;
         this.heapPollInternalQueueErrorCount = 0L;
-        this.heapPollInternalErrorCount = 0L;
         this.heapPollUnknownErrorCount = 0L;
         this.heapPollNoDataCount = 0L;
         this.heapPollPayloadBytes = 0L;
@@ -597,10 +594,6 @@ public final class BifroRE implements AutoCloseable {
         return heapPollInternalQueueErrorCount;
     }
 
-    public long heapPollInternalErrorCount() {
-        return heapPollInternalErrorCount;
-    }
-
     public long heapPollUnknownErrorCount() {
         return heapPollUnknownErrorCount;
     }
@@ -635,34 +628,55 @@ public final class BifroRE implements AutoCloseable {
         }
         pollRunning = true;
         pollThread = new Thread(() -> {
-            long retryablePollBackoffMillis = 0L;
-            while (pollRunning && handle != 0) {
-                AsyncDirectMessageHandler asyncDirectHandler = nextAsyncDirectHandler;
-                PollLoopAction action;
-                if (asyncDirectHandler != null) {
-                    action = pollDirectBatch(asyncDirectHandler, nextExecutor);
-                    if (action == PollLoopAction.STOP) {
-                        break;
+            try {
+                long retryablePollBackoffMillis = 0L;
+                while (pollRunning && handle != 0) {
+                    AsyncDirectMessageHandler asyncDirectHandler = nextAsyncDirectHandler;
+                    PollLoopAction action;
+                    if (asyncDirectHandler != null) {
+                        action = pollDirectBatch(asyncDirectHandler, nextExecutor);
+                        if (action == PollLoopAction.STOP) {
+                            break;
+                        }
+                    } else {
+                        action = pollHeapBatch(nextHandler, nextExecutor);
+                        if (action == PollLoopAction.STOP) {
+                            break;
+                        }
                     }
-                } else {
-                    action = pollHeapBatch(nextHandler, nextExecutor);
-                    if (action == PollLoopAction.STOP) {
-                        break;
+                    if (action == PollLoopAction.BACKOFF) {
+                        retryablePollBackoffMillis = nextRetryablePollBackoffMillis(retryablePollBackoffMillis);
+                        if (!sleepRetryablePollBackoff(retryablePollBackoffMillis)) {
+                            break;
+                        }
+                    } else {
+                        retryablePollBackoffMillis = 0L;
                     }
                 }
-                if (action == PollLoopAction.BACKOFF) {
-                    retryablePollBackoffMillis = nextRetryablePollBackoffMillis(retryablePollBackoffMillis);
-                    if (!sleepRetryablePollBackoff(retryablePollBackoffMillis)) {
-                        break;
-                    }
-                } else {
-                    retryablePollBackoffMillis = 0L;
-                }
+            } catch (Throwable failure) {
+                handleFatalPollerFailure(failure);
+            } finally {
+                pollRunning = false;
             }
-            pollRunning = false;
         }, "bifrore-msg-poller");
         pollThread.setDaemon(true);
         pollThread.start();
+    }
+
+    private void handleFatalPollerFailure(Throwable failure) {
+        LOGGER.severe("BifroRE poller terminated unexpectedly; disconnecting MQTT intake: " + failure);
+        try {
+            synchronized (this) {
+                if (handle != 0 && (mqttStarted || disconnecting)) {
+                    disconnecting = true;
+                    mqttStarted = false;
+                    nativeDisconnect(handle);
+                }
+            }
+        } catch (Throwable disconnectFailure) {
+            failure.addSuppressed(disconnectFailure);
+            LOGGER.severe("BifroRE failed to disconnect after poller failure: " + disconnectFailure);
+        }
     }
 
     private synchronized void stopPoller(boolean interrupt) {
@@ -745,8 +759,6 @@ public final class BifroRE implements AutoCloseable {
             heapPollInvalidStateCount += 1;
         } else if (code == BRE_ERR_INTERNAL_QUEUE_ERROR) {
             heapPollInternalQueueErrorCount += 1;
-        } else if (code == BRE_ERR_INTERNAL_ERROR) {
-            heapPollInternalErrorCount += 1;
         } else {
             heapPollUnknownErrorCount += 1;
         }
@@ -757,6 +769,9 @@ public final class BifroRE implements AutoCloseable {
             return PollLoopAction.CONTINUE;
         }
         PollResult result = nativePollResultsBatch(handle, -1);
+        if (result == null) {
+            throw new IllegalStateException("nativePollResultsBatch returned null without a Java exception");
+        }
         if (result.code < BRE_OK) {
             recordHeapPollErrorCode(result.code);
             return shouldStopPollerForHeapCode(result.code) ? PollLoopAction.STOP : PollLoopAction.BACKOFF;
