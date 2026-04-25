@@ -39,7 +39,7 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             env,
             JNI_CACHE.poll_result_cls,
             JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_OPERATION_FAILED,
+            (jint)BRE_ERR_INTERNAL_ERROR,
             NULL
         );
     }
@@ -59,7 +59,7 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             env,
             JNI_CACHE.poll_result_cls,
             JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_OPERATION_FAILED,
+            (jint)BRE_ERR_INTERNAL_ERROR,
             NULL
         );
     }
@@ -72,7 +72,7 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             env,
             JNI_CACHE.poll_result_cls,
             JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_OPERATION_FAILED,
+            (jint)BRE_ERR_INTERNAL_ERROR,
             NULL
         );
     }

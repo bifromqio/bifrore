@@ -49,10 +49,12 @@ public final class BifroRE implements AutoCloseable {
     public static final int BRE_OK = 0;
     public static final int BRE_ERR_INVALID_ARGUMENT = -1;
     public static final int BRE_ERR_INVALID_STATE = -2;
-    public static final int BRE_ERR_OPERATION_FAILED = -3;
+    public static final int BRE_ERR_INVALID_PARAMETER = -3;
     public static final int BRE_ERR_START_FAILED = -4;
     public static final int BRE_ERR_ALREADY_STARTED = -5;
     public static final int BRE_ERR_WORKER_UNAVAILABLE = -6;
+    public static final int BRE_ERR_INTERNAL_QUEUE_ERROR = -7;
+    public static final int BRE_ERR_INTERNAL_ERROR = -8;
 
     private static final int JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL = -4;
     private static final int JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL = -5;
@@ -310,7 +312,8 @@ public final class BifroRE implements AutoCloseable {
     private volatile long heapPollErrorCount;
     private volatile long heapPollInvalidArgumentCount;
     private volatile long heapPollInvalidStateCount;
-    private volatile long heapPollOperationFailedCount;
+    private volatile long heapPollInternalQueueErrorCount;
+    private volatile long heapPollInternalErrorCount;
     private volatile long heapPollUnknownErrorCount;
     private volatile long heapPollNoDataCount;
     private volatile long heapPollPayloadBytes;
@@ -425,7 +428,8 @@ public final class BifroRE implements AutoCloseable {
         this.heapPollErrorCount = 0L;
         this.heapPollInvalidArgumentCount = 0L;
         this.heapPollInvalidStateCount = 0L;
-        this.heapPollOperationFailedCount = 0L;
+        this.heapPollInternalQueueErrorCount = 0L;
+        this.heapPollInternalErrorCount = 0L;
         this.heapPollUnknownErrorCount = 0L;
         this.heapPollNoDataCount = 0L;
         this.heapPollPayloadBytes = 0L;
@@ -589,8 +593,12 @@ public final class BifroRE implements AutoCloseable {
         return heapPollInvalidStateCount;
     }
 
-    public long heapPollOperationFailedCount() {
-        return heapPollOperationFailedCount;
+    public long heapPollInternalQueueErrorCount() {
+        return heapPollInternalQueueErrorCount;
+    }
+
+    public long heapPollInternalErrorCount() {
+        return heapPollInternalErrorCount;
     }
 
     public long heapPollUnknownErrorCount() {
@@ -735,8 +743,10 @@ public final class BifroRE implements AutoCloseable {
             heapPollInvalidArgumentCount += 1;
         } else if (code == BRE_ERR_INVALID_STATE) {
             heapPollInvalidStateCount += 1;
-        } else if (code == BRE_ERR_OPERATION_FAILED) {
-            heapPollOperationFailedCount += 1;
+        } else if (code == BRE_ERR_INTERNAL_QUEUE_ERROR) {
+            heapPollInternalQueueErrorCount += 1;
+        } else if (code == BRE_ERR_INTERNAL_ERROR) {
+            heapPollInternalErrorCount += 1;
         } else {
             heapPollUnknownErrorCount += 1;
         }
@@ -815,7 +825,7 @@ public final class BifroRE implements AutoCloseable {
             releaseDirectSlot(slot);
             return PollLoopAction.STOP;
         }
-        if (count == BRE_ERR_OPERATION_FAILED) {
+        if (count == BRE_ERR_INTERNAL_QUEUE_ERROR) {
             releaseDirectSlot(slot);
             return PollLoopAction.BACKOFF;
         }
