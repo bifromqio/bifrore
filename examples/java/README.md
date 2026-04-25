@@ -47,7 +47,6 @@ The Java bindings provide:
 
 - `BifroREOptions` for engine configuration
 - `bindMetrics(...)` for binding all SDK metrics to a Micrometer registry
-- `BifroREMetricsView` for low-level lazy scrape-triggered metric reads
 - `disconnect()` to stop MQTT intake before final `close()`
 
 The example calls `engine.bindMetrics(registry)`. Metrics are pulled lazily on scrape.

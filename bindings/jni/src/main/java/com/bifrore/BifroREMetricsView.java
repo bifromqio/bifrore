@@ -2,200 +2,200 @@ package com.bifrore;
 
 import java.util.concurrent.TimeUnit;
 
-public final class BifroREMetricsView {
+final class BifroREMetricsView {
     private final BifroRE engine;
     private final long cacheNanos;
     private volatile ViewSnapshot snapshot;
     private volatile long lastRefreshNanos;
 
-    public BifroREMetricsView(BifroRE engine) {
+    BifroREMetricsView(BifroRE engine) {
         this(engine, TimeUnit.SECONDS.toNanos(1));
     }
 
-    public BifroREMetricsView(BifroRE engine, long cacheNanos) {
+    BifroREMetricsView(BifroRE engine, long cacheNanos) {
         this.engine = engine;
         this.cacheNanos = Math.max(0L, cacheNanos);
         this.snapshot = ViewSnapshot.empty();
         this.lastRefreshNanos = 0L;
     }
 
-    public double evalCount() {
+    double evalCount() {
         return current().evalCount;
     }
 
-    public double evalErrorCount() {
+    double evalErrorCount() {
         return current().evalErrorCount;
     }
 
-    public double evalTypeErrorCount() {
+    double evalTypeErrorCount() {
         return current().evalTypeErrorCount;
     }
 
-    public double payloadSchemaErrorCount() {
+    double payloadSchemaErrorCount() {
         return current().payloadSchemaErrorCount;
     }
 
-    public double payloadDecodeErrorCount() {
+    double payloadDecodeErrorCount() {
         return current().payloadDecodeErrorCount;
     }
 
-    public double payloadBuildErrorCount() {
+    double payloadBuildErrorCount() {
         return current().payloadBuildErrorCount;
     }
 
-    public double messagePipelineTotalNanos() {
+    double messagePipelineTotalNanos() {
         return current().messagePipelineTotalNanos;
     }
 
-    public double messagePipelineMaxNanos() {
+    double messagePipelineMaxNanos() {
         return current().messagePipelineMaxNanos;
     }
 
-    public double execTotalNanos() {
+    double execTotalNanos() {
         return current().execTotalNanos;
     }
 
-    public double execMaxNanos() {
+    double execMaxNanos() {
         return current().execMaxNanos;
     }
 
-    public double topicMatchCount() {
+    double topicMatchCount() {
         return current().topicMatchCount;
     }
 
-    public double topicMatchTotalNanos() {
+    double topicMatchTotalNanos() {
         return current().topicMatchTotalNanos;
     }
 
-    public double topicMatchMaxNanos() {
+    double topicMatchMaxNanos() {
         return current().topicMatchMaxNanos;
     }
 
-    public double payloadDecodeCount() {
+    double payloadDecodeCount() {
         return current().payloadDecodeCount;
     }
 
-    public double payloadDecodeTotalNanos() {
+    double payloadDecodeTotalNanos() {
         return current().payloadDecodeTotalNanos;
     }
 
-    public double payloadDecodeMaxNanos() {
+    double payloadDecodeMaxNanos() {
         return current().payloadDecodeMaxNanos;
     }
 
-    public double msgIrBuildCount() {
+    double msgIrBuildCount() {
         return current().msgIrBuildCount;
     }
 
-    public double msgIrBuildTotalNanos() {
+    double msgIrBuildTotalNanos() {
         return current().msgIrBuildTotalNanos;
     }
 
-    public double msgIrBuildMaxNanos() {
+    double msgIrBuildMaxNanos() {
         return current().msgIrBuildMaxNanos;
     }
 
-    public double predicateCount() {
+    double predicateCount() {
         return current().predicateCount;
     }
 
-    public double predicateTotalNanos() {
+    double predicateTotalNanos() {
         return current().predicateTotalNanos;
     }
 
-    public double predicateMaxNanos() {
+    double predicateMaxNanos() {
         return current().predicateMaxNanos;
     }
 
-    public double projectionCount() {
+    double projectionCount() {
         return current().projectionCount;
     }
 
-    public double projectionTotalNanos() {
+    double projectionTotalNanos() {
         return current().projectionTotalNanos;
     }
 
-    public double projectionMaxNanos() {
+    double projectionMaxNanos() {
         return current().projectionMaxNanos;
     }
 
-    public double ingressMessageCount() {
+    double ingressMessageCount() {
         return current().ingressMessageCount;
     }
 
-    public double coreQueueDepth() {
+    double coreQueueDepth() {
         return current().coreQueueDepth;
     }
 
-    public double coreQueueDepthMax() {
+    double coreQueueDepthMax() {
         return current().coreQueueDepthMax;
     }
 
-    public double coreQueueDropCount() {
+    double coreQueueDropCount() {
         return current().coreQueueDropCount;
     }
 
-    public double ffiQueueDepth() {
+    double ffiQueueDepth() {
         return current().ffiQueueDepth;
     }
 
-    public double ffiQueueDepthMax() {
+    double ffiQueueDepthMax() {
         return current().ffiQueueDepthMax;
     }
 
-    public double ffiQueueDropCount() {
+    double ffiQueueDropCount() {
         return current().ffiQueueDropCount;
     }
 
-    public double callbackDroppedCount() {
+    double callbackDroppedCount() {
         return current().callbackDroppedCount;
     }
 
-    public double callbackPendingCount() {
+    double callbackPendingCount() {
         return current().callbackPendingCount;
     }
 
-    public double callbackQueueDepth() {
+    double callbackQueueDepth() {
         return current().callbackQueueDepth;
     }
 
-    public double heapPollErrorCount() {
+    double heapPollErrorCount() {
         return current().heapPollErrorCount;
     }
 
-    public double heapPollInvalidArgumentCount() {
+    double heapPollInvalidArgumentCount() {
         return current().heapPollInvalidArgumentCount;
     }
 
-    public double heapPollInvalidStateCount() {
+    double heapPollInvalidStateCount() {
         return current().heapPollInvalidStateCount;
     }
 
-    public double heapPollInternalQueueErrorCount() {
+    double heapPollInternalQueueErrorCount() {
         return current().heapPollInternalQueueErrorCount;
     }
 
-    public double heapPollUnknownErrorCount() {
+    double heapPollUnknownErrorCount() {
         return current().heapPollUnknownErrorCount;
     }
 
-    public double heapPollMessageCount() {
+    double heapPollMessageCount() {
         return current().heapPollMessageCount;
     }
 
-    public double heapPollPayloadBytes() {
+    double heapPollPayloadBytes() {
         return current().heapPollPayloadBytes;
     }
 
-    public double heapPollNoDataCount() {
+    double heapPollNoDataCount() {
         return current().heapPollNoDataCount;
     }
 
-    public double shutdownDroppedCount() {
+    double shutdownDroppedCount() {
         return current().shutdownDroppedCount;
     }
 
-    public double pollerTimeoutPendingCount() {
+    double pollerTimeoutPendingCount() {
         return current().pollerTimeoutPendingCount;
     }
 
