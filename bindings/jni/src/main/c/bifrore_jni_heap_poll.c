@@ -33,16 +33,6 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             NULL
         );
     }
-    if (results.len > (size_t)INT32_MAX || results.payload_data_len > (size_t)INT32_MAX) {
-        bre_free_packed_eval_results(&results);
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_INTERNAL_ERROR,
-            NULL
-        );
-    }
 
     size_t header_len = results.len * 3;
     jintArray header_triples = (*env)->NewIntArray(env, (jsize)header_len);
@@ -55,26 +45,14 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             (*env)->DeleteLocalRef(env, payload_data);
         }
         bre_free_packed_eval_results(&results);
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_INTERNAL_ERROR,
-            NULL
-        );
+        return NULL;
     }
-    jint *header_values = (jint *)malloc(sizeof(jint) * header_len);
+    jint *header_values = (*env)->GetIntArrayElements(env, header_triples, NULL);
     if (header_values == NULL) {
         (*env)->DeleteLocalRef(env, header_triples);
         (*env)->DeleteLocalRef(env, payload_data);
         bre_free_packed_eval_results(&results);
-        return (*env)->NewObject(
-            env,
-            JNI_CACHE.poll_result_cls,
-            JNI_CACHE.poll_result_ctor,
-            (jint)BRE_ERR_INTERNAL_ERROR,
-            NULL
-        );
+        return NULL;
     }
     for (size_t idx = 0; idx < results.len; idx++) {
         size_t base = idx * 3;
@@ -82,8 +60,13 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
         header_values[base + 1] = (jint)results.payload_offsets[idx];
         header_values[base + 2] = (jint)results.payload_lengths[idx];
     }
-    (*env)->SetIntArrayRegion(env, header_triples, 0, (jsize)header_len, header_values);
-    free(header_values);
+    (*env)->ReleaseIntArrayElements(env, header_triples, header_values, 0);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->DeleteLocalRef(env, header_triples);
+        (*env)->DeleteLocalRef(env, payload_data);
+        bre_free_packed_eval_results(&results);
+        return NULL;
+    }
     if (results.payload_data_len > 0) {
         (*env)->SetByteArrayRegion(
             env,
@@ -92,6 +75,12 @@ JNIEXPORT jobject JNICALL Java_com_bifrore_BifroRE_nativePollResultsBatch(
             (jsize)results.payload_data_len,
             (const jbyte *)results.payload_data
         );
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->DeleteLocalRef(env, header_triples);
+            (*env)->DeleteLocalRef(env, payload_data);
+            bre_free_packed_eval_results(&results);
+            return NULL;
+        }
     }
 
     jobject batch = (*env)->NewObject(
