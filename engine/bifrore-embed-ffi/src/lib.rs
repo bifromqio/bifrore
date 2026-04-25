@@ -897,15 +897,15 @@ pub extern "C" fn bre_start_mqtt(
     let ordered_prefix = unsafe { CStr::from_ptr(ordered_prefix) };
     let host = match host.to_str() {
         Ok(val) => val.to_string(),
-        Err(_) => return BRE_ERR_OPERATION_FAILED,
+        Err(_) => return BRE_ERR_INVALID_PARAMETER,
     };
     let group_name = match group_name.to_str() {
         Ok(val) => val.to_string(),
-        Err(_) => return BRE_ERR_OPERATION_FAILED,
+        Err(_) => return BRE_ERR_INVALID_PARAMETER,
     };
     let ordered_prefix = match ordered_prefix.to_str() {
         Ok(val) => val.to_string(),
-        Err(_) => return BRE_ERR_OPERATION_FAILED,
+        Err(_) => return BRE_ERR_INVALID_PARAMETER,
     };
 
     let username = if username.is_null() {
@@ -1131,18 +1131,18 @@ pub extern "C" fn bre_poll_eval_results_packed(
                 }
                 return BRE_OK;
             }
-            Err(flume::TryRecvError::Disconnected) => return BRE_ERR_OPERATION_FAILED,
+            Err(flume::TryRecvError::Disconnected) => return BRE_ERR_INTERNAL_QUEUE_ERROR,
         }
     } else if timeout_millis == u32::MAX {
         match receiver.recv() {
             Ok(value) => value,
-            Err(_) => return BRE_ERR_OPERATION_FAILED,
+            Err(_) => return BRE_ERR_INTERNAL_QUEUE_ERROR,
         }
     } else {
         match receiver.recv_timeout(Duration::from_millis(timeout_millis as u64)) {
             Ok(value) => value,
             Err(flume::RecvTimeoutError::Timeout) => return BRE_OK,
-            Err(flume::RecvTimeoutError::Disconnected) => return BRE_ERR_OPERATION_FAILED,
+            Err(flume::RecvTimeoutError::Disconnected) => return BRE_ERR_INTERNAL_QUEUE_ERROR,
         }
     };
 

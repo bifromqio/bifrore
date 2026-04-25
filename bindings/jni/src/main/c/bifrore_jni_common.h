@@ -126,9 +126,12 @@ static const int BRE_OK = 0;
 static const int BRE_POLL_RESULT_READY = 1;
 static const int BRE_ERR_INVALID_ARGUMENT = -1;
 static const int BRE_ERR_INVALID_STATE = -2;
-static const int BRE_ERR_OPERATION_FAILED = -3;
+static const int BRE_ERR_INVALID_PARAMETER = -3;
 static const int BRE_ERR_START_FAILED = -4;
 static const int BRE_ERR_ALREADY_STARTED = -5;
+static const int BRE_ERR_WORKER_UNAVAILABLE = -6;
+static const int BRE_ERR_INTERNAL_QUEUE_ERROR = -7;
+static const int BRE_ERR_INTERNAL_ERROR = -8;
 
 static const int JNI_DIRECT_ERR_HEADER_BUFFER_TOO_SMALL = -4;
 static const int JNI_DIRECT_ERR_PAYLOAD_BUFFER_TOO_SMALL = -5;

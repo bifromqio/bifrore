@@ -171,8 +171,12 @@ public final class BifroREMetricsView {
         return current().heapPollInvalidStateCount;
     }
 
-    public double heapPollOperationFailedCount() {
-        return current().heapPollOperationFailedCount;
+    public double heapPollInternalQueueErrorCount() {
+        return current().heapPollInternalQueueErrorCount;
+    }
+
+    public double heapPollInternalErrorCount() {
+        return current().heapPollInternalErrorCount;
     }
 
     public double heapPollUnknownErrorCount() {
@@ -256,7 +260,8 @@ public final class BifroREMetricsView {
         final long heapPollErrorCount;
         final long heapPollInvalidArgumentCount;
         final long heapPollInvalidStateCount;
-        final long heapPollOperationFailedCount;
+        final long heapPollInternalQueueErrorCount;
+        final long heapPollInternalErrorCount;
         final long heapPollUnknownErrorCount;
         final long heapPollMessageCount;
         final long heapPollPayloadBytes;
@@ -303,7 +308,8 @@ public final class BifroREMetricsView {
             long heapPollErrorCount,
             long heapPollInvalidArgumentCount,
             long heapPollInvalidStateCount,
-            long heapPollOperationFailedCount,
+            long heapPollInternalQueueErrorCount,
+            long heapPollInternalErrorCount,
             long heapPollUnknownErrorCount,
             long heapPollMessageCount,
             long heapPollPayloadBytes,
@@ -349,7 +355,8 @@ public final class BifroREMetricsView {
             this.heapPollErrorCount = heapPollErrorCount;
             this.heapPollInvalidArgumentCount = heapPollInvalidArgumentCount;
             this.heapPollInvalidStateCount = heapPollInvalidStateCount;
-            this.heapPollOperationFailedCount = heapPollOperationFailedCount;
+            this.heapPollInternalQueueErrorCount = heapPollInternalQueueErrorCount;
+            this.heapPollInternalErrorCount = heapPollInternalErrorCount;
             this.heapPollUnknownErrorCount = heapPollUnknownErrorCount;
             this.heapPollMessageCount = heapPollMessageCount;
             this.heapPollPayloadBytes = heapPollPayloadBytes;
@@ -398,7 +405,8 @@ public final class BifroREMetricsView {
                 0, // heapPollErrorCount
                 0, // heapPollInvalidArgumentCount
                 0, // heapPollInvalidStateCount
-                0, // heapPollOperationFailedCount
+                0, // heapPollInternalQueueErrorCount
+                0, // heapPollInternalErrorCount
                 0, // heapPollUnknownErrorCount
                 0, // heapPollMessageCount
                 0, // heapPollPayloadBytes
@@ -449,7 +457,8 @@ public final class BifroREMetricsView {
                 instance.heapPollErrorCount(),
                 instance.heapPollInvalidArgumentCount(),
                 instance.heapPollInvalidStateCount(),
-                instance.heapPollOperationFailedCount(),
+                instance.heapPollInternalQueueErrorCount(),
+                instance.heapPollInternalErrorCount(),
                 instance.heapPollUnknownErrorCount(),
                 instance.heapPollMessageCount(),
                 instance.heapPollPayloadBytes(),

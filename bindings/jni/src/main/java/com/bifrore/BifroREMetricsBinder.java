@@ -60,7 +60,8 @@ final class BifroREMetricsBinder {
         bindCounter(registry, metricPrefix + "_heap_poll_error_count", metrics, BifroREMetricsView::heapPollErrorCount);
         bindCounter(registry, metricPrefix + "_heap_poll_invalid_argument_count", metrics, BifroREMetricsView::heapPollInvalidArgumentCount);
         bindCounter(registry, metricPrefix + "_heap_poll_invalid_state_count", metrics, BifroREMetricsView::heapPollInvalidStateCount);
-        bindCounter(registry, metricPrefix + "_heap_poll_operation_failed_count", metrics, BifroREMetricsView::heapPollOperationFailedCount);
+        bindCounter(registry, metricPrefix + "_heap_poll_internal_queue_error_count", metrics, BifroREMetricsView::heapPollInternalQueueErrorCount);
+        bindCounter(registry, metricPrefix + "_heap_poll_internal_error_count", metrics, BifroREMetricsView::heapPollInternalErrorCount);
         bindCounter(registry, metricPrefix + "_heap_poll_unknown_error_count", metrics, BifroREMetricsView::heapPollUnknownErrorCount);
         bindCounter(registry, metricPrefix + "_heap_poll_message_count", metrics, BifroREMetricsView::heapPollMessageCount);
         bindCounter(registry, metricPrefix + "_heap_poll_payload_bytes", metrics, BifroREMetricsView::heapPollPayloadBytes);
