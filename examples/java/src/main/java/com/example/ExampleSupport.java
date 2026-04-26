@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -32,19 +33,19 @@ final class ExampleSupport {
         }
     }
 
-    static String extractRuleResource() throws Exception {
+    static String extractRuleResource() {
         return extractResource(DEFAULT_RULE_RESOURCE, "bifrore-rule-", ".json");
     }
 
-    static String extractProtobufRuleResource() throws Exception {
+    static String extractProtobufRuleResource() {
         return extractResource(PROTOBUF_RULE_RESOURCE, "bifrore-rule-protobuf-", ".json");
     }
 
-    static String extractProtobufDescriptorResource() throws Exception {
+    static String extractProtobufDescriptorResource() {
         return extractResource(PROTOBUF_DESCRIPTOR_RESOURCE, "bifrore-protobuf-", ".desc");
     }
 
-    private static String extractResource(String resourcePath, String prefix, String suffix) throws Exception {
+    private static String extractResource(String resourcePath, String prefix, String suffix) {
         try (InputStream input = ExampleSupport.class.getResourceAsStream(resourcePath)) {
             if (input == null) {
                 throw new IllegalStateException("missing resource: " + resourcePath);
@@ -53,6 +54,8 @@ final class ExampleSupport {
             Files.copy(input, tempFile, StandardCopyOption.REPLACE_EXISTING);
             tempFile.toFile().deleteOnExit();
             return tempFile.toAbsolutePath().toString();
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to extract resource: " + resourcePath, e);
         }
     }
 

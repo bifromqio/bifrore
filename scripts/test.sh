@@ -31,7 +31,7 @@ run_java_integration_tests() {
   build_jni
   build_java_jar
   install_java_jar_to_local_maven "$maven_repo_local"
-  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -f bindings/jni/test/pom.xml test)
+  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -Dbifrore.java.version="$BIFRORE_VERSION" -f bindings/jni/test/pom.xml test)
 }
 
 case "$TARGET" in

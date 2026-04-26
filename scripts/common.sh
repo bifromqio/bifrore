@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
 RUST_DIR="$ROOT_DIR/engine"
+BIFRORE_VERSION="${BIFRORE_VERSION:-0.1.0}"
 
 OS_NAME="$(uname -s)"
 case "$OS_NAME" in
@@ -83,6 +84,26 @@ native_platform_dir() {
   esac
 }
 
+java_jar_name() {
+  local platform
+  platform="$(native_platform_dir)"
+  if [[ "$platform" == "unsupported" ]]; then
+    echo "unsupported"
+    return
+  fi
+  echo "bifrore-${BIFRORE_VERSION}-${platform}.jar"
+}
+
+java_jar_path() {
+  local jar_name
+  jar_name="$(java_jar_name)"
+  if [[ "$jar_name" == "unsupported" ]]; then
+    echo "unsupported"
+    return
+  fi
+  echo "$BUILD_DIR/$jar_name"
+}
+
 build_rust() {
   echo "Building Rust cdylib..."
   (cd "$RUST_DIR" && cargo build --release -p bifrore-embed-ffi --features mqtt)
@@ -133,7 +154,7 @@ build_jni_test() {
 
 build_java_jar() {
   echo "Packaging Java jar..."
-  local native_dir platform classes_dir resources_root resources_dir jar_name
+  local native_dir platform classes_dir resources_root resources_dir jar_path
   platform="$(native_platform_dir)"
   if [[ "$platform" == "unsupported" ]]; then
     echo "Unsupported platform for Java packaging: $OS_NAME/$(uname -m)"
@@ -143,8 +164,8 @@ build_java_jar() {
   classes_dir="$BUILD_DIR/java-stage/classes"
   resources_root="$BUILD_DIR/java-stage/resources"
   resources_dir="$resources_root/natives"
-  jar_name="bifrore-java.jar"
-  rm -f "$BUILD_DIR"/bifrore-java*.jar
+  jar_path="$(java_jar_path)"
+  rm -f "$BUILD_DIR"/bifrore-*.jar
   rm -rf "$BUILD_DIR/java-stage"
   mkdir -p "$native_dir" "$classes_dir" "$resources_dir"
 
@@ -156,7 +177,8 @@ build_java_jar() {
 
   cp -R "$native_dir" "$resources_dir/"
 
-  (cd "$BUILD_DIR/java-stage" && jar --create --file "$BUILD_DIR/$jar_name" -C "$classes_dir" . -C "$resources_root" .)
+  (cd "$BUILD_DIR/java-stage" && jar --create --file "$jar_path" -C "$classes_dir" . -C "$resources_root" .)
+  echo "Java jar: $jar_path"
 }
 
 build_python() {
@@ -178,7 +200,7 @@ build_python() {
   cp "$ROOT_DIR/bindings/python/bifrore.py" "$package_dir/__init__.py"
   cp "$BUILD_DIR/libbifrore_embed.$RUST_LIB_EXT" "$native_dir/"
 
-  cat > "$wheel_stage/setup.py" <<'EOF'
+  cat > "$wheel_stage/setup.py" <<EOF
 from setuptools import Distribution, setup
 
 
@@ -189,7 +211,7 @@ class BinaryDistribution(Distribution):
 
 setup(
     name="bifrore",
-    version="0.1.0",
+    version="${BIFRORE_VERSION}",
     description="BifroRE Python bindings",
     packages=["bifrore"],
     package_data={"bifrore": ["libbifrore_embed.*"]},
@@ -203,13 +225,19 @@ EOF
 
 install_java_jar_to_local_maven() {
   local maven_repo_local="$1"
+  local jar_path
+  jar_path="$(java_jar_path)"
+  if [[ "$jar_path" == "unsupported" ]]; then
+    echo "Unsupported platform for Java Maven install: $OS_NAME/$(uname -m)"
+    exit 6
+  fi
   mkdir -p "$maven_repo_local"
   mvn -q org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
     -Dmaven.repo.local="$maven_repo_local" \
-    -Dfile="$BUILD_DIR/bifrore-java.jar" \
+    -Dfile="$jar_path" \
     -DgroupId=com.bifrore \
     -DartifactId=bifrore-java \
-    -Dversion=0.1.0 \
+    -Dversion="$BIFRORE_VERSION" \
     -Dpackaging=jar \
     -DgeneratePom=true
 }
@@ -219,8 +247,8 @@ run_java_jmh() {
   local classpath_file="$BUILD_DIR/java-bench-classpath.txt"
   local test_classes_dir="$ROOT_DIR/bindings/jni/test/target/test-classes"
   install_java_jar_to_local_maven "$maven_repo_local"
-  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -f bindings/jni/test/pom.xml -DskipTests test-compile)
-  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -f bindings/jni/test/pom.xml \
+  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -Dbifrore.java.version="$BIFRORE_VERSION" -f bindings/jni/test/pom.xml -DskipTests test-compile)
+  (cd "$ROOT_DIR" && mvn -q -Dmaven.repo.local="$maven_repo_local" -Dbifrore.java.version="$BIFRORE_VERSION" -f bindings/jni/test/pom.xml \
     org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
     -Dmdep.outputFile="$classpath_file" \
     -DincludeScope=test)

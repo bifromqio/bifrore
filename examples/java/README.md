@@ -1,6 +1,6 @@
 # Java Example
 
-This example shows how to consume the generated `bifrore-java.jar` from a Maven project.
+This example shows how to consume the generated platform-specific BifroRE jar from a Maven project.
 
 ## 1. Build the jar
 
@@ -11,14 +11,15 @@ This example shows how to consume the generated `bifrore-java.jar` from a Maven 
 This produces:
 
 ```text
-build/bifrore-java.jar
+build/bifrore-0.1.0-darwin-aarch64.jar
+build/bifrore-0.1.0-linux-x86_64.jar
 ```
 
 ## 2. Install the jar into your local Maven repository
 
 ```bash
 mvn install:install-file \
-  -Dfile=build/bifrore-java.jar \
+  -Dfile=build/bifrore-0.1.0-<platform>.jar \
   -DgroupId=com.bifrore \
   -DartifactId=bifrore-java \
   -Dversion=0.1.0 \
