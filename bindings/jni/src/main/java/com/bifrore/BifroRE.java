@@ -153,7 +153,8 @@ public final class BifroRE implements AutoCloseable {
         final long ffiQueueDepth;
         final long ffiQueueDepthMax;
         final long ffiQueueDropCount;
-        final StageLatencySnapshot messagePipeline;
+        final StageLatencySnapshot coreEval;
+        final StageLatencySnapshot workerPipeline;
         final long evalCount;
         final long evalErrorCount;
         final long evalTypeErrorCount;
@@ -175,7 +176,8 @@ public final class BifroRE implements AutoCloseable {
             long ffiQueueDepth,
             long ffiQueueDepthMax,
             long ffiQueueDropCount,
-            StageLatencySnapshot messagePipeline,
+            StageLatencySnapshot coreEval,
+            StageLatencySnapshot workerPipeline,
             long evalCount,
             long evalErrorCount,
             long evalTypeErrorCount,
@@ -196,7 +198,8 @@ public final class BifroRE implements AutoCloseable {
             this.ffiQueueDepth = ffiQueueDepth;
             this.ffiQueueDepthMax = ffiQueueDepthMax;
             this.ffiQueueDropCount = ffiQueueDropCount;
-            this.messagePipeline = messagePipeline;
+            this.coreEval = coreEval;
+            this.workerPipeline = workerPipeline;
             this.evalCount = evalCount;
             this.evalErrorCount = evalErrorCount;
             this.evalTypeErrorCount = evalTypeErrorCount;
@@ -214,7 +217,7 @@ public final class BifroRE implements AutoCloseable {
         static MetricsSnapshot empty() {
             StageLatencySnapshot emptyStage = new StageLatencySnapshot(0, 0, 0);
             return new MetricsSnapshot(
-                0, 0, 0, 0, 0, 0, 0, emptyStage, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, emptyStage, emptyStage, 0, 0, 0, 0, 0, 0,
                 emptyStage,
                 emptyStage,
                 emptyStage,
@@ -225,7 +228,7 @@ public final class BifroRE implements AutoCloseable {
         }
 
         static MetricsSnapshot from(long[] values) {
-            if (values == null || values.length < 34) {
+            if (values == null || values.length < 37) {
                 return empty();
             }
             int index = 0;
@@ -236,7 +239,9 @@ public final class BifroRE implements AutoCloseable {
             long ffiQueueDepth = values[index++];
             long ffiQueueDepthMax = values[index++];
             long ffiQueueDropCount = values[index++];
-            StageLatencySnapshot messagePipeline = readStageWithCount(values, index);
+            StageLatencySnapshot coreEval = readStageWithCount(values, index);
+            index += 3;
+            StageLatencySnapshot workerPipeline = readStageWithCount(values, index);
             index += 3;
             long evalCount = values[index++];
             long evalErrorCount = values[index++];
@@ -263,7 +268,8 @@ public final class BifroRE implements AutoCloseable {
                 ffiQueueDepth,
                 ffiQueueDepthMax,
                 ffiQueueDropCount,
-                messagePipeline,
+                coreEval,
+                workerPipeline,
                 evalCount,
                 evalErrorCount,
                 evalTypeErrorCount,

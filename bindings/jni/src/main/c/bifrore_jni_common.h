@@ -30,9 +30,12 @@ struct BifroREMetricsSnapshot {
     uint64_t ffi_queue_depth;
     uint64_t ffi_queue_depth_max;
     uint64_t ffi_queue_drop_count;
-    uint64_t message_pipeline_count;
-    uint64_t message_pipeline_total_nanos;
-    uint64_t message_pipeline_max_nanos;
+    uint64_t core_eval_count;
+    uint64_t core_eval_total_nanos;
+    uint64_t core_eval_max_nanos;
+    uint64_t worker_pipeline_count;
+    uint64_t worker_pipeline_total_nanos;
+    uint64_t worker_pipeline_max_nanos;
     uint64_t eval_count;
     uint64_t eval_error_count;
     uint64_t eval_type_error_count;

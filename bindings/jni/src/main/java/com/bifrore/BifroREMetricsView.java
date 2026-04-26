@@ -43,12 +43,32 @@ final class BifroREMetricsView {
         return current().payloadBuildErrorCount;
     }
 
-    double messagePipelineTotalNanos() {
-        return current().messagePipelineTotalNanos;
+    double coreEvalCount() {
+        return current().coreEvalCount;
     }
 
-    double messagePipelineMaxNanos() {
-        return current().messagePipelineMaxNanos;
+    double coreEvalTotalNanos() {
+        return current().coreEvalTotalNanos;
+    }
+
+    double coreEvalMaxNanos() {
+        return current().coreEvalMaxNanos;
+    }
+
+    double workerPipelineCount() {
+        return current().workerPipelineCount;
+    }
+
+    double workerPipelineTotalNanos() {
+        return current().workerPipelineTotalNanos;
+    }
+
+    double workerPipelineMaxNanos() {
+        return current().workerPipelineMaxNanos;
+    }
+
+    double execCount() {
+        return current().execCount;
     }
 
     double execTotalNanos() {
@@ -224,8 +244,13 @@ final class BifroREMetricsView {
         final long payloadSchemaErrorCount;
         final long payloadDecodeErrorCount;
         final long payloadBuildErrorCount;
-        final long messagePipelineTotalNanos;
-        final long messagePipelineMaxNanos;
+        final long coreEvalCount;
+        final long coreEvalTotalNanos;
+        final long coreEvalMaxNanos;
+        final long workerPipelineCount;
+        final long workerPipelineTotalNanos;
+        final long workerPipelineMaxNanos;
+        final long execCount;
         final long execTotalNanos;
         final long execMaxNanos;
         final long topicMatchCount;
@@ -271,8 +296,13 @@ final class BifroREMetricsView {
             long payloadSchemaErrorCount,
             long payloadDecodeErrorCount,
             long payloadBuildErrorCount,
-            long messagePipelineTotalNanos,
-            long messagePipelineMaxNanos,
+            long coreEvalCount,
+            long coreEvalTotalNanos,
+            long coreEvalMaxNanos,
+            long workerPipelineCount,
+            long workerPipelineTotalNanos,
+            long workerPipelineMaxNanos,
+            long execCount,
             long execTotalNanos,
             long execMaxNanos,
             long topicMatchCount,
@@ -317,8 +347,13 @@ final class BifroREMetricsView {
             this.payloadSchemaErrorCount = payloadSchemaErrorCount;
             this.payloadDecodeErrorCount = payloadDecodeErrorCount;
             this.payloadBuildErrorCount = payloadBuildErrorCount;
-            this.messagePipelineTotalNanos = messagePipelineTotalNanos;
-            this.messagePipelineMaxNanos = messagePipelineMaxNanos;
+            this.coreEvalCount = coreEvalCount;
+            this.coreEvalTotalNanos = coreEvalTotalNanos;
+            this.coreEvalMaxNanos = coreEvalMaxNanos;
+            this.workerPipelineCount = workerPipelineCount;
+            this.workerPipelineTotalNanos = workerPipelineTotalNanos;
+            this.workerPipelineMaxNanos = workerPipelineMaxNanos;
+            this.execCount = execCount;
             this.execTotalNanos = execTotalNanos;
             this.execMaxNanos = execMaxNanos;
             this.topicMatchCount = topicMatchCount;
@@ -366,8 +401,13 @@ final class BifroREMetricsView {
                 0, // payloadSchemaErrorCount
                 0, // payloadDecodeErrorCount
                 0, // payloadBuildErrorCount
-                0, // messagePipelineTotalNanos
-                0, // messagePipelineMaxNanos
+                0, // coreEvalCount
+                0, // coreEvalTotalNanos
+                0, // coreEvalMaxNanos
+                0, // workerPipelineCount
+                0, // workerPipelineTotalNanos
+                0, // workerPipelineMaxNanos
+                0, // execCount
                 0, // execTotalNanos
                 0, // execMaxNanos
                 0, // topicMatchCount
@@ -417,8 +457,13 @@ final class BifroREMetricsView {
                 snapshot.payloadSchemaErrorCount,
                 snapshot.payloadDecodeErrorCount,
                 snapshot.payloadBuildErrorCount,
-                snapshot.messagePipeline.totalNanos,
-                snapshot.messagePipeline.maxNanos,
+                snapshot.coreEval.count,
+                snapshot.coreEval.totalNanos,
+                snapshot.coreEval.maxNanos,
+                snapshot.workerPipeline.count,
+                snapshot.workerPipeline.totalNanos,
+                snapshot.workerPipeline.maxNanos,
+                snapshot.exec.count,
                 snapshot.exec.totalNanos,
                 snapshot.exec.maxNanos,
                 snapshot.topicMatch.count,

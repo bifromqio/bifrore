@@ -108,12 +108,12 @@ Note: `simd-json` is workload and platform dependent; it is not guaranteed to be
 Artifacts are placed under `build/`:
 - `libbifrore_embed.(so|dylib)`
 - `libbifrore_jni.(so|dylib)` (JNI)
-- `bifrore-java.jar`
+- `bifrore-<version>-<platform>.jar`
 - `bifrore-0.1.0-*.whl`
 
-The jar name is stable because your local macOS build and CI Linux build are separate outputs. The
-wheel keeps the standard platform tag because Python wheel filenames are platform-specific by
-design.
+Java jar filenames include the native platform, for example
+`bifrore-0.1.0-linux-x86_64.jar` or `bifrore-0.1.0-darwin-aarch64.jar`.
+The wheel keeps the standard Python platform tag.
 
 ## Client ID Provisioning
 

@@ -43,12 +43,13 @@ jobs:
       - name: Build Linux jar and wheel
         run: |
           chmod +x build.sh
+          export BIFRORE_VERSION="${GITHUB_REF_NAME#v}"
           ./build.sh java
           ./build.sh python
 
       - name: Verify build outputs
         run: |
-          test -f build/bifrore-java.jar
+          ls -1 build/bifrore-*.jar
           ls -1 build/*.whl
 
       - name: Upload workflow artifacts
@@ -56,7 +57,7 @@ jobs:
         with:
           name: bifrore-linux-release-artifacts
           path: |
-            build/bifrore-java.jar
+            build/bifrore-*.jar
             build/*.whl
           if-no-files-found: error
 
@@ -64,5 +65,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/bifrore-java.jar
+            build/bifrore-*.jar
             build/*.whl

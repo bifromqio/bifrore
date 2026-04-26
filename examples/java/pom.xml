@@ -11,38 +11,44 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <bifrore.java.version>0.1.0</bifrore.java.version>
+        <jackson.databind.version>2.18.2</jackson.databind.version>
+        <micrometer.core.version>1.14.5</micrometer.core.version>
+        <micrometer.registry.prometheus>1.14.5</micrometer.registry.prometheus>
+        <kafka.clients>3.9.0</kafka.clients>
+        <protobuf.java>4.27.0</protobuf.java>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>com.bifrore</groupId>
             <artifactId>bifrore-java</artifactId>
-            <version>0.1.0</version>
+            <version>${bifrore.java.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.18.2</version>
+            <version>${jackson.databind.version}</version>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
-            <version>1.14.5</version>
+            <version>${micrometer.core.version}</version>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
-            <version>1.14.5</version>
+            <version>${micrometer.registry.prometheus}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.kafka</groupId>
             <artifactId>kafka-clients</artifactId>
-            <version>3.9.0</version>
+            <version>${kafka.clients}</version>
         </dependency>
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>4.27.0</version>
+            <version>${protobuf.java}</version>
         </dependency>
     </dependencies>
 </project>
