@@ -3,6 +3,8 @@ package com.bifrore;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletionStage;
@@ -74,12 +76,14 @@ public final class BifroRE implements AutoCloseable {
     }
 
     public static final class RuleMetadata {
-        public final int ruleIndex;
-        public final String[] destinations;
+        private final List<String> destinations;
 
-        RuleMetadata(int ruleIndex, String[] destinations) {
-            this.ruleIndex = ruleIndex;
-            this.destinations = destinations;
+        RuleMetadata(String[] destinations) {
+            this.destinations = List.copyOf(Arrays.asList(destinations));
+        }
+
+        public List<String> destinations() {
+            return destinations;
         }
     }
 
@@ -644,10 +648,6 @@ public final class BifroRE implements AutoCloseable {
 
     long pollerTimeoutPendingCount() {
         return pollerTimeoutPendingCount.get();
-    }
-
-    public RuleMetadata[] ruleMetadataTable() {
-        return ruleMetadataTable.clone();
     }
 
     private synchronized void ensurePollerRunning() {

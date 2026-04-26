@@ -6,8 +6,6 @@ import com.sun.net.httpserver.HttpServer;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
-import java.util.Arrays;
-
 public final class AppHeap {
     public static void main(String[] args) throws Exception {
         BifroRE engine = new BifroRE(
@@ -32,7 +30,7 @@ public final class AppHeap {
         engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
             System.out.println("ruleIndex=" + ruleIndex);
             if (metadata != null) {
-                System.out.println("destinations=" + Arrays.toString(metadata.destinations));
+                System.out.println("destinations=" + metadata.destinations());
             }
             System.out.println("payload=" + ExampleSupport.prettyPayload(payloadBlob, offset, length));
         });
