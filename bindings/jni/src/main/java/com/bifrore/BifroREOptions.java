@@ -142,11 +142,13 @@ public final class BifroREOptions {
             return this;
         }
 
+        @Experimental("Direct-buffer polling options are unstable and may change in future releases.")
         public JvmOptions directPollSlotCount(int directPollSlotCount) {
             this.directPollSlotCount = directPollSlotCount;
             return this;
         }
 
+        @Experimental("Direct-buffer polling options are unstable and may change in future releases.")
         public JvmOptions directPayloadBufferBytes(int directPayloadBufferBytes) {
             this.directPayloadBufferBytes = directPayloadBufferBytes;
             return this;

@@ -60,8 +60,8 @@ Backpressure-related knobs in `BifroREOptions`:
 
 - `callbackQueueCapacity(...)` for the default Java callback executor queue
 - `pollBatchLimit(...)` for the Rust-to-Java batch drain cap
-- `directPollSlotCount(...)` for the Java direct-buffer slot pool
-- `directPayloadBufferBytes(...)` for each direct payload buffer capacity
+- `directPollSlotCount(...)` for the experimental Java direct-buffer slot pool
+- `directPayloadBufferBytes(...)` for each experimental direct payload buffer capacity
 
 ## Heap vs direct example
 

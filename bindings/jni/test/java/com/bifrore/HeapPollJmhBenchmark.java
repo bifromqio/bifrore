@@ -54,7 +54,7 @@ public class HeapPollJmhBenchmark {
         dispatchMethod.setAccessible(true);
 
         ruleMetadataTable = new BifroRE.RuleMetadata[] {
-            new BifroRE.RuleMetadata(0, new String[] {"bench"})
+            new BifroRE.RuleMetadata(new String[] {"bench"})
         };
         handler = (ruleIndex, payloadBlob, offset, length, metadata) -> {
             if (payloadBlob[offset] == 127) {

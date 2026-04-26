@@ -66,7 +66,7 @@ static void init_jni_cache_once(void) {
         env,
         JNI_CACHE.rule_metadata_cls,
         "<init>",
-        "(I[Ljava/lang/String;)V"
+        "([Ljava/lang/String;)V"
     );
     if (JNI_CACHE.rule_metadata_ctor == NULL) {
         return;
@@ -478,7 +478,6 @@ JNIEXPORT jobjectArray JNICALL Java_com_bifrore_BifroRE_nativeGetRuleMetadataTab
             env,
             JNI_CACHE.rule_metadata_cls,
             JNI_CACHE.rule_metadata_ctor,
-            (jint)record->rule_index,
             destinations
         );
         if (destinations != NULL) {

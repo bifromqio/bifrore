@@ -12,7 +12,6 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 
@@ -63,7 +62,7 @@ public final class AppDirectKafka {
         KafkaProducer<String, byte[]> producer = createKafkaProducer();
         engine.onNextAsyncDirect((ruleIndex, payloadBuffer, offset, length, metadata) -> {
             if (metadata != null) {
-                System.out.println("ruleIndex=" + ruleIndex + " destinations=" + Arrays.toString(metadata.destinations));
+                System.out.println("ruleIndex=" + ruleIndex + " destinations=" + metadata.destinations());
             }
 
             byte[] retainedPayload = new byte[length];

@@ -73,7 +73,7 @@ final class BifroREIntegrationTest {
             engine.onNext((ruleIndex, payloadBlob, offset, length, metadata) -> {
                 try {
                     payloads.add(MAPPER.readTree(payloadBlob, offset, length));
-                    destinationsSeen.add(metadata.destinations[0]);
+                    destinationsSeen.add(metadata.destinations().get(0));
                     latch.countDown();
                 } catch (Exception error) {
                     throw new RuntimeException(error);
