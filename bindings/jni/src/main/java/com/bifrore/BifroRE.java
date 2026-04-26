@@ -375,10 +375,10 @@ public final class BifroRE implements AutoCloseable {
         this.singletonHeld = true;
         boolean initialized = false;
         try {
-        this.host = Objects.requireNonNull(host, "host");
-        this.port = port;
+        this.host = requireNonBlank(host, "host");
+        this.port = requirePort(port);
         this.nodeId = nodeId;
-        this.clientCount = clientCount;
+        this.clientCount = requireClientCount(clientCount);
         this.multiNci = multiNci;
         this.username = username;
         this.password = password;
@@ -388,8 +388,7 @@ public final class BifroRE implements AutoCloseable {
         this.detailedLatencyMetrics = detailedLatencyMetrics;
         this.cleanStart = cleanStart;
         this.sessionExpiryInterval = Math.max(0, sessionExpiryInterval);
-        this.groupName =
-            (groupName == null || groupName.isBlank()) ? "bifrore-group" : groupName;
+        this.groupName = requireShareGroupName(groupName);
         this.clientIdsPath =
             (clientIdsPath == null || clientIdsPath.isBlank()) ? "./client_ids" : clientIdsPath;
         this.handle = nativeCreateEngine(
@@ -448,6 +447,35 @@ public final class BifroRE implements AutoCloseable {
                 this.singletonHeld = false;
             }
         }
+    }
+
+    private static String requireNonBlank(String value, String name) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value;
+    }
+
+    private static int requirePort(int port) {
+        if (port <= 0 || port > 65535) {
+            throw new IllegalArgumentException("port must be in range 1..65535");
+        }
+        return port;
+    }
+
+    private static int requireClientCount(int clientCount) {
+        if (clientCount <= 0 || clientCount > 65535) {
+            throw new IllegalArgumentException("clientCount must be in range 1..65535");
+        }
+        return clientCount;
+    }
+
+    private static String requireShareGroupName(String groupName) {
+        String value = requireNonBlank(groupName, "groupName");
+        if (value.indexOf('/') >= 0 || value.indexOf('+') >= 0 || value.indexOf('#') >= 0) {
+            throw new IllegalArgumentException("groupName must not contain '/', '+', or '#'");
+        }
+        return value;
     }
 
     public synchronized int start() {
