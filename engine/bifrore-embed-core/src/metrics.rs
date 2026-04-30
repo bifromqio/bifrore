@@ -15,11 +15,10 @@ pub enum LatencyStage {
     MsgIrBuild = 2,
     Predicate = 3,
     Projection = 4,
-    Exec = 5,
 }
 
 impl LatencyStage {
-    const COUNT: usize = 6;
+    const COUNT: usize = 5;
 
     const fn index(self) -> usize {
         self as usize
@@ -195,7 +194,6 @@ impl EvalMetrics {
             msg_ir_build: self.stages[LatencyStage::MsgIrBuild.index()].snapshot(),
             predicate: self.stages[LatencyStage::Predicate.index()].snapshot(),
             projection: self.stages[LatencyStage::Projection.index()].snapshot(),
-            exec: self.stages[LatencyStage::Exec.index()].snapshot(),
         }
     }
 }
@@ -226,5 +224,4 @@ pub struct EvalMetricsSnapshot {
     pub msg_ir_build: LatencyMetricsSnapshot,
     pub predicate: LatencyMetricsSnapshot,
     pub projection: LatencyMetricsSnapshot,
-    pub exec: LatencyMetricsSnapshot,
 }

@@ -560,7 +560,6 @@ fn evaluate_single_rule(
     metrics: &EvalMetrics,
 ) -> Option<EvalAttempt> {
     let rule = rules.get(rule_index).and_then(|slot| slot.as_ref())?;
-    let exec_timer = metrics.start_stage();
     let evaluated = evaluate_rule_with_payload_and_topic_parts(
         rule,
         message,
@@ -568,7 +567,6 @@ fn evaluate_single_rule(
         topic_parts,
         metrics,
     );
-    metrics.finish_stage(LatencyStage::Exec, exec_timer);
     Some(match evaluated {
         Ok(Some(evaluated_message)) => EvalAttempt {
             evaluation: Some(RuleEvaluation {

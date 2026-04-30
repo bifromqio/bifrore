@@ -34,9 +34,6 @@ final class BifroREMetricsBinder {
         bindCounter(registry, metricPrefix + "_worker_pipeline_latency_samples", metrics, BifroREMetricsView::workerPipelineCount);
         bindCounter(registry, metricPrefix + "_worker_pipeline_latency_nanos", metrics, BifroREMetricsView::workerPipelineTotalNanos);
         bindGauge(registry, metricPrefix + "_worker_pipeline_latency_max_nanos", metrics, BifroREMetricsView::workerPipelineMaxNanos);
-        bindCounter(registry, metricPrefix + "_exec_latency_samples", metrics, BifroREMetricsView::execCount);
-        bindCounter(registry, metricPrefix + "_exec_latency_nanos", metrics, BifroREMetricsView::execTotalNanos);
-        bindGauge(registry, metricPrefix + "_exec_latency_max_nanos", metrics, BifroREMetricsView::execMaxNanos);
         bindCounter(registry, metricPrefix + "_topic_match_latency_samples", metrics, BifroREMetricsView::topicMatchCount);
         bindCounter(registry, metricPrefix + "_topic_match_latency_nanos", metrics, BifroREMetricsView::topicMatchTotalNanos);
         bindGauge(registry, metricPrefix + "_topic_match_latency_max_nanos", metrics, BifroREMetricsView::topicMatchMaxNanos);
