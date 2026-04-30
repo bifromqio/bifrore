@@ -87,6 +87,16 @@ fn logger_state() -> &'static RwLock<LoggerCallbackState> {
 struct FfiLogger;
 
 impl FfiLogger {
+    fn level_filter(level: BifroRELogLevel) -> log::LevelFilter {
+        match level {
+            BifroRELogLevel::Error => log::LevelFilter::Error,
+            BifroRELogLevel::Warn => log::LevelFilter::Warn,
+            BifroRELogLevel::Info => log::LevelFilter::Info,
+            BifroRELogLevel::Debug => log::LevelFilter::Debug,
+            BifroRELogLevel::Trace => log::LevelFilter::Trace,
+        }
+    }
+
     fn enabled_for(record_level: log::Level, min_level: BifroRELogLevel) -> bool {
         match min_level {
             BifroRELogLevel::Error => matches!(record_level, log::Level::Error),
@@ -170,7 +180,7 @@ fn ensure_logger_initialized() {
     static LOGGER: FfiLogger = FfiLogger;
     INIT.call_once(|| {
         if log::set_logger(&LOGGER).is_ok() {
-            log::set_max_level(log::LevelFilter::Trace);
+            log::set_max_level(FfiLogger::level_filter(BifroRELogLevel::Info));
         }
     });
 }
@@ -427,9 +437,6 @@ pub struct BifroREMetricsSnapshot {
     pub payload_schema_error_count: u64,
     pub payload_decode_error_count: u64,
     pub payload_build_error_count: u64,
-    pub exec_count: u64,
-    pub exec_total_nanos: u64,
-    pub exec_max_nanos: u64,
     pub topic_match_count: u64,
     pub topic_match_total_nanos: u64,
     pub topic_match_max_nanos: u64,
@@ -492,9 +499,6 @@ fn combine_metrics_snapshot(
         payload_schema_error_count: eval.payload_schema_error_count,
         payload_decode_error_count: eval.payload_decode_error_count,
         payload_build_error_count: eval.payload_build_error_count,
-        exec_count: 0,
-        exec_total_nanos: 0,
-        exec_max_nanos: 0,
         topic_match_count: 0,
         topic_match_total_nanos: 0,
         topic_match_max_nanos: 0,
@@ -511,12 +515,6 @@ fn combine_metrics_snapshot(
         projection_total_nanos: 0,
         projection_max_nanos: 0,
     };
-    write_latency_snapshot(
-        &mut snapshot.exec_count,
-        &mut snapshot.exec_total_nanos,
-        &mut snapshot.exec_max_nanos,
-        eval.exec,
-    );
     write_latency_snapshot(
         &mut snapshot.topic_match_count,
         &mut snapshot.topic_match_total_nanos,
@@ -794,6 +792,7 @@ pub extern "C" fn bre_set_log_callback(
     state.callback = callback;
     state.user_data_addr = user_data as usize;
     state.min_level = min_level;
+    log::set_max_level(FfiLogger::level_filter(min_level));
     log::info!("log callback updated; level={}", min_level as c_int);
     BRE_OK
 }

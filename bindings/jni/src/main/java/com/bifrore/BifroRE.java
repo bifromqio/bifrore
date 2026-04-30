@@ -161,7 +161,6 @@ public final class BifroRE implements AutoCloseable {
         final long payloadSchemaErrorCount;
         final long payloadDecodeErrorCount;
         final long payloadBuildErrorCount;
-        final StageLatencySnapshot exec;
         final StageLatencySnapshot topicMatch;
         final StageLatencySnapshot payloadDecode;
         final StageLatencySnapshot msgIrBuild;
@@ -184,7 +183,6 @@ public final class BifroRE implements AutoCloseable {
             long payloadSchemaErrorCount,
             long payloadDecodeErrorCount,
             long payloadBuildErrorCount,
-            StageLatencySnapshot exec,
             StageLatencySnapshot topicMatch,
             StageLatencySnapshot payloadDecode,
             StageLatencySnapshot msgIrBuild,
@@ -206,7 +204,6 @@ public final class BifroRE implements AutoCloseable {
             this.payloadSchemaErrorCount = payloadSchemaErrorCount;
             this.payloadDecodeErrorCount = payloadDecodeErrorCount;
             this.payloadBuildErrorCount = payloadBuildErrorCount;
-            this.exec = exec;
             this.topicMatch = topicMatch;
             this.payloadDecode = payloadDecode;
             this.msgIrBuild = msgIrBuild;
@@ -222,13 +219,12 @@ public final class BifroRE implements AutoCloseable {
                 emptyStage,
                 emptyStage,
                 emptyStage,
-                emptyStage,
                 emptyStage
             );
         }
 
         static MetricsSnapshot from(long[] values) {
-            if (values == null || values.length < 37) {
+            if (values == null || values.length < 34) {
                 return empty();
             }
             int index = 0;
@@ -249,8 +245,6 @@ public final class BifroRE implements AutoCloseable {
             long payloadSchemaErrorCount = values[index++];
             long payloadDecodeErrorCount = values[index++];
             long payloadBuildErrorCount = values[index++];
-            StageLatencySnapshot exec = readStageWithCount(values, index);
-            index += 3;
             StageLatencySnapshot topicMatch = readStageWithCount(values, index);
             index += 3;
             StageLatencySnapshot payloadDecode = readStageWithCount(values, index);
@@ -276,7 +270,6 @@ public final class BifroRE implements AutoCloseable {
                 payloadSchemaErrorCount,
                 payloadDecodeErrorCount,
                 payloadBuildErrorCount,
-                exec,
                 topicMatch,
                 payloadDecode,
                 msgIrBuild,

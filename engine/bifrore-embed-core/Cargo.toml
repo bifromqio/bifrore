@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "bench_pipeline"
 harness = false
+
+[[bench]]
+name = "benchmark_pipeline_single_rule"
+harness = false

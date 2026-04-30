@@ -56,9 +56,6 @@ class _MetricsSnapshot(ctypes.Structure):
         ("payload_schema_error_count", ctypes.c_uint64),
         ("payload_decode_error_count", ctypes.c_uint64),
         ("payload_build_error_count", ctypes.c_uint64),
-        ("exec_count", ctypes.c_uint64),
-        ("exec_total_nanos", ctypes.c_uint64),
-        ("exec_max_nanos", ctypes.c_uint64),
         ("topic_match_count", ctypes.c_uint64),
         ("topic_match_total_nanos", ctypes.c_uint64),
         ("topic_match_max_nanos", ctypes.c_uint64),
@@ -438,9 +435,6 @@ class BifroRE:
             "payload_schema_error_count": snapshot.payload_schema_error_count,
             "payload_decode_error_count": snapshot.payload_decode_error_count,
             "payload_build_error_count": snapshot.payload_build_error_count,
-            "exec_count": snapshot.exec_count,
-            "exec_total_nanos": snapshot.exec_total_nanos,
-            "exec_max_nanos": snapshot.exec_max_nanos,
         }
 
     def close(self):

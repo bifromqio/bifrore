@@ -67,18 +67,6 @@ final class BifroREMetricsView {
         return current().workerPipelineMaxNanos;
     }
 
-    double execCount() {
-        return current().execCount;
-    }
-
-    double execTotalNanos() {
-        return current().execTotalNanos;
-    }
-
-    double execMaxNanos() {
-        return current().execMaxNanos;
-    }
-
     double topicMatchCount() {
         return current().topicMatchCount;
     }
@@ -250,9 +238,6 @@ final class BifroREMetricsView {
         final long workerPipelineCount;
         final long workerPipelineTotalNanos;
         final long workerPipelineMaxNanos;
-        final long execCount;
-        final long execTotalNanos;
-        final long execMaxNanos;
         final long topicMatchCount;
         final long topicMatchTotalNanos;
         final long topicMatchMaxNanos;
@@ -302,9 +287,6 @@ final class BifroREMetricsView {
             long workerPipelineCount,
             long workerPipelineTotalNanos,
             long workerPipelineMaxNanos,
-            long execCount,
-            long execTotalNanos,
-            long execMaxNanos,
             long topicMatchCount,
             long topicMatchTotalNanos,
             long topicMatchMaxNanos,
@@ -353,9 +335,6 @@ final class BifroREMetricsView {
             this.workerPipelineCount = workerPipelineCount;
             this.workerPipelineTotalNanos = workerPipelineTotalNanos;
             this.workerPipelineMaxNanos = workerPipelineMaxNanos;
-            this.execCount = execCount;
-            this.execTotalNanos = execTotalNanos;
-            this.execMaxNanos = execMaxNanos;
             this.topicMatchCount = topicMatchCount;
             this.topicMatchTotalNanos = topicMatchTotalNanos;
             this.topicMatchMaxNanos = topicMatchMaxNanos;
@@ -407,9 +386,6 @@ final class BifroREMetricsView {
                 0, // workerPipelineCount
                 0, // workerPipelineTotalNanos
                 0, // workerPipelineMaxNanos
-                0, // execCount
-                0, // execTotalNanos
-                0, // execMaxNanos
                 0, // topicMatchCount
                 0, // topicMatchTotalNanos
                 0, // topicMatchMaxNanos
@@ -463,9 +439,6 @@ final class BifroREMetricsView {
                 snapshot.workerPipeline.count,
                 snapshot.workerPipeline.totalNanos,
                 snapshot.workerPipeline.maxNanos,
-                snapshot.exec.count,
-                snapshot.exec.totalNanos,
-                snapshot.exec.maxNanos,
                 snapshot.topicMatch.count,
                 snapshot.topicMatch.totalNanos,
                 snapshot.topicMatch.maxNanos,
